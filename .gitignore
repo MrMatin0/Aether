@@ -1,0 +1,20 @@
+# Gradle / Android
+.gradle/
+build/
+/local.properties
+/captures
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Native cores fetched/built at CI time (never commit binaries)
+app/src/main/jniLibs/
+app/src/main/cpp/hev-socks5-tunnel/
