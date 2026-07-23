@@ -18,3 +18,8 @@ build/
 # Native cores fetched/built at CI time (never commit binaries)
 app/src/main/jniLibs/
 app/src/main/cpp/hev-socks5-tunnel/
+
+# Build-time working copy of native sources (the engine is vendored under
+# native/aether instead — THAT one is committed; this .native cache is not).
+.native/
+native/aether/target/

@@ -6,6 +6,21 @@
 
 ---
 
+## What's new in v1.2.0
+
+This release ships the full advanced feature set and makes in-place updates reliable.
+
+- **Amnezia-style anti-DPI obfuscation (Noize)** — Off / Light / Firewall / Balanced / GFW / Aggressive, to defeat protocol fingerprinting on heavily filtered networks.
+- **New "Ironclad" scan mode** — the most persistent endpoint search, for the hardest networks (adds to Turbo / Balanced / Thorough / Stealth).
+- **Endpoint selection** — Auto (scan the built-in ranges), Manual peer (pin one `ip:port`), or **Custom range** (type your own IP range(s) and the engine scans *exactly* those, e.g. `8.6.112.x`, `188.114.96.0/24`).
+- **WireGuard keepalive**, **adjustable MTU** (default 1280, best for Iranian mobile / aggressive DPI), **TLS ClientHello fragmentation**, and **Encrypted Client Hello (ECH)**.
+- **Proxy mode** — run the engine + a local SOCKS5/HTTP proxy *without* capturing the whole device through the system VPN.
+- **Per-app split tunneling** — pick exactly which apps use (or skip) the tunnel, with a built-in app picker.
+- **Fixes:** correct "your IP" readout (no more cellular IPv6) and correct upload/download traffic figures.
+- **Reliable in-place updates** — the signing key is persisted inside your repo, so as long as you keep building in the **same** repository, new versions install right on top of the old one with no uninstall. See [Updates & app signing](#updates--app-signing).
+- **Fixed the advanced-settings sheet** — it now scrolls cleanly to the last control without clipping behind the navigation bar.
+- **Fixed full-device VPN mode** — CI now packages and verifies the embedded TUN-to-SOCKS core and all of its runtime dependencies in every APK.
+
 ## What's new in v1.1.0
 
 - **Quick Settings tile** — connect/disconnect right from the notification shade without opening the app. Add it once: swipe down → tap the pencil/edit button in Quick Settings → drag the **Aether** tile into your tiles.
@@ -46,7 +61,7 @@ A lot of users ask: *“It's a free VPN with no server list… whose server am I
 
 - **Material You dark UI** built with Jetpack Compose. Uses the wallpaper-based **dynamic color** on Android 12+, and falls back to a beautiful deep-navy palette on older devices.
 - Animated glowing connect button, drifting ambient background, smooth state transitions.
-- All the same options as the desktop app: **protocol** (Auto / MASQUE / WireGuard / Gool), **scan mode** (Turbo / Balanced / Thorough / Stealth), **IP version** (v4 / v6 / both), **quick reconnect**, and **MASQUE over HTTP/2** — now reachable both from the side menu and straight from the **home screen** (tune button, top-right).
+- All the same options as the desktop app **and more**: **protocol** (Auto / MASQUE / WireGuard / Gool), **scan mode** (Turbo / Balanced / Thorough / Stealth / **Ironclad**), **IP version** (v4 / v6 / both), **quick reconnect** and **MASQUE over HTTP/2** — plus **Amnezia-style obfuscation (Noize)**, **manual endpoint / custom scan range**, **keepalive**, **MTU**, **TLS fragmentation**, **ECH**, **proxy mode** and **per-app split tunneling**. All reachable both from the side menu and straight from the **home screen** (tune button, top-right).
 - **Quick Settings tile** for one-swipe connect/disconnect.
 - **VPN sharing over Wi‑Fi/hotspot** — built-in HTTP + SOCKS5 proxy for your other devices.
 - Auto-reconnect with backoff if the engine drops.
@@ -65,8 +80,8 @@ Your phone can act as a **gateway** for other devices on the same Wi‑Fi networ
 1. Connect the VPN in Aether.
 2. Open the side menu → **Share VPN** → turn on **Share on this network**.
 3. The panel shows two addresses (tap the copy icon next to either):
-   - **HTTP proxy — `<your-phone-ip>:8118`** → enter this in the other device's **system proxy** settings (Windows: Settings → Network → Proxy → Manual; macOS: Wi‑Fi → Details → Proxies → Web/Secure Web Proxy; Android/iOS: Wi‑Fi → Modify network → Proxy → Manual).
-   - **SOCKS5 proxy — `<your-phone-ip>:1080`** → for apps/browsers that support SOCKS (e.g. Firefox, Telegram).
+   - **HTTP proxy — `<your-phone-ip>:10809`** → enter this in the other device's **system proxy** settings (Windows: Settings → Network → Proxy → Manual; macOS: Wi‑Fi → Details → Proxies → Web/Secure Web Proxy; Android/iOS: Wi‑Fi → Modify network → Proxy → Manual).
+   - **SOCKS5 proxy — `<your-phone-ip>:10808`** → for apps/browsers that support SOCKS (e.g. Firefox, Telegram).
 4. Done — the other device's traffic now goes through your phone's tunnel.
 
 > ⚠️ While sharing is on, **anyone on that network** can use the proxy. Only enable it on networks you trust (your own hotspot is safest). Sharing stops automatically when the VPN disconnects.
@@ -84,6 +99,8 @@ What that means for users:
 
 - **From v1.1.0 onward:** just download the new APK and install — it updates in place, data intact. No uninstalling, ever.
 - **Upgrading from v1.0.0 (or older):** one final uninstall is required, because those builds were signed with the old throwaway key. After that, never again.
+
+> ♻️ **Beginner tip — keep the same repo & keep the key.** The stable key lives in `.github/ci-keystore.jks.b64` inside *your* repository. When you upload a newer source drop, add/replace the changed files in the **same** repo and **do not delete** that keystore file — that is exactly what lets a new version install on top of the one already on your phone. If you ever start a brand-new repo (or the file gets removed), the next build makes a fresh key, so that one time you'll need a single uninstall; after that it's permanent again.
 
 > 🔒 **Security note:** a keystore committed to a public repo is public — it guarantees *updatability*, not *authenticity* (anyone could sign an APK with it). If you distribute this app seriously, set the Secrets below; they always take priority over the repo keystore.
 
@@ -104,26 +121,26 @@ You do **not** need Android Studio. GitHub Actions builds everything for you.
 2. Go to the repo's **Actions** tab and enable workflows if prompted.
 3. Every push to `main` builds the app. To get installable release files, create a version tag:
    ```bash
-   git tag v1.1.0
-   git push origin v1.1.0
+   git tag v1.2.0
+   git push origin v1.2.0
    ```
-4. When the build finishes, the **Releases** page will contain three APKs (see below). Release titles are clean (`Aether v1.1.0`) and the “What's new” text comes from `.github/release-notes.md` — update that file together with the version.
+4. When the build finishes, the **Releases** page will contain three APKs (see below). Release titles are clean (`Aether v1.2.0`) and the “What's new” text comes from `.github/release-notes.md` — update that file together with the version.
 
 ### The three APKs
 
 | File | For which phone |
 |------|-----------------|
-| `Aether-1.1.0-arm64-v8a.apk` | Almost all modern phones (64-bit ARM) |
-| `Aether-1.1.0-armeabi-v7a.apk` | Older / low-end 32-bit phones |
-| `Aether-1.1.0-universal.apk` | **If you're not sure, download this one.** Works on any ARM phone |
+| `Aether-1.2.0-arm64-v8a.apk` | Almost all modern phones (64-bit ARM) |
+| `Aether-1.2.0-armeabi-v7a.apk` | Older / low-end 32-bit phones |
+| `Aether-1.2.0-universal.apk` | **If you're not sure, download this one.** Works on any ARM phone |
 
 ## How the native parts are built
 
 Upstream Aether does **not** publish Android binaries, so CI builds them from source:
 
 - `scripts/fetch-natives.sh` clones `hev-socks5-tunnel` (the in-app tunnel) and the Aether engine source.
-- `scripts/build-natives.sh` builds hev-socks5-tunnel (Makefile) into `libhev.so` and cross-compiles the Aether engine with `cargo-ndk` into `libaether.so`, for both `arm64-v8a` and `armeabi-v7a`.
-- Gradle's CMake step compiles `hev-socks5-tunnel` into `libtun2socks.so`.
+- `scripts/build-natives.sh` builds hev with `ndk-build` into `libhev-socks5-tunnel.so` and cross-compiles the Aether engine with `cargo-ndk` into `libaether.so`, for both `arm64-v8a` and `armeabi-v7a`.
+- Before publishing, CI checks every APK and refuses the release unless both native cores are actually present for every included ABI.
 
 You can pin versions via env vars: `HEV_REF`, `AETHER_REPO`, `AETHER_REF`.
 
