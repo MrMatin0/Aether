@@ -6,6 +6,24 @@
 
 ---
 
+## What's new in v1.2.1
+
+This release makes connecting **faster and more honest**, fixes Persian-locale text bugs, and hardens security.
+
+- **"Connected" now means connected** — the app stays in a new **"Verifying connection…"** state until all four health checks (port, handshake, internet, IP) pass. No more being told you're connected while nothing actually loads yet.
+- **Fix for Auto mode & introduction of a truly intelligent engine (Smart Auto)** — Previously, Auto mode sent no protocol flags to the engine, relying blindly on engine defaults and failing on restricted networks. The new **Smart Auto** module analyzes the network like an engineer before initiating:
+  - **Network DPI Discovery (prior to running the engine):** Sends parallel, multi-second probes over the actual operator path to assess UDP health (live DNS queries to `1.1.1.1` and `8.8.8.8`), test SNI-DPI (full TLS handshake with SNI to Cloudflare), measure TCP latency for individual WARP IP ranges, and detect carrier details (name, country code, and network type) without requiring any extra permissions.
+  - **Network Classification:** Classifies the network into one of four classes: Open, SNI Filtering, UDP Throttling, or Hostile.
+  - **Strategy Ladder:** Generates an prioritized list of "Protocol + Obfuscation (Noize) + Fragment/ECH + Successful IP Ranges" for each network class, from most to least likely to succeed, plus a final fallback attempt.
+  - **Step-by-Step Connection:** Attempts each strategy sequentially, verifying it with the 4-step health check. The first strategy to pass is chosen and locked for automatic reconnects.
+  - **Key Notes:** Active-range selection ensures quick attempts; lightweight obfuscation is auto-applied on Iranian mobile networks; user-defined custom endpoints/ranges are never overwritten; and all probe decisions are logged transparently. A new UI status **"Analyzing network (Smart connect)…"** has also been added.
+- **IP & flag appear much faster** — the three IP-lookup services are now queried **in parallel** (the fastest one on *your* network wins) instead of one-by-one, the self-test checks run concurrently, and retry delays are shorter. This especially helps networks where DPI slows some providers down.
+- **Fixed digits getting scrambled** while typing in the custom IP-range and manual endpoint fields (and everywhere `ip:port` is displayed) when the phone language is Persian — a right-to-left (BiDi) text issue, fixed at the root.
+- **New Reset button** at the bottom of advanced settings — one tap restores every setting to its defaults.
+- **Security hardening** (full audit report in `docs/SECURITY_AUDIT.md`): TLS hostname verification on the built-in probes (blocks man-in-the-middle), engine output no longer mirrored to Logcat in release builds, cleartext HTTP denied app-wide, stricter backup rules.
+- **In-app updates (Telegram-style) — beta** — when a new version is published on GitHub Releases, the app itself shows an "Update" banner on the home screen; one tap downloads the right APK for your device and opens the installer. No need to visit GitHub. **This feature is currently in beta (experimental)** and is still being stabilized.
+- **Proper release signing — beta** — every build is signed with one stable key (the repo's CI keystore, or your own via `keystore.properties` / repo Secrets; see `docs/SIGNING.md`), so updates keep installing right on top with no uninstall. **The signing mechanism is likewise in beta (experimental)** while it is validated across devices.
+
 ## What's new in v1.2.0
 
 This release ships the full advanced feature set and makes in-place updates reliable.
@@ -61,7 +79,7 @@ A lot of users ask: *“It's a free VPN with no server list… whose server am I
 
 - **Material You dark UI** built with Jetpack Compose. Uses the wallpaper-based **dynamic color** on Android 12+, and falls back to a beautiful deep-navy palette on older devices.
 - Animated glowing connect button, drifting ambient background, smooth state transitions.
-- All the same options as the desktop app **and more**: **protocol** (Auto / MASQUE / WireGuard / Gool), **scan mode** (Turbo / Balanced / Thorough / Stealth / **Ironclad**), **IP version** (v4 / v6 / both), **quick reconnect** and **MASQUE over HTTP/2** — plus **Amnezia-style obfuscation (Noize)**, **manual endpoint / custom scan range**, **keepalive**, **MTU**, **TLS fragmentation**, **ECH**, **proxy mode** and **per-app split tunneling**. All reachable both from the side menu and straight from the **home screen** (tune button, top-right).
+- All the same options as the desktop app **and more**: **protocol** (Smart / MASQUE / WireGuard / Gool), **scan mode** (Turbo / Balanced / Thorough / Stealth / **Ironclad**), **IP version** (v4 / v6 / both), **quick reconnect** and **MASQUE over HTTP/2** — plus **Amnezia-style obfuscation (Noize)**, **manual endpoint / custom scan range**, **keepalive**, **MTU**, **TLS fragmentation**, **ECH**, **proxy mode** and **per-app split tunneling**. All reachable both from the side menu and straight from the **home screen** (tune button, top-right).
 - **Quick Settings tile** for one-swipe connect/disconnect.
 - **VPN sharing over Wi‑Fi/hotspot** — built-in HTTP + SOCKS5 proxy for your other devices.
 - Auto-reconnect with backoff if the engine drops.

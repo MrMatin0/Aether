@@ -23,3 +23,7 @@ app/src/main/cpp/hev-socks5-tunnel/
 # native/aether instead — THAT one is committed; this .native cache is not).
 .native/
 native/aether/target/
+
+# Signing (NEVER commit signing credentials)
+keystore.properties
+release.keystore
