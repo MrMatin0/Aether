@@ -22,6 +22,7 @@ This release moves engine maintenance into the build pipeline, **removes the in-
 - **The build documents itself.** After a successful upgrade, CI edits this README (and the Persian one), records the new core version in this section, and commits the change back to the branch. The shipped engine version and the documentation can no longer drift apart.
 - **The engine version is visible in the app.** A `CORE_VERSION` build field replaces the old repository constant and is shown in the About panel.
 <!-- core-sync:en -->
+- **Engine (core) upgraded to v1.4.0** automatically by the CI core-sync step (previous: v1.4). The app's engine patches were rebased onto the new sources with a three-way merge. Needs manual review: aether/src/prober.rs aether/src/wg_prober.rs.
 
 ### 🗑️ In-app update system removed
 
