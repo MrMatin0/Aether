@@ -6,6 +6,111 @@
 
 ---
 
+## What's new in v1.2.2
+
+This release moves engine maintenance into the build pipeline, **removes the in-app updater**, removes the country picker (it could never really choose a country) and hands endpoint selection back to the engine, and lands a broad performance, compatibility and security pass over the 1.2.1 code.
+
+### 🔄 The build now owns the engine version (CI/CD core auto-upgrade)
+
+- **Automatic core synchronisation on every build.** A new `scripts/sync-core.sh` step runs in GitHub Actions before the natives are compiled. It queries the official [Aether Core repository](https://github.com/CluvexStudio/Aether), compares the latest upstream release against the version pinned in `native/aether/CORE_VERSION`, and upgrades the vendored engine automatically when a newer one exists. The engine is pinned at **v1.4** as the current stable reference.
+- **App-specific engine patches are rebased, not copied.** The custom range-scanning code this app relies on (`prober.rs`, `wg_prober.rs`) is carried across an upgrade with a real **three-way merge** against the pristine upstream baseline cached in `native/aether/.upstream-baseline/`. Upstream API changes and the app's own additions therefore combine correctly, exactly like a rebase. If a file cannot be merged, the build keeps the **pure upstream** version (which is guaranteed to compile) and flags the run for manual review — it never forces a stale copy that would break compilation.
+- **A core upgrade can never fail a release.** The previous engine is snapshotted before every upgrade. If the newly synced core does not compile for any reason at all, CI automatically rolls back to the engine the repository already shipped, rebuilds and continues, annotating the run. The new `CORE_VERSION` and the changelog are committed **only after the engine has actually built**, so the repository can never record an upgrade that does not work.
+- **Fail-safe by design.** If GitHub is unreachable, or the upstream layout is unexpected, the build keeps the vendored core and continues — a network hiccup can never break a release. The sync only ever moves **forward**; it never downgrades.
+- **Regression-tested offline.** `scripts/test-core-sync.sh` replays the whole upgrade path against a local repository (upstream adding struct fields and function arguments, an unmergeable rewrite, and a downgrade attempt) so the sync logic is verified without touching the network.
+- **The build toolchain is pinned.** Gradle is fixed at **8.9** to match AGP 8.7.2 instead of following whatever version the CI runner image happens to ship, and the release build gets an explicit 4 GB heap — the toolchain can no longer drift underneath the project.
+- **New engine capabilities are surfaced, not hidden.** After an upgrade the script scans the new core for command-line capabilities that the UI does not expose yet and reports them in the build log and in this changelog, so no engine feature can ship without a matching UI decision.
+- **The build documents itself.** After a successful upgrade, CI edits this README (and the Persian one), records the new core version in this section, and commits the change back to the branch. The shipped engine version and the documentation can no longer drift apart.
+- **The engine version is visible in the app.** A `CORE_VERSION` build field replaces the old repository constant and is shown in the About panel.
+<!-- core-sync:en -->
+
+### 🗑️ In-app update system removed
+
+> **For the security of our users, for complete transparency, and to guarantee the authenticity of the code they receive, the direct in-app update capability has been removed. From now on, all updates will be available exclusively from the project's official GitHub Release page, officially signed — preventing any unwanted download from unknown sources.**
+
+Concretely, this release deletes:
+
+- `core/UpdateChecker.kt` — the module that queried GitHub and downloaded APKs in the background.
+- `ui/components/UpdatePrompt.kt` — the in-app “update available / install now” card.
+- The `REQUEST_INSTALL_PACKAGES` permission — **the app can no longer install anything**. This was the single highest-risk permission in 1.2.1.
+- The `FileProvider` component and `res/xml/file_paths.xml` — they existed only to hand a downloaded APK to the system installer.
+- The six `update_*` UI strings in both locales.
+
+The app now carries a read-only `RELEASES_URL` pointer to the official releases page. There is **no code path left in Aether that can fetch or execute a new binary.**
+
+### 🌐 No server/location list — the engine picks the endpoint itself
+
+Aether has no country list and no server list, and it never had a real one. It connects you to **Cloudflare's WARP network**, whose addresses are **anycast**: the very same IP is announced from every Cloudflare datacenter at once, so the datacenter that answers is decided by your operator's routing — not by the app. A country menu in the app could only ever be a label; it could not move you to that country. That is why the picker (and its whole catalogue) was removed in this release.
+
+- **The engine chooses the endpoint.** It scans its built-in WARP ranges, measures them and connects to whichever edge answers best on your network at that moment.
+- **Smart Auto still does its real job:** fingerprinting the network's DPI and choosing the protocol / obfuscation ladder.
+- **Your own settings still win.** A hand-typed peer (`ip:port`) or a custom scan range in Settings pins the scan exactly as before, and quick reconnect works normally.
+- **No forced IP filtering.** Blocking exits by country is not reliable either — an experimental "never Iran" gate rejected almost every edge on real Iranian networks and left the app retrying until it gave up, so it was removed. Connection reliability comes first.
+
+### ⚡ Stability, resource usage and compatibility
+
+- **Memory leak fixed in the diagnostics log.** The log used to grow an immutable list without limit for the whole session — on a long connection it consumed steadily more RAM and made every new line more expensive. It is now a bounded 800-line ring buffer, UI updates are throttled to ~5 per second instead of one recomposition per line, and disk writes are batched onto a background thread. The log file itself is capped at 512 KiB with rotation.
+- **Idle CPU overhead cut sharply.** The VPN supervisor used to wake up every two seconds for the entire session just to ask whether the engine was alive. It now **blocks** on the engine process itself and wakes only when the process actually exits — so crash detection is *faster* than before while the CPU can stay in deep idle.
+- **No more busy-waiting after connect.** The 100-second, 250-millisecond polling loop that waited for the IP lookup was replaced with a proper suspending wait.
+- **Fewer threads during connection.** Geolocation probes now share a single low-priority thread pool instead of spawning a fresh thread per provider on every attempt, and port probing backs off adaptively instead of polling at a fixed rate.
+- **v2rayNG conflict resolved.** Aether's LAN-sharing bridge used ports **10808/10809** — exactly v2rayNG's default SOCKS and HTTP ports. With both apps installed, whichever started second failed to bind, or traffic was silently handed to the other tool's core. Aether now uses **10810/10811**, and additionally detects known neighbours (v2rayNG, Clash, Psiphon, Privoxy) before binding, naming the responsible app in the error message instead of showing a generic “port busy” failure.
+- **Signature / over-install issue fixed at the root.** Android refuses an update when the new APK is signed with a different certificate, which is what forced 1.2.1 users to uninstall and lose their settings. CI now extracts the signer's SHA-256 fingerprint from every release APK and compares it against a pinned value in `.github/expected-signer.txt`; if the certificate ever changes, **the build fails instead of publishing an APK users cannot install**. Combined with the persisted stable keystore, **1.2.1 users can install 1.2.2 directly over their existing app and keep all their settings** — no uninstall required. Version code moved from 5 to 6 (monotonic per-ABI codes in the 6000 range).
+
+- **Switching protocol no longer stalls the app.** Disconnecting and then connecting on a different protocol felt like it "took forever to start", on every protocol except Smart. Two real bugs caused it. First, stopping the engine was fire-and-forget: the app sent the process a polite terminate signal and immediately moved on, so the old engine was often still alive and still holding the local SOCKS5 port `127.0.0.1:1819` while the next one was already starting — the new attempt either could not bind or verified itself against the dying socket and had to time out and retry. The engine is now really waited for (and force-killed if it does not exit), and a new attempt waits for the local port to be released before it starts. Second, a connect tapped while the previous session was still winding down was **silently dropped** ("a run is already active → return"), which is exactly the "I pressed connect and nothing happened for a while" symptom; the new session now takes ownership, joins the old one, tears it down and starts immediately.
+- **MASQUE (and any hand-picked protocol) gets a real second chance.** A protocol chosen by hand used to get exactly **one** attempt with the full scan budget of the selected scan mode — up to 150 s on Balanced, 300 s on Thorough — and no fallback, while Smart mode walks a ladder of short, hardened attempts. On a network where UDP/QUIC is throttled that meant staring at "Connecting" for minutes and then failing. Now the chosen protocol runs a capped first pass exactly as configured, and if that fails the **same** protocol is retried with anti-DPI hardening (obfuscation on, plus HTTP/2, TLS fragmentation and ECH for MASQUE) on the full budget. The protocol you picked is never swapped for another one.
+- **Disconnect is instant again (30–50 s freeze fixed at the root).** Tapping disconnect could leave the button on "Disconnecting…" for up to a minute on every protocol. Root cause: the service supervisor parks on the engine process with `Process.waitFor`, which is a **blocking** Java call — and coroutine cancellation cannot interrupt a blocking call. The teardown asked the session to stop and then *waited for it to finish before killing anything*, so it sat inside that wait until the whole 60-second window expired (the log shows the engine being stopped exactly 60.0 s after connect, not when the button was tapped). Two changes fix it for good: the engine wait is now interruptible, so cancellation aborts it in milliseconds, and the teardown order was inverted — cancel, kill the natives immediately, flip the UI to idle, and only *then* reap the finished coroutine off the critical path. Reconnecting on another protocol follows the same order, so it no longer inherits the old session’s wait either. Stopping the engine also escalates to a hard kill after 250 ms instead of waiting seconds.
+- **The aurora animation is gone; the background is now a flat colour.** Three large radial gradients were being composited full-screen behind every screen for as long as the app was open. Even after the redraw rate was capped it still cost real GPU and CPU work on every frame budget the UI needed. The backdrop is now a single static fill that never invalidates — no animation runs behind the UI any more, so menus, sheets and the connect screen get the whole frame budget.
+- **The main menu no longer runs while it is closed.** Android's navigation drawer composes its contents even when the drawer is shut, so the diagnostics, sharing, advanced and about cards were live at all times, recomposing on every settings change and on every engine log line behind a panel nobody was looking at. They are now built only when the drawer is actually open.
+- **The diagnostics log only subscribes while it is open.** During a scan the engine emits hundreds of log lines; each one used to recompose the whole diagnostics card — and the drawer around it — even with the log console collapsed. Only the open console listens now.
+- **The Advanced sheet opens instantly.** Its ~40 controls used to be laid out in the same frame the sheet starts its slide-in animation, which visibly stuttered the opening. The sheet now animates in first and fills itself immediately afterwards.
+
+### 🔒 Full security audit
+
+**This project has undergone a 100% line-by-line security audit for v1.2.2, and the critical security vulnerabilities identified have been remediated according to mobile-application audit standards.** The complete report is published at [`docs/SECURITY_AUDIT_1.2.2.md`](docs/SECURITY_AUDIT_1.2.2.md) and covers every mandated area:
+
+| Area | Result |
+|---|---|
+| Hardcoded secrets & keys | **Clean.** No API keys, tokens, passwords or private keys in the app; all tunnel key material is generated at runtime inside the engine. |
+| Cryptography & protocols | **Clean.** No weak or deprecated primitives, no custom `TrustManager`/`HostnameVerifier`, no downgrade path; tunnel security rests on Noise/QUIC + TLS 1.3 key authentication. |
+| MitM exposure | **Not exploitable.** The only plaintext request is an anonymous IP-echo probe carrying no user data; tampering with it can at most show the wrong flag. |
+| DNS / IPv6 / real-IP leaks | **None.** Both IPv4 and IPv6 default routes are captured by the tunnel (the classic IPv6 leak is closed), and DNS-through-tunnel is actively verified before the UI reports “Connected”. |
+| Traffic bypass | **User-controlled only.** Split tunnelling is off by default; nothing leaves the tunnel unless you configure it. |
+| Local storage | **App-private.** Only preferences are stored — no credentials, no keys — and the log file is now bounded and rotated. |
+| Permissions & manifest | **Minimal.** `REQUEST_INSTALL_PACKAGES` removed; no location/contacts/storage/`QUERY_ALL_PACKAGES`; `android:debuggable` absent in release; `allowBackup` constrained by backup rules that exclude settings and logs; only the launcher activity is exported. |
+| Logging | **Safe.** Logcat output is compiled out of release builds, and no keys, DNS queries, hostnames or packet payloads are ever written. |
+| Dependencies & network config | **Hardened.** No ad, analytics or crash SDKs; native cores are built from source in CI; cleartext traffic is denied by default and user-installed CAs are not trusted. |
+
+One risk is accepted and disclosed openly rather than hidden: the fallback CI keystore in the repository is public by design — it guarantees update continuity, not authenticity. Always download from the official Releases page and verify the signer fingerprint.
+
+
+<details>
+<summary>🇮🇷 همین بخش به فارسی (ممیزی کامل امنیتی)</summary>
+
+<div dir="rtl">
+
+#### 🔒 ممیزی کامل امنیتی
+
+**این پروژه برای نسخهٔ ۱.۲.۲ تحت ممیزی امنیتی ۱۰۰ درصدی و خط‌به‌خط قرار گرفته و آسیب‌پذیری‌های امنیتی بحرانی شناسایی‌شده بر اساس استانداردهای ممیزی اپلیکیشن‌های موبایل رفع شده‌اند.** گزارش کامل در فایل [`docs/SECURITY_AUDIT_1.2.2.md`](docs/SECURITY_AUDIT_1.2.2.md) منتشر شده و تمام سرفصل‌های الزامی را پوشش می‌دهد:
+
+| حوزهٔ بررسی | نتیجه |
+|---|---|
+| کلیدها و اطلاعات حساس هاردکدشده | **پاک.** هیچ API Key، توکن، رمز عبور یا کلید خصوصی در برنامه وجود ندارد؛ تمام کلیدهای تونل در زمان اجرا داخل خود هسته تولید می‌شوند. |
+| رمزنگاری و پروتکل‌ها | **پاک.** هیچ الگوریتم ضعیف یا منسوخی استفاده نشده، هیچ <span dir="ltr">`TrustManager`</span>/<span dir="ltr">`HostnameVerifier`</span> سفارشی وجود ندارد و مسیر تنزل نسخه (Downgrade) باز نیست؛ امنیت تونل بر پایهٔ احراز کلید Noise/QUIC و TLS 1.3 است. |
+| امکان حملهٔ MitM | **قابل بهره‌برداری نیست.** تنها درخواست بدون رمزنگاری، یک پراب ناشناس تشخیص آی‌پی است که هیچ دادهٔ کاربری حمل نمی‌کند؛ دستکاری آن حداکثر باعث نمایش پرچم اشتباه می‌شود. |
+| نشت DNS / IPv6 / آی‌پی اصلی | **وجود ندارد.** هر دو مسیر پیش‌فرض IPv4 و IPv6 توسط تونل گرفته می‌شوند (نشت کلاسیک IPv6 بسته شده) و عبور DNS از داخل تونل پیش از اعلام «متصل» به‌صورت فعال راستی‌آزمایی می‌شود. |
+| عبور ترافیک از خارج تونل | **فقط با اجازهٔ کاربر.** تانل‌کردن تفکیکی به‌صورت پیش‌فرض خاموش است و تا زمانی که خودتان تنظیم نکنید هیچ ترافیکی بیرون از تونل نمی‌رود. |
+| ذخیره‌سازی محلی | **خصوصی برنامه.** فقط تنظیمات ذخیره می‌شود — نه اعتبارنامه‌ای و نه کلیدی — و فایل لاگ اکنون محدود و چرخشی است. |
+| مجوزها و مانیفست | **حداقلی.** مجوز <span dir="ltr">`REQUEST_INSTALL_PACKAGES`</span> حذف شد؛ هیچ دسترسی موقعیت مکانی/مخاطبین/حافظه/<span dir="ltr">`QUERY_ALL_PACKAGES`</span> درخواست نمی‌شود؛ <span dir="ltr">`android:debuggable`</span> در نسخهٔ انتشار وجود ندارد؛ <span dir="ltr">`allowBackup`</span> با قواعد پشتیبان‌گیری محدود شده که تنظیمات و لاگ‌ها را مستثنا می‌کند؛ تنها اکتیویتی اجراکننده export شده است. |
+| مدیریت لاگ | **ایمن.** خروجی Logcat در نسخهٔ انتشار اساساً کامپایل نمی‌شود و هیچ کلید، پرس‌وجوی DNS، نام دامنه یا محتوای بسته‌ای ثبت نمی‌گردد. |
+| کتابخانه‌ها و پیکربندی شبکه | **مقاوم‌سازی‌شده.** هیچ SDK تبلیغاتی، آنالیتیکس یا گزارش کرش وجود ندارد؛ هسته‌های نیتیو در CI از روی سورس بیلد می‌شوند؛ ترافیک بدون رمزنگاری به‌صورت پیش‌فرض مسدود است و گواهی‌های نصب‌شده توسط کاربر مورد اعتماد برنامه نیستند. |
+
+یک ریسک نیز به‌جای پنهان‌کاری، شفاف اعلام شده است: کی‌استور پشتیبانِ CI که در مخزن قرار دارد عمداً عمومی است — این کی‌استور تداوم به‌روزرسانی را تضمین می‌کند، نه اصالت را. همیشه از صفحهٔ رسمی انتشار دانلود کنید و اثر انگشت امضاکننده را بررسی نمایید.
+
+</div>
+
+</details>
+
+---
+
 ## What's new in v1.2.1
 
 This release makes connecting **faster and more honest**, fixes Persian-locale text bugs, and hardens security.
