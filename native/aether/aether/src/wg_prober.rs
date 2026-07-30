@@ -129,7 +129,8 @@ pub struct WgProbe {
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
-    let st = mode.strategy();
+    let mut st = mode.strategy();
+    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !crate::prober::host_has_ipv6().await {
@@ -256,12 +257,13 @@ async fn verify_one_wg(
         probe.local_ipv4,
         &probe.aethernoize,
         timeout,
+        None,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            log::debug!("wg probe {ip}:{port} -> {e}");
+            log::trace!("wg probe {ip}:{port} -> {e}");
             return None;
         }
     };
@@ -284,7 +286,7 @@ async fn verify_one_wg(
             Some(WgProbeResult { ip, port, rtt: http_rtt })
         }
         Err(e) => {
-            log::debug!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
+            log::trace!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
             None
         }
     }
@@ -327,15 +329,18 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
     let custom_v4 = custom_wg_cidrs_v4();
     let wg_v4_cidrs: Vec<String> = match &custom_v4 {
         Some(list) => list.clone(),
-        None => wireguard::WG_PREFIXES_V4.iter().map(|s| s.to_string()).collect(),
+        None => wireguard::wg_prefixes_v4().iter().map(|s| s.to_string()).collect(),
     };
 
     let mut anchors: Vec<IpAddr> = Vec::new();
     let mut pool: Vec<IpAddr> = Vec::new();
 
     if ip.want_v4() {
+        // Manual range mode pins the pool exactly, so the built-in seeds are
+        // deliberately skipped. Upstream 1.5.0 turned the seed/prefix consts
+        // into wg_seeds_v4()/wg_prefixes_v4() (Zero-Trust aware ordering).
         if custom_v4.is_none() {
-            for s in wireguard::WG_SEEDS_V4 {
+            for s in wireguard::wg_seeds_v4() {
                 if let Ok(a) = s.parse::<Ipv4Addr>() {
                     anchors.push(IpAddr::V4(a));
                 }
@@ -368,7 +373,7 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
             }
         }
         let per = if st.sample_per_cidr == 0 { 80 } else { st.sample_per_cidr };
-        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::WG_PREFIXES_V6
+        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::wg_prefixes_v6()
             .iter()
             .map(|c| sample_cidr_v6(c, per, wireguard::WG_PREFIXES_V4))
             .collect();

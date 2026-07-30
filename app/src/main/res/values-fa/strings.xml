@@ -166,4 +166,37 @@
 
     <!-- انتخاب لوکیشن (جدید در ۱.۲.۲) -->
 
+
+    <!-- درباره: نسخهٔ هسته (همتای نسخهٔ ویندوز) -->
+    <string name="about_core_version">نسخهٔ هسته (Core) %1$s</string>
+
+    <!-- قابلیت‌های هستهٔ ۱.۵.۰ -->
+    <string name="section_zerotrust">Zero Trust (سازمانی)</string>
+    <string name="team_auth_label">روش عضویت</string>
+    <string name="team_auth_off">خاموش</string>
+    <string name="team_auth_service">توکن سرویس</string>
+    <string name="team_auth_email">کد ایمیلی</string>
+    <string name="team_auth_token">توکن عضویت</string>
+    <string name="team_auth_desc">اتصال به یک سازمان Cloudflare Zero Trust به‌جای WARP شخصی. برای استفادهٔ معمولی خاموش بماند.</string>
+    <string name="team_label">نام تیم</string>
+    <string name="team_hint">acme</string>
+    <string name="team_help">فقط نام؛ مثلاً acme یعنی acme.cloudflareaccess.com</string>
+    <string name="access_id_label">شناسهٔ کلاینت</string>
+    <string name="access_secret_label">کلید محرمانه</string>
+    <string name="access_email_label">ایمیل سازمانی</string>
+    <string name="access_token_label">توکن عضویت</string>
+    <string name="access_secret_help">رمزنگاری‌شده با کلید سخت‌افزاری ذخیره می‌شود و هرگز به‌صورت آرگومان خط فرمان به هسته داده نمی‌شود.</string>
+    <string name="gateway_title">استفاده از Gateway سازمان</string>
+    <string name="gateway_desc">ترافیک HTTP/HTTPS را از پروکسی فیلترینگ سازمان عبور می‌دهد. یک پرش اضافه می‌کند و سازمان می‌تواند مرور شما را ثبت کند؛ جز در صورت نیاز خاموش بماند.</string>
+
+    <string name="section_routes">قواعد مسیریابی</string>
+    <string name="route_block_label">هرگز وصل نشو (بلاک)</string>
+    <string name="route_block_hint">ads.example.com, port:25</string>
+    <string name="route_direct_label">بدون تونل (مستقیم)</string>
+    <string name="route_direct_hint">private, bank.example.com</string>
+    <string name="routes_help">با کاما جدا کنید. پشتیبانی از example.com و full: و keyword: و regexp: و 10.0.0.0/8 و port:25 و private. ابتدا بلاک بررسی می‌شود، سپس مستقیم.</string>
+
+    <string name="dns_label">DNS داخل تونل</string>
+    <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
+    <string name="dns_help">برای مقدار پیش‌فرض هسته (1.1.1.1, 1.0.0.1) خالی بگذارید. ورودی‌های نامعتبر نادیده گرفته می‌شوند.</string>
 </resources>

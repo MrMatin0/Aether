@@ -36,6 +36,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.R
 
 private const val URL_ORIGINAL_GITHUB = "https://github.com/CluvexStudio/Aether"
@@ -66,6 +67,8 @@ private val PORT_IMPROVEMENTS = listOf(
     "Share the VPN over Wi‑Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops & other phones",
     "Advanced settings reachable right from the home screen",
     "Signed per-ABI release APKs published automatically from GitHub Actions",
+    "Engine version shown in About, so the bundled core is always verifiable",
+    "Zero Trust (WARP for organizations), split routing rules and custom in-tunnel DNS",
 )
 
 /**
@@ -131,6 +134,17 @@ fun AboutPanel(modifier: Modifier = Modifier) {
 
                     Text(
                         text = stringResource(R.string.about_version, versionName),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // Engine (core) version — same idea as the Windows edition's
+                    // About page, which shows app version AND core version so a
+                    // user can verify the bundled engine is current.
+                    // BuildConfig.CORE_VERSION is stamped at build time from
+                    // native/aether/CORE_VERSION, i.e. from whatever
+                    // scripts/sync-core.sh actually vendored for THIS build.
+                    Text(
+                        text = stringResource(R.string.about_core_version, BuildConfig.CORE_VERSION),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

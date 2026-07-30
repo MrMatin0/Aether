@@ -167,4 +167,37 @@
          from the officially signed GitHub Release page. -->
 
 
+
+    <!-- About: engine/core version (parity with the Windows edition) -->
+    <string name="about_core_version">Engine (core) version %1$s</string>
+
+    <!-- Engine v1.5.0 features -->
+    <string name="section_zerotrust">Zero Trust (organization)</string>
+    <string name="team_auth_label">Enrolment method</string>
+    <string name="team_auth_off">Off</string>
+    <string name="team_auth_service">Service token</string>
+    <string name="team_auth_email">E-mail code</string>
+    <string name="team_auth_token">Enrolment token</string>
+    <string name="team_auth_desc">Join a Cloudflare Zero Trust organization instead of consumer WARP. Leave off for normal use.</string>
+    <string name="team_label">Team name</string>
+    <string name="team_hint">acme</string>
+    <string name="team_help">Just the name — acme means acme.cloudflareaccess.com.</string>
+    <string name="access_id_label">Client ID</string>
+    <string name="access_secret_label">Client secret</string>
+    <string name="access_email_label">Work e-mail</string>
+    <string name="access_token_label">Enrolment token</string>
+    <string name="access_secret_help">Stored encrypted with a hardware-backed key and passed to the engine out of band, never on the command line.</string>
+    <string name="gateway_title">Use organization Gateway</string>
+    <string name="gateway_desc">Sends HTTP/HTTPS through your organization\'s filtering proxy. Adds a hop and lets the organization log your browsing — off unless required.</string>
+
+    <string name="section_routes">Routing rules</string>
+    <string name="route_block_label">Never connect (block)</string>
+    <string name="route_block_hint">ads.example.com, port:25</string>
+    <string name="route_direct_label">Bypass tunnel (direct)</string>
+    <string name="route_direct_hint">private, bank.example.com</string>
+    <string name="routes_help">Comma separated. Supports example.com, full:, keyword:, regexp:, 10.0.0.0/8, port:25 and private. Block is checked first, then direct.</string>
+
+    <string name="dns_label">DNS inside the tunnel</string>
+    <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
+    <string name="dns_help">Leave empty for the engine default (1.1.1.1, 1.0.0.1). Invalid entries are ignored.</string>
 </resources>

@@ -15,6 +15,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.TeamAuth
 
 private val Context.dataStore by preferencesDataStore(name = "aether_profile")
 
@@ -39,7 +40,25 @@ class ProfileStore(private val context: Context) {
         val proxy = booleanPreferencesKey("proxy")
         val split = stringPreferencesKey("split")
         val splitApps = stringPreferencesKey("splitApps")
+        // Added in 1.2.3 (engine v1.5.0)
+        val dns = stringPreferencesKey("dns")
+        val team = stringPreferencesKey("team")
+        val teamAuth = stringPreferencesKey("teamAuth")
+        val accessId = stringPreferencesKey("accessId")
+        val accessEmail = stringPreferencesKey("accessEmail")
+        val gateway = booleanPreferencesKey("gateway")
+        val routeBlock = stringPreferencesKey("routeBlock")
+        val routeDirect = stringPreferencesKey("routeDirect")
     }
+
+    /**
+     * Zero Trust secrets (service-token secret + enrolment JWT) are NOT kept in
+     * the DataStore preferences file. That file is plain protobuf inside the app
+     * sandbox, so a device backup or an adb dump on a rooted phone would expose
+     * a long-lived organization credential. They live in [SecretStore] instead,
+     * sealed with a hardware-backed AES-GCM key from the Android Keystore.
+     */
+    private val secrets = SecretStore(context)
 
     val profile: Flow<ConnectionProfile> = context.dataStore.data.map { prefs ->
         val d = ConnectionProfile()
@@ -68,6 +87,17 @@ class ProfileStore(private val context: Context) {
                 ?.let { runCatching { SplitMode.valueOf(it) }.getOrNull() } ?: SplitMode.OFF,
             splitApps = prefs[Keys.splitApps]
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            dnsServers = prefs[Keys.dns] ?: "",
+            team = prefs[Keys.team] ?: "",
+            teamAuth = prefs[Keys.teamAuth]
+                ?.let { runCatching { TeamAuth.valueOf(it) }.getOrNull() } ?: TeamAuth.OFF,
+            accessClientId = prefs[Keys.accessId] ?: "",
+            accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
+            accessEmail = prefs[Keys.accessEmail] ?: "",
+            accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
+            gateway = prefs[Keys.gateway] ?: false,
+            routeBlock = prefs[Keys.routeBlock] ?: "",
+            routeDirect = prefs[Keys.routeDirect] ?: "",
         )
     }
 
@@ -90,6 +120,20 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.proxy] = profile.proxyMode
             prefs[Keys.split] = profile.splitMode.name
             prefs[Keys.splitApps] = profile.splitApps.joinToString(",")
+            prefs[Keys.dns] = profile.dnsServers
+            prefs[Keys.team] = profile.team
+            prefs[Keys.teamAuth] = profile.teamAuth.name
+            prefs[Keys.accessId] = profile.accessClientId
+            prefs[Keys.accessEmail] = profile.accessEmail
+            prefs[Keys.gateway] = profile.gateway
+            prefs[Keys.routeBlock] = profile.routeBlock
+            prefs[Keys.routeDirect] = profile.routeDirect
         }
+        // Secrets go to the Keystore-sealed store, never to the prefs file.
+        secrets.write(SecretStore.ACCESS_SECRET, profile.accessClientSecret)
+        secrets.write(SecretStore.ACCESS_TOKEN, profile.accessToken)
     }
+
+    /** Wipes the sealed Zero Trust secrets (used by "Reset settings"). */
+    fun clearSecrets() = secrets.clear()
 }

@@ -15,8 +15,8 @@
 #   2. Compare it with native/aether/CORE_VERSION (currently vendored).
 #   3. If upstream is NEWER, fetch that exact tag and MERGE this app's own
 #      engine patches onto the new sources (see PATCHED_FILES).
-#   4. Record the upgrade in README.md / README.fa.md under the 1.2.2
-#      changelog, so documentation can never drift from what was built.
+#   4. Record the upgrade in README.md / README.fa.md at the core-sync
+#      anchors, so documentation can never drift from what was built.
 #
 # HOW THE APP PATCHES SURVIVE AN UPGRADE (root fix, 1.2.2)
 # --------------------------------------------------------
@@ -87,7 +87,9 @@ GH_API="${CORE_API_BASE:-${SCHEME}://api.${GH_HOST}}"
 GH_WEB="${CORE_GIT_BASE:-${SCHEME}://${GH_HOST}}"
 
 # The baseline this app was engineered against; also the floor we never go below.
-BASELINE="1.4"
+# 1.2.3: raised to 1.5.0 (the release that fixed the mislabelled 1.4/1.3.0 vendor
+# and rebased the app's engine patches onto the real upstream baseline).
+BASELINE="1.5.0"
 
 # App-specific patches carried on top of the upstream engine. These are MERGED
 # (three-way) onto the new upstream sources, never blind-copied over them.
@@ -346,7 +348,8 @@ if [[ -n "$NEW_CAPS" ]]; then
 fi
 
 # ---------------------------------------------------------------- document
-# MANDATORY: every core upgrade documents itself in the 1.2.2 changelog.
+# MANDATORY: every core upgrade documents itself in the current changelog
+# (the core-sync:en / core-sync:fa anchors, which live in the 1.2.3 section).
 #
 # NOTE the "--" before the pattern: every changelog line starts with "- ", and
 # without it grep parses the line as a bundle of options and dies with

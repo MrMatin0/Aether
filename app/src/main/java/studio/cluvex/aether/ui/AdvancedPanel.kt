@@ -51,7 +51,9 @@ import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.ui.components.AppPickerDialog
 import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.LtrOutlinedTextField
@@ -253,6 +255,151 @@ fun AdvancedPanel(
                         onChange = { onProfileChange(profile.copy(quickReconnect = it)) },
                     )
 
+                    // ---------- DNS inside the tunnel (engine v1.5.0) ----------
+                    SettingLabel(stringResource(R.string.dns_label))
+                    // BiDi: resolver addresses are LTR technical text.
+                    LtrOutlinedTextField(
+                        value = profile.dnsServers,
+                        onValueChange = { onProfileChange(profile.copy(dnsServers = it)) },
+                        enabled = enabled,
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.dns_label)) },
+                        placeholder = { Text(stringResource(R.string.dns_hint)) },
+                        supportingText = { Text(stringResource(R.string.dns_help)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    // ---------- Routing rules (engine v1.5.0) ----------
+                    SectionHeader(stringResource(R.string.section_routes))
+
+                    LtrOutlinedTextField(
+                        value = profile.routeBlock,
+                        onValueChange = { onProfileChange(profile.copy(routeBlock = it)) },
+                        enabled = enabled,
+                        singleLine = false,
+                        label = { Text(stringResource(R.string.route_block_label)) },
+                        placeholder = { Text(stringResource(R.string.route_block_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    LtrOutlinedTextField(
+                        value = profile.routeDirect,
+                        onValueChange = { onProfileChange(profile.copy(routeDirect = it)) },
+                        enabled = enabled,
+                        singleLine = false,
+                        label = { Text(stringResource(R.string.route_direct_label)) },
+                        placeholder = { Text(stringResource(R.string.route_direct_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    HelperText(stringResource(R.string.routes_help))
+                    Spacer(Modifier.height(8.dp))
+
+                    // ---------- Zero Trust / organization (engine v1.5.0) ----------
+                    SectionHeader(stringResource(R.string.section_zerotrust))
+
+                    SettingLabel(stringResource(R.string.team_auth_label))
+                    DropdownSelector(
+                        options = TeamAuth.entries,
+                        selected = profile.teamAuth,
+                        onSelect = { onProfileChange(profile.copy(teamAuth = it)) },
+                        label = { teamAuthLabel(it) },
+                        enabled = enabled,
+                    )
+                    HelperText(stringResource(R.string.team_auth_desc))
+
+                    if (profile.teamAuth != TeamAuth.OFF) {
+                        Spacer(Modifier.height(12.dp))
+                        LtrOutlinedTextField(
+                            value = profile.team,
+                            onValueChange = { onProfileChange(profile.copy(team = it)) },
+                            enabled = enabled,
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.team_label)) },
+                            placeholder = { Text(stringResource(R.string.team_hint)) },
+                            supportingText = { Text(stringResource(R.string.team_help)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+
+                        when (profile.teamAuth) {
+                            TeamAuth.SERVICE_TOKEN -> {
+                                Spacer(Modifier.height(12.dp))
+                                LtrOutlinedTextField(
+                                    value = profile.accessClientId,
+                                    onValueChange = {
+                                        onProfileChange(profile.copy(accessClientId = it))
+                                    },
+                                    enabled = enabled,
+                                    singleLine = true,
+                                    label = { Text(stringResource(R.string.access_id_label)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                // Masked: a service-token secret is an
+                                // organization credential, so it must not be
+                                // readable over someone's shoulder or land in a
+                                // screenshot.
+                                LtrOutlinedTextField(
+                                    value = profile.accessClientSecret,
+                                    onValueChange = {
+                                        onProfileChange(profile.copy(accessClientSecret = it))
+                                    },
+                                    enabled = enabled,
+                                    singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    label = { Text(stringResource(R.string.access_secret_label)) },
+                                    supportingText = {
+                                        Text(stringResource(R.string.access_secret_help))
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+
+                            TeamAuth.EMAIL -> {
+                                Spacer(Modifier.height(12.dp))
+                                LtrOutlinedTextField(
+                                    value = profile.accessEmail,
+                                    onValueChange = {
+                                        onProfileChange(profile.copy(accessEmail = it))
+                                    },
+                                    enabled = enabled,
+                                    singleLine = true,
+                                    label = { Text(stringResource(R.string.access_email_label)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+
+                            TeamAuth.TOKEN -> {
+                                Spacer(Modifier.height(12.dp))
+                                LtrOutlinedTextField(
+                                    value = profile.accessToken,
+                                    onValueChange = {
+                                        onProfileChange(profile.copy(accessToken = it))
+                                    },
+                                    enabled = enabled,
+                                    singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    label = { Text(stringResource(R.string.access_token_label)) },
+                                    supportingText = {
+                                        Text(stringResource(R.string.access_secret_help))
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+
+                            TeamAuth.OFF -> Unit
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                        ToggleRow(
+                            title = stringResource(R.string.gateway_title),
+                            description = stringResource(R.string.gateway_desc),
+                            checked = profile.gateway,
+                            enabled = enabled,
+                            onChange = { onProfileChange(profile.copy(gateway = it)) },
+                        )
+                    }
+
                     // ---------- Routing ----------
                     SectionHeader(stringResource(R.string.section_routing))
 
@@ -450,6 +597,14 @@ private fun endpointLabel(m: EndpointMode): String = when (m) {
     EndpointMode.AUTO -> stringResource(R.string.endpoint_auto)
     EndpointMode.MANUAL_PEER -> stringResource(R.string.endpoint_peer)
     EndpointMode.MANUAL_RANGE -> stringResource(R.string.endpoint_range)
+}
+
+@Composable
+private fun teamAuthLabel(a: TeamAuth): String = when (a) {
+    TeamAuth.OFF -> stringResource(R.string.team_auth_off)
+    TeamAuth.SERVICE_TOKEN -> stringResource(R.string.team_auth_service)
+    TeamAuth.EMAIL -> stringResource(R.string.team_auth_email)
+    TeamAuth.TOKEN -> stringResource(R.string.team_auth_token)
 }
 
 @Composable

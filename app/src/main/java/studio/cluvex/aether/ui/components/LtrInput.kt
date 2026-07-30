@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
@@ -66,6 +67,9 @@ fun LtrOutlinedTextField(
     placeholder: @Composable (() -> Unit)? = null,
     supportingText: @Composable (() -> Unit)? = null,
     keyboardType: KeyboardType = KeyboardType.Ascii,
+    // Added in 1.2.3: lets Zero Trust secrets be masked while still getting the
+    // LTR/BiDi handling every technical field in this app needs.
+    visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -95,6 +99,7 @@ fun LtrOutlinedTextField(
             placeholder = placeholder,
             supportingText = supportingText,
             interactionSource = interactionSource,
+            visualTransformation = visualTransformation,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             textStyle = LocalTextStyle.current.copy(
                 textDirection = TextDirection.Ltr,

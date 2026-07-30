@@ -33,6 +33,17 @@ enum class EndpointMode { AUTO, MANUAL_PEER, MANUAL_RANGE }
 enum class SplitMode { OFF, INCLUDE, EXCLUDE }
 
 /**
+ * How the device enrols into a Cloudflare Zero Trust ("WARP for teams")
+ * organization. New in engine v1.5.0 (see zerotrust.rs).
+ *  - OFF            : consumer WARP, no organization (default).
+ *  - SERVICE_TOKEN  : headless enrolment with an Access service token id+secret.
+ *  - EMAIL          : one-time code sent to a work e-mail address.
+ *  - TOKEN          : an enrolment JWT the user already obtained in a browser
+ *                     at https://<team>.cloudflareaccess.com/warp.
+ */
+enum class TeamAuth { OFF, SERVICE_TOKEN, EMAIL, TOKEN }
+
+/**
  * User-tunable connection profile. Knows how to turn itself into the engine's
  * CLI arguments and environment variables.
  */
@@ -86,7 +97,50 @@ data class ConnectionProfile(
     /** Package names the split policy applies to. */
     val splitApps: List<String> = emptyList(),
 
+    // ---- Added in 1.2.3 (engine v1.5.0 feature parity) ----
+
+    /**
+     * Resolvers used INSIDE the tunnel (engine `--dns`). Blank = engine default
+     * (1.1.1.1, 1.0.0.1). Comma separated; a bare IP implies port 53.
+     */
+    val dnsServers: String = "",
+
+    /**
+     * Zero Trust organization ("team") name, e.g. "acme" for
+     * acme.cloudflareaccess.com. Blank = consumer WARP.
+     */
+    val team: String = "",
+    /** Which Zero Trust enrolment method to use. */
+    val teamAuth: TeamAuth = TeamAuth.OFF,
+    /** Access service-token client id (used when [teamAuth] is SERVICE_TOKEN). */
+    val accessClientId: String = "",
+    /**
+     * Access service-token client secret. SECURITY: never emitted as a CLI
+     * argument (argv is world-readable via /proc on rooted devices) — it is
+     * handed to the engine through its environment instead.
+     */
+    val accessClientSecret: String = "",
+    /** Work e-mail for the one-time-code flow (used when [teamAuth] is EMAIL). */
+    val accessEmail: String = "",
+    /** Pre-obtained enrolment JWT (used when [teamAuth] is TOKEN). Env-only. */
+    val accessToken: String = "",
+    /**
+     * Route http/https through the organization's Gateway proxy so its
+     * filtering and logging apply. Off by default: it adds a hop inside the
+     * tunnel AND makes the organization able to log browsing.
+     */
+    val gateway: Boolean = false,
+
+    /** Destinations that must never reach the network at all (engine `--route-block`). */
+    val routeBlock: String = "",
+    /** Destinations sent straight out, bypassing the tunnel (engine `--route-direct`). */
+    val routeDirect: String = "",
+
 ) {
+    /** True when a Zero Trust organization is configured and usable. */
+    val hasTeam: Boolean
+        get() = teamAuth != TeamAuth.OFF && team.isNotBlank()
+
     /** True when the user pinned one specific gateway by hand. */
     val hasManualPeer: Boolean
         get() = endpointMode == EndpointMode.MANUAL_PEER && manualPeer.isNotBlank()
@@ -140,6 +194,33 @@ data class ConnectionProfile(
         if (ech) { args += "--ech"; args += "auto" }
         if (keepalive > 0) { args += "--keepalive"; args += keepalive.toString() }
 
+        // ---- engine v1.5.0 ----
+
+        // In-tunnel resolvers. Sanitised so a malformed entry can never inject
+        // a second CLI token (the engine itself also re-validates each entry).
+        sanitizedDns().takeIf { it.isNotEmpty() }?.let {
+            args += "--dns"
+            args += it.joinToString(",")
+        }
+
+        // Zero Trust: only the non-secret team name travels via argv. The id,
+        // secret, token and e-mail go through the environment (see toEnv).
+        if (hasTeam) {
+            args += "--team"
+            args += team.trim()
+            if (gateway) args += "--gateway"
+        }
+
+        // Split routing rules. Block is evaluated before direct by the engine.
+        sanitizedRules(routeBlock).takeIf { it.isNotEmpty() }?.let {
+            args += "--route-block"
+            args += it.joinToString(",")
+        }
+        sanitizedRules(routeDirect).takeIf { it.isNotEmpty() }?.let {
+            args += "--route-direct"
+            args += it.joinToString(",")
+        }
+
         return args
     }
 
@@ -160,7 +241,57 @@ data class ConnectionProfile(
             put("AETHER_MASQUE_CIDRS", userRange)
             put("AETHER_WG_CIDRS", userRange)
         }
+
+        // ---- Zero Trust credentials (engine v1.5.0) ----
+        //
+        // SECURITY: these are passed as environment variables, NOT as CLI
+        // arguments. On Android every local app can read /proc/<pid>/cmdline
+        // of a process it can see, but the environment block is only readable
+        // by the process owner. The engine reads exactly these names in
+        // zerotrust.rs::TeamSettings::from_env().
+        if (hasTeam) {
+            when (teamAuth) {
+                TeamAuth.SERVICE_TOKEN -> {
+                    accessClientId.trim().takeIf { it.isNotEmpty() }
+                        ?.let { put("AETHER_ACCESS_CLIENT_ID", it) }
+                    accessClientSecret.trim().takeIf { it.isNotEmpty() }
+                        ?.let { put("AETHER_ACCESS_CLIENT_SECRET", it) }
+                }
+                TeamAuth.EMAIL ->
+                    accessEmail.trim().takeIf { it.isNotEmpty() }
+                        ?.let { put("AETHER_ACCESS_EMAIL", it) }
+                TeamAuth.TOKEN ->
+                    accessToken.trim().takeIf { it.isNotEmpty() }
+                        ?.let { put("AETHER_ACCESS_TOKEN", it) }
+                TeamAuth.OFF -> Unit
+            }
+        }
     }
+
+    /**
+     * Validated resolver list for `--dns`. Accepts `1.1.1.1` or `1.1.1.1:53`
+     * and drops anything else, so a stray space or shell metacharacter in the
+     * settings field can never become a separate engine argument.
+     */
+    fun sanitizedDns(): List<String> = dnsServers
+        .split(',', ' ', ';', '\n')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && DNS_ENTRY.matches(it) }
+        .distinct()
+        .take(MAX_DNS_SERVERS)
+
+    /**
+     * Validated routing-rule list. Mirrors the grammar documented by the
+     * engine (`example.com`, `full:`, `keyword:`, `regexp:`, CIDR, `port:`,
+     * `private`) and rejects entries containing a comma, whitespace or a shell
+     * metacharacter, which would otherwise split into extra arguments.
+     */
+    fun sanitizedRules(raw: String): List<String> = raw
+        .split(',', '\n')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && RULE_ENTRY.matches(it) }
+        .distinct()
+        .take(MAX_ROUTE_RULES)
 
     /**
      * How long to wait for the engine to open the local SOCKS5 port before
@@ -186,5 +317,16 @@ data class ConnectionProfile(
         val MTU_PRESETS = listOf(1280, 1380, 1420, 1500, 8500)
         /** Keepalive presets offered in the UI (0 = engine default). */
         val KEEPALIVE_PRESETS = listOf(0, 10, 25, 45)
+
+        /** Hard caps so a pasted blob can't build a gigantic argv. */
+        const val MAX_DNS_SERVERS = 8
+        const val MAX_ROUTE_RULES = 256
+
+        /** `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port). */
+        private val DNS_ENTRY =
+            Regex("^(?:\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9A-Fa-f:]+])(?::\\d{1,5})?$")
+
+        /** One routing-rule token: no comma, no whitespace, no shell metacharacters. */
+        private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^\$+?()|{}\\\\]{1,200}$")
     }
 }
