@@ -6,6 +6,48 @@
 
 ---
 
+## What's new in v1.2.3
+
+This release upgrades the bundled engine to **core v1.5.0**, exposes everything
+new that core added to the Android UI, brings the About panel to parity with the
+Windows edition, and ships a fresh security audit.
+
+### 🚀 Engine upgraded to core v1.5.0 — and the app patches were rebased properly
+
+- **The core is now v1.5.0.** The previous release pinned `CORE_VERSION` at `1.4`, but the sources actually vendored were upstream **v1.3.0** — so the automatic merge-base logic had nothing valid to compare against and silently dropped the app's own engine patches. The baseline was identified, the patches were re-applied with a genuine **three-way merge**, and `native/aether/.upstream-baseline/` was repaired so the next automatic upgrade has a real merge base.
+- **Upstream refactors absorbed, app features kept.** Core v1.5.0 turned the endpoint-range constants into functions (`masque_cidrs_v4()`, `wg_prefixes_v4()`, `wg_seeds_v4()`) with Zero-Trust-aware ordering. Both merge conflicts were resolved by **adopting upstream's new ordering** while keeping the app's manual-range override intact. The merged files now differ from pure upstream by nothing but the additive patch.
+<!-- core-sync:en -->
+
+### 🆕 Everything new in core v1.5.0 is now in the UI
+
+Core v1.5.0 was not just a version bump — it added whole new modules
+(`zerotrust.rs`, `routing.rs`, `apifront.rs`, `sysprofile.rs`). The
+user-facing options are all wired into **Advanced settings** now:
+
+- **Zero Trust (WARP for organizations).** Join a Cloudflare Zero Trust organization instead of consumer WARP. Four enrolment methods are offered: off, **service token** (client id + secret), **e-mail one-time code**, and a **pre-obtained enrolment token**. The organization **Gateway** proxy is a separate opt-in toggle.
+- **Routing rules.** Two new lists decide where traffic goes: **block** (never reaches the network at all) and **direct** (bypasses the tunnel). Both accept the engine's full grammar — `example.com`, `full:`, `keyword:`, `regexp:`, `10.0.0.0/8`, `port:25`, `port:3000-3010` and `private`. Block is evaluated first, then direct, otherwise the tunnel is used.
+- **Custom DNS inside the tunnel.** The resolvers used *inside* the tunnel are now configurable; leaving the field empty keeps the engine default (1.1.1.1, 1.0.0.1).
+- **Internal improvements inherited for free.** `sysprofile.rs` tunes scan concurrency and socket buffers to the device's CPU/RAM tier, and `apifront.rs` presents legacy TLS fingerprints to blend into censored networks. Neither needs a setting, and neither weakens the tunnel's own cryptography.
+
+### ℹ️ The engine version is now visible in About (parity with the Windows edition)
+
+- The Windows edition's About page shows the **app version and the core version** side by side, so a user can verify the bundled engine is current. The Android About panel now does exactly the same: a new **"Engine (core) version"** row sits under the app version.
+- The value comes from `BuildConfig.CORE_VERSION`, which is stamped at build time from `native/aether/CORE_VERSION` — i.e. from whatever the core-sync step actually vendored for *that* build. It can never drift from the engine that is really shipping.
+
+### 🔐 Security
+
+- **A new 0-to-100 security audit was performed for this release and scored 88/100.** The full report is at [`docs/SECURITY_AUDIT_1.2.3.md`](docs/SECURITY_AUDIT_1.2.3.md).
+- **Organization secrets never touch the command line.** On Android any app can read `/proc/<pid>/cmdline` of a process it can see, so a service-token secret in argv would be far too widely readable. Only the non-secret team name and the `--gateway` flag travel as arguments; the client id, client secret, enrolment token and e-mail are handed to the engine through its **environment**, which is exactly where the core reads them.
+- **Secrets are sealed with a hardware-backed key.** The new `SecretStore` encrypts the service-token secret and the enrolment JWT with a non-exportable **AES-256-GCM** key generated inside the **Android Keystore**, instead of leaving them in the plain DataStore preferences file where a backup or a rooted-device dump would expose them. The credential fields are masked in the UI.
+- **The new free-form options are validated before they become arguments.** DNS entries and routing rules are checked against a strict allow-list, de-duplicated and hard-capped (8 resolvers, 256 rules), so pasted text containing whitespace or shell metacharacters can never split into extra engine arguments.
+- **The Gateway toggle is labelled honestly.** Its description states that enabling it adds a hop inside the tunnel and lets the organization log your browsing — it is off unless you need it.
+
+### 📦 Version
+
+- App version **1.2.3**, version code **7** (per-ABI codes in the 7000 range). Same signing certificate as 1.2.2, so **1.2.2 users can install this directly over their existing app and keep all their settings** — no uninstall required.
+
+---
+
 ## What's new in v1.2.2
 
 This release moves engine maintenance into the build pipeline, **removes the in-app updater**, removes the country picker (it could never really choose a country) and hands endpoint selection back to the engine, and lands a broad performance, compatibility and security pass over the 1.2.1 code.
@@ -21,7 +63,6 @@ This release moves engine maintenance into the build pipeline, **removes the in-
 - **New engine capabilities are surfaced, not hidden.** After an upgrade the script scans the new core for command-line capabilities that the UI does not expose yet and reports them in the build log and in this changelog, so no engine feature can ship without a matching UI decision.
 - **The build documents itself.** After a successful upgrade, CI edits this README (and the Persian one), records the new core version in this section, and commits the change back to the branch. The shipped engine version and the documentation can no longer drift apart.
 - **The engine version is visible in the app.** A `CORE_VERSION` build field replaces the old repository constant and is shown in the About panel.
-<!-- core-sync:en -->
 
 ### 🗑️ In-app update system removed
 
