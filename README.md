@@ -6,6 +6,29 @@
 
 ---
 
+## What's new in v1.2.4
+
+- **Kill Switch and Strict Kill Switch**: on an unexpected drop, a blocking blackhole TUN stays up so no traffic leaks outside the VPN; Strict mode keeps blocking even after a manual disconnect until you lift it yourself.
+- **IPv6 Leak Protection**: new toggle, on by default; the IPv6 default route is kept inside the tunnel.
+- **Smart Reconnect with a retry limit**: the number of automatic reconnect attempts is configurable (3 to 20) before an error is reported.
+- **Per-app internet blocking**: a newly added userspace filter bridge resolves each flow's owning app and drops blocked apps' traffic; it replaces the default hev forwarder only while this feature is enabled, so the default path stays untouched.
+- **Advanced engine settings**: Fragment Size/Delay ranges, No Data Check, TLS Groups, Validate/Reconnect Secs, No Profile Retry and the core log level, all validated and mapped only to flags the bundled native core actually supports.
+- **New UI sections**: "Security & stability" and "Advanced engine settings" in the Advanced panel, fully localized (English + فارسی) and persisted in DataStore and the profile codec.
+- **"Works 1-2 minutes, then no site opens" fixed**: a connection watchdog probes the tunnel end-to-end every 30 seconds and restarts the engine on sustained failure, and the tunnel's idle timeouts were raised (TCP 60 s to 5 min, UDP to 120 s).
+- **Periodic drop-outs fixed at the root**: the watchdog probe is now multi-attempt and multi-target and restarts the engine only after three consecutive failed checks, so brief, self-healing network stalls no longer kill a healthy session and force a long endpoint rescan.
+- **Desktop-parity info row**: Protocol, Endpoint and live Latency now sit directly under the IP badge (ported from the Windows edition); the old standalone ping badge was removed.
+- **Security**: a fresh 0-100 security audit was performed and scored **92/100** (full report: [`docs/SECURITY_AUDIT_1.2.4.md`](docs/SECURITY_AUDIT_1.2.4.md)):
+  | Area | Result |
+  | --- | --- |
+  | 1. Keys & secrets | Zero Trust secrets sealed in the Android Keystore (AES-GCM); no hardcoding; passed to the engine only via env |
+  | 2. Cryptography & protocols | WireGuard and MASQUE/QUIC with TLS 1.3, ECH and ClientHello fragmentation; no custom crypto |
+  | 3. Data leaks | Full IPv4/IPv6 routing, in-tunnel DNS, Kill Switch; the only public egress is the IP badge's geolocation probe |
+  | 4. Local storage | Private DataStore, `allowBackup=false`, no exported Provider |
+  | 5. Permissions & manifest | Minimal permissions, no `QUERY_ALL_PACKAGES` or `debuggable` |
+  | 6. Logs | In-memory only; engine output reaches Logcat only in debug builds |
+  | 7. Code quality & network | Cleartext denied app-wide, proxies bound to 127.0.0.1, input validation; watchdog self-DoS fixed |
+- **Version**: app 1.2.4 (version code 8).
+
 ## What's new in v1.2.3
 
 This release upgrades the bundled engine to **core v1.5.0**, exposes everything

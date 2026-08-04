@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
@@ -114,6 +115,21 @@ object ProfileCodec {
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
         add("splitApps=${p.splitApps.joinToString(",")}")
+        // Added in 1.2.4 (feature parity)
+        add("kill=${p.killSwitch}")
+        add("strictKill=${p.strictKillSwitch}")
+        add("v6leak=${p.ipv6LeakProtection}")
+        add("smartRe=${p.smartReconnect}")
+        add("reLimit=${p.reconnectRetryLimit}")
+        add("fSize=${p.fragmentSize}")
+        add("fDelay=${p.fragmentDelay}")
+        add("noDataCheck=${p.noDataCheck}")
+        add("tlsGroups=${p.tlsGroups}")
+        add("valSecs=${p.validateSecs}")
+        add("recSecs=${p.reconnectSecs}")
+        add("noProfRetry=${p.noProfileRetry}")
+        add("coreLog=${p.coreLogLevel.name}")
+        add("blockedApps=${p.blockedApps.joinToString(",")}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -149,6 +165,21 @@ object ProfileCodec {
                 splitMode = map["split"]?.let { enumOr<SplitMode>(it) } ?: d.splitMode,
                 splitApps = map["splitApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
                     ?: d.splitApps,
+                killSwitch = map["kill"]?.toBooleanStrictOrNull() ?: d.killSwitch,
+                strictKillSwitch = map["strictKill"]?.toBooleanStrictOrNull() ?: d.strictKillSwitch,
+                ipv6LeakProtection = map["v6leak"]?.toBooleanStrictOrNull() ?: d.ipv6LeakProtection,
+                smartReconnect = map["smartRe"]?.toBooleanStrictOrNull() ?: d.smartReconnect,
+                reconnectRetryLimit = map["reLimit"]?.toIntOrNull() ?: d.reconnectRetryLimit,
+                fragmentSize = map["fSize"] ?: d.fragmentSize,
+                fragmentDelay = map["fDelay"] ?: d.fragmentDelay,
+                noDataCheck = map["noDataCheck"]?.toBooleanStrictOrNull() ?: d.noDataCheck,
+                tlsGroups = map["tlsGroups"] ?: d.tlsGroups,
+                validateSecs = map["valSecs"]?.toIntOrNull() ?: d.validateSecs,
+                reconnectSecs = map["recSecs"]?.toIntOrNull() ?: d.reconnectSecs,
+                noProfileRetry = map["noProfRetry"]?.toBooleanStrictOrNull() ?: d.noProfileRetry,
+                coreLogLevel = map["coreLog"]?.let { enumOr<CoreLogLevel>(it) } ?: d.coreLogLevel,
+                blockedApps = map["blockedApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                    ?: d.blockedApps,
             )
         }.getOrDefault(d)
     }

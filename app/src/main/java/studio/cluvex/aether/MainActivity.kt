@@ -1,5 +1,6 @@
 package studio.cluvex.aether
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -27,17 +28,23 @@ import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.HomeScreen
+import studio.cluvex.aether.ui.OnboardingScreen
 import studio.cluvex.aether.ui.theme.AetherTheme
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var profileStore: ProfileStore
+
+    /** Feature merge: first-run onboarding gate. */
+    private lateinit var onboardingStore: OnboardingStore
 
     // Holds the profile to connect with once VPN consent is granted.
     private var pendingProfile: ConnectionProfile? = null
@@ -76,6 +83,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         profileStore = ProfileStore(applicationContext)
+        onboardingStore = OnboardingStore(applicationContext)
 
         // Load the persisted profile ONCE as the initial UI state; from then
         // on the in-memory state is the single source of truth for the UI.
@@ -90,6 +98,13 @@ class MainActivity : ComponentActivity() {
         }
 
         maybeRequestNotificationPermission()
+
+        // Feature merge: a previous run died with an uncaught JVM
+        // exception — open the saved crash report once so the user can see and
+        // copy it. The report file deletes itself on dismiss.
+        if (savedInstanceState == null && File(filesDir, AetherApp.CRASH_FILE).exists()) {
+            startActivity(Intent(this, CrashReportActivity::class.java))
+        }
 
         // Launched from the Quick Settings tile while VPN consent was still
         // missing: run the normal connect flow, which shows the system's VPN
@@ -106,6 +121,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AetherTheme {
+                // Feature merge: first-run onboarding gate. initial =
+                // true so upgrading users never see a flash of the pager; a
+                // fresh install flips to the pager as soon as the (fast)
+                // DataStore read lands.
+                val onboardingDone by onboardingStore.completed.collectAsState(initial = true)
                 val state by AetherController.state.collectAsState()
                 // Synchronous UI profile state (see uiProfile above); null
                 // only until the one-time initial load completes.
@@ -180,21 +200,29 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HomeScreen(
-                        state = state,
-                        profile = profile ?: ConnectionProfile(),
-                        connectedSince = connectedSince,
-                        ipInfo = ipInfo,
-                        ipLoading = ipLoading,
-                        onProfileChange = { updated ->
-                            // Update the UI synchronously — keystrokes must
-                            // never wait for disk I/O — then persist in the
-                            // background.
-                            uiProfile.value = updated
-                            profileSaves.tryEmit(updated)
-                        },
-                        onToggleConnection = { toggleConnection(state) },
-                    )
+                    if (!onboardingDone) {
+                        OnboardingScreen(
+                            onFinished = {
+                                lifecycleScope.launch { onboardingStore.markCompleted() }
+                            },
+                        )
+                    } else {
+                        HomeScreen(
+                            state = state,
+                            profile = profile ?: ConnectionProfile(),
+                            connectedSince = connectedSince,
+                            ipInfo = ipInfo,
+                            ipLoading = ipLoading,
+                            onProfileChange = { updated ->
+                                // Update the UI synchronously — keystrokes must
+                                // never wait for disk I/O — then persist in the
+                                // background.
+                                uiProfile.value = updated
+                                profileSaves.tryEmit(updated)
+                            },
+                            onToggleConnection = { toggleConnection(state) },
+                        )
+                    }
                 }
             }
         }

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -78,6 +79,7 @@ fun AdvancedPanel(
 ) {
     var expanded by remember { mutableStateOf(startExpanded) }
     var showAppPicker by remember { mutableStateOf(false) }
+    var showBlockedPicker by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "arrow")
 
@@ -454,6 +456,145 @@ fun AdvancedPanel(
                         }
                     }
 
+                    // ---------- Per-app internet blocking (1.2.4) ----------
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { showBlockedPicker = true },
+                        enabled = enabled,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.Apps, contentDescription = null)
+                        Text(
+                            text = "  " + stringResource(
+                                R.string.blocked_select_apps,
+                                profile.blockedApps.size,
+                            ),
+                        )
+                    }
+                    HelperText(stringResource(R.string.blocked_apps_desc))
+
+                    // ---------- Security & stability (1.2.4) ----------
+                    SectionHeader(stringResource(R.string.section_security))
+
+                    ToggleRow(
+                        title = stringResource(R.string.kill_switch_title),
+                        description = stringResource(R.string.kill_switch_desc),
+                        checked = profile.killSwitch,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(killSwitch = it)) },
+                    )
+                    if (profile.killSwitch) {
+                        ToggleRow(
+                            title = stringResource(R.string.strict_kill_switch_title),
+                            description = stringResource(R.string.strict_kill_switch_desc),
+                            checked = profile.strictKillSwitch,
+                            enabled = enabled,
+                            onChange = { onProfileChange(profile.copy(strictKillSwitch = it)) },
+                        )
+                    }
+                    ToggleRow(
+                        title = stringResource(R.string.ipv6_leak_title),
+                        description = stringResource(R.string.ipv6_leak_desc),
+                        checked = profile.ipv6LeakProtection,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(ipv6LeakProtection = it)) },
+                    )
+                    ToggleRow(
+                        title = stringResource(R.string.smart_reconnect_title),
+                        description = stringResource(R.string.smart_reconnect_desc),
+                        checked = profile.smartReconnect,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(smartReconnect = it)) },
+                    )
+                    if (profile.smartReconnect) {
+                        SettingLabel(stringResource(R.string.reconnect_limit_label))
+                        DropdownSelector(
+                            options = listOf(3, 5, 10, 15, 20),
+                            selected = profile.reconnectRetryLimit,
+                            onSelect = { onProfileChange(profile.copy(reconnectRetryLimit = it)) },
+                            label = { "$it" },
+                            enabled = enabled,
+                        )
+                    }
+
+                    // ---------- Engine tuning (1.2.4) ----------
+                    SectionHeader(stringResource(R.string.section_engine_tuning))
+
+                    if (profile.fragment) {
+                        LtrOutlinedTextField(
+                            value = profile.fragmentSize,
+                            onValueChange = { onProfileChange(profile.copy(fragmentSize = it)) },
+                            enabled = enabled,
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.fragment_size_label)) },
+                            placeholder = { Text(stringResource(R.string.fragment_size_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        LtrOutlinedTextField(
+                            value = profile.fragmentDelay,
+                            onValueChange = { onProfileChange(profile.copy(fragmentDelay = it)) },
+                            enabled = enabled,
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.fragment_delay_label)) },
+                            placeholder = { Text(stringResource(R.string.fragment_delay_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    ToggleRow(
+                        title = stringResource(R.string.no_data_check_title),
+                        description = stringResource(R.string.no_data_check_desc),
+                        checked = profile.noDataCheck,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(noDataCheck = it)) },
+                    )
+                    LtrOutlinedTextField(
+                        value = profile.tlsGroups,
+                        onValueChange = { onProfileChange(profile.copy(tlsGroups = it)) },
+                        enabled = enabled,
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.tls_groups_label)) },
+                        placeholder = { Text(stringResource(R.string.tls_groups_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    LtrOutlinedTextField(
+                        value = if (profile.validateSecs == 0) "" else profile.validateSecs.toString(),
+                        onValueChange = { onProfileChange(profile.copy(validateSecs = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0)) },
+                        enabled = enabled,
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.validate_secs_label)) },
+                        placeholder = { Text(stringResource(R.string.secs_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    LtrOutlinedTextField(
+                        value = if (profile.reconnectSecs == 0) "" else profile.reconnectSecs.toString(),
+                        onValueChange = { onProfileChange(profile.copy(reconnectSecs = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0)) },
+                        enabled = enabled,
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.reconnect_secs_label)) },
+                        placeholder = { Text(stringResource(R.string.secs_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    ToggleRow(
+                        title = stringResource(R.string.no_profile_retry_title),
+                        description = stringResource(R.string.no_profile_retry_desc),
+                        checked = profile.noProfileRetry,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(noProfileRetry = it)) },
+                    )
+                    SettingLabel(stringResource(R.string.core_log_level_label))
+                    DropdownSelector(
+                        options = CoreLogLevel.entries,
+                        selected = profile.coreLogLevel,
+                        onSelect = { onProfileChange(profile.copy(coreLogLevel = it)) },
+                        label = { it.name },
+                        enabled = enabled,
+                    )
+
                     // ---------- Reset ----------
                     SectionHeader(stringResource(R.string.section_reset))
                     OutlinedButton(
@@ -482,6 +623,17 @@ fun AdvancedPanel(
             onConfirm = {
                 onProfileChange(profile.copy(splitApps = it))
                 showAppPicker = false
+            },
+        )
+    }
+
+    if (showBlockedPicker) {
+        AppPickerDialog(
+            selected = profile.blockedApps,
+            onDismiss = { showBlockedPicker = false },
+            onConfirm = {
+                onProfileChange(profile.copy(blockedApps = it))
+                showBlockedPicker = false
             },
         )
     }

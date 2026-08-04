@@ -9,6 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -49,6 +50,21 @@ class ProfileStore(private val context: Context) {
         val gateway = booleanPreferencesKey("gateway")
         val routeBlock = stringPreferencesKey("routeBlock")
         val routeDirect = stringPreferencesKey("routeDirect")
+        // Added in 1.2.4 (feature parity)
+        val killSwitch = booleanPreferencesKey("killSwitch")
+        val strictKillSwitch = booleanPreferencesKey("strictKillSwitch")
+        val ipv6Leak = booleanPreferencesKey("ipv6Leak")
+        val smartReconnect = booleanPreferencesKey("smartReconnect")
+        val reconnectRetryLimit = intPreferencesKey("reconnectRetryLimit")
+        val fragmentSize = stringPreferencesKey("fragmentSize")
+        val fragmentDelay = stringPreferencesKey("fragmentDelay")
+        val noDataCheck = booleanPreferencesKey("noDataCheck")
+        val tlsGroups = stringPreferencesKey("tlsGroups")
+        val validateSecs = intPreferencesKey("validateSecs")
+        val reconnectSecs = intPreferencesKey("reconnectSecs")
+        val noProfileRetry = booleanPreferencesKey("noProfileRetry")
+        val coreLogLevel = stringPreferencesKey("coreLogLevel")
+        val blockedApps = stringPreferencesKey("blockedApps")
     }
 
     /**
@@ -98,6 +114,22 @@ class ProfileStore(private val context: Context) {
             gateway = prefs[Keys.gateway] ?: false,
             routeBlock = prefs[Keys.routeBlock] ?: "",
             routeDirect = prefs[Keys.routeDirect] ?: "",
+            killSwitch = prefs[Keys.killSwitch] ?: false,
+            strictKillSwitch = prefs[Keys.strictKillSwitch] ?: false,
+            ipv6LeakProtection = prefs[Keys.ipv6Leak] ?: true,
+            smartReconnect = prefs[Keys.smartReconnect] ?: true,
+            reconnectRetryLimit = prefs[Keys.reconnectRetryLimit] ?: 5,
+            fragmentSize = prefs[Keys.fragmentSize] ?: "",
+            fragmentDelay = prefs[Keys.fragmentDelay] ?: "",
+            noDataCheck = prefs[Keys.noDataCheck] ?: false,
+            tlsGroups = prefs[Keys.tlsGroups] ?: "",
+            validateSecs = prefs[Keys.validateSecs] ?: 0,
+            reconnectSecs = prefs[Keys.reconnectSecs] ?: 0,
+            noProfileRetry = prefs[Keys.noProfileRetry] ?: false,
+            coreLogLevel = prefs[Keys.coreLogLevel]
+                ?.let { runCatching { CoreLogLevel.valueOf(it) }.getOrNull() } ?: CoreLogLevel.WARN,
+            blockedApps = prefs[Keys.blockedApps]
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
         )
     }
 
@@ -128,6 +160,20 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.gateway] = profile.gateway
             prefs[Keys.routeBlock] = profile.routeBlock
             prefs[Keys.routeDirect] = profile.routeDirect
+            prefs[Keys.killSwitch] = profile.killSwitch
+            prefs[Keys.strictKillSwitch] = profile.strictKillSwitch
+            prefs[Keys.ipv6Leak] = profile.ipv6LeakProtection
+            prefs[Keys.smartReconnect] = profile.smartReconnect
+            prefs[Keys.reconnectRetryLimit] = profile.reconnectRetryLimit
+            prefs[Keys.fragmentSize] = profile.fragmentSize
+            prefs[Keys.fragmentDelay] = profile.fragmentDelay
+            prefs[Keys.noDataCheck] = profile.noDataCheck
+            prefs[Keys.tlsGroups] = profile.tlsGroups
+            prefs[Keys.validateSecs] = profile.validateSecs
+            prefs[Keys.reconnectSecs] = profile.reconnectSecs
+            prefs[Keys.noProfileRetry] = profile.noProfileRetry
+            prefs[Keys.coreLogLevel] = profile.coreLogLevel.name
+            prefs[Keys.blockedApps] = profile.blockedApps.joinToString(",")
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         secrets.write(SecretStore.ACCESS_SECRET, profile.accessClientSecret)

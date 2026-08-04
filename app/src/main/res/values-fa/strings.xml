@@ -199,4 +199,58 @@
     <string name="dns_label">DNS داخل تونل</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">برای مقدار پیش‌فرض هسته (1.1.1.1, 1.0.0.1) خالی بگذارید. ورودی‌های نامعتبر نادیده گرفته می‌شوند.</string>
+    <!-- Feature merge: widget, onboarding, ping, crash report -->
+    <string name="widget_desc">اتصال یا قطع Aether با یک لمس</string>
+    <string name="widget_toggle_desc">تغییر وضعیت اتصال</string>
+    <string name="ping_label">پینگ</string>
+    <string name="ping_measuring">در حال اندازه‌گیری…</string>
+    <string name="ping_unavailable">ناموجود</string>
+    <string name="ping_hint">برای اندازه‌گیری دوباره لمس کنید</string>
+    <string name="onboarding_skip">رد کردن</string>
+    <string name="onboarding_next">بعدی</string>
+    <string name="onboarding_start">شروع</string>
+    <string name="onboarding_title_1">به Aether خوش آمدید</string>
+    <string name="onboarding_body_1">تانل سریع و امن برای عبور از سانسور. با یک لمس از طریق MASQUE، WireGuard یا وارپ×۲ متصل شوید.</string>
+    <string name="onboarding_title_2">انتخاب هوشمند پروتکل</string>
+    <string name="onboarding_body_2">حالت هوشمند شبکه شما را بررسی می‌کند و پروتکلی را انتخاب می‌کند که واقعاً کار می‌کند، در صورت نیاز با مبهم‌سازی ضد DPI.</string>
+    <string name="onboarding_title_3">حریم خصوصی از همان ابتدا</string>
+    <string name="onboarding_body_3">بدون حساب کاربری، بدون لاگ، بدون ردیاب. اندروید در اولین اتصال اجازه VPN می‌خواهد؛ این سیستم است که کنترل را به شما می‌دهد.</string>
+    <string name="crash_title">Aether به‌طور غیرمنتظره متوقف شد</string>
+    <string name="crash_subtitle">جزئیات زیر توسط کنترل‌کننده خرابی ذخیره شده است. می‌توانید آن را در گزارش خطا کپی کنید.</string>
+    <string name="crash_copy">کپی جزئیات</string>
+    <string name="crash_copied">کپی شد</string>
+    <string name="crash_dismiss">بستن</string>
+    <!-- 1.2.4 -->
+    <string name="section_security">امنیت و پایداری</string>
+    <string name="kill_switch_title">کیل سوییچ</string>
+    <string name="kill_switch_desc">در صورت قطع غیرمنتظره تونل، کل ترافیک مسدود می‌شود تا هیچ نشتی خارج از VPN رخ ندهد</string>
+    <string name="strict_kill_switch_title">کیل سوییچ سخت‌گیرانه</string>
+    <string name="strict_kill_switch_desc">حتی پس از قطع دستی هم مسدودسازی ادامه می‌یابد تا زمانی که خودتان آن را لغو کنید</string>
+    <string name="state_killswitch">کیل سوییچ فعال است - ترافیک مسدود شد</string>
+    <string name="ipv6_leak_title">محافظت در برابر نشت IPv6</string>
+    <string name="ipv6_leak_desc">ترافیک IPv6 نیز از داخل تونل عبور می‌کند</string>
+    <string name="smart_reconnect_title">اتصال مجدد هوشمند</string>
+    <string name="smart_reconnect_desc">پس از تعداد مشخصی تلاش ناموفق، متوقف شده و خطا گزارش می‌شود</string>
+    <string name="reconnect_limit_label">حداکثر تلاش‌های اتصال مجدد</string>
+    <string name="section_engine_tuning">تنظیمات پیشرفته هسته</string>
+    <string name="fragment_size_label">بازه اندازه فرگمنت</string>
+    <string name="fragment_size_hint">16-32</string>
+    <string name="fragment_delay_label">بازه تاخیر فرگمنت (میلی‌ثانیه)</string>
+    <string name="fragment_delay_hint">2-10</string>
+    <string name="no_data_check_title">بدون بررسی داده</string>
+    <string name="no_data_check_desc">رد کردن بررسی سرتاسری داده پس از اتصال</string>
+    <string name="tls_groups_label">گروه‌های TLS</string>
+    <string name="tls_groups_hint">X25519:P-256</string>
+    <string name="validate_secs_label">ثانیه‌های اعتبارسنجی (0 = پیش‌فرض)</string>
+    <string name="reconnect_secs_label">ثانیه‌های اتصال مجدد (0 = پیش‌فرض)</string>
+    <string name="secs_hint">0</string>
+    <string name="no_profile_retry_title">بدون تلاش مجدد پروفایل</string>
+    <string name="no_profile_retry_desc">عدم بازگشت به پروفایل‌های جایگزین WireGuard</string>
+    <string name="core_log_level_label">سطح لاگ هسته</string>
+    <string name="blocked_select_apps">اپ‌های مسدودشده (%1$d)</string>
+    <string name="blocked_apps_desc">اپ‌های مسدودشده هنگام روشن بودن VPN هیچ دسترسی به اینترنت ندارند. پل فیلتر داخلی فعال می‌شود.</string>
+    <!-- 1.2.4 -->
+    <string name="meta_protocol">پروتکل</string>
+    <string name="meta_endpoint">اندپوینت</string>
+    <string name="meta_latency">تأخیر</string>
 </resources>

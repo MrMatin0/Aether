@@ -38,6 +38,11 @@ class AetherApp : Application() {
      * persisted and reloaded into the panel on the next launch. (Native faults
      * inside the in-process tunnel can't be caught here, but every line logged
      * up to that instant is already on disk because we flush on every write.)
+     *
+     * Feature merge: the same stack trace is ALSO written to a small
+     * standalone file ([CRASH_FILE]). MainActivity checks for it on the next
+     * cold start and opens [CrashReportActivity] so the user can actually SEE
+     * and copy the report instead of it hiding inside the diagnostics log.
      */
     private fun installCrashHandler() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -49,11 +54,19 @@ class AetherApp : Application() {
                         Log.getStackTraceString(throwable),
                 )
             }
+            runCatching {
+                File(filesDir, CRASH_FILE).writeText(
+                    "Thread: ${thread.name}\n\n" + Log.getStackTraceString(throwable),
+                )
+            }
             previous?.uncaughtException(thread, throwable)
         }
     }
 
     companion object {
         const val CHANNEL_ID = "aether_vpn"
+
+        /** Standalone crash report consumed by [CrashReportActivity]. */
+        const val CRASH_FILE = "last_crash.txt"
     }
 }

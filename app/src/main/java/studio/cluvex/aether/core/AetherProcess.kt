@@ -49,6 +49,9 @@ class AetherProcess(
                         // (app-private file) still receives every line below.
                         if (BuildConfig.DEBUG) Log.i("aether-engine", it)
                         DiagnosticsLog.d("engine", it)
+                        // Desktop-parity info row: pick out the endpoint the
+                        // engine selected (no-op for every other line).
+                        EngineMeta.ingest(it)
                     }
                 }
             } catch (_: Exception) {

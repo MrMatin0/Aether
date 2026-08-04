@@ -74,6 +74,36 @@
         </service>
 
         <!--
+          Home-screen widget (feature merge): one-tap connect /
+          disconnect plus live status on the launcher. Not exported; only the
+          system AppWidgetService delivers updates to it, and our toggle
+          broadcast is sent with an explicit component, so no other app can
+          trigger it. updatePeriodMillis=0 — repaints are pushed from the VPN
+          service's state-change hook, never on a timer.
+        -->
+        <receiver
+            android:name=".widget.AetherWidgetProvider"
+            android:exported="false"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/aether_widget_info" />
+        </receiver>
+
+        <!--
+          Crash report screen (feature merge): shows the fatal
+          exception saved by AetherApp's crash handler on the previous run.
+          Not exported; only MainActivity can open it.
+        -->
+        <activity
+            android:name=".CrashReportActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AetherMobile" />
+
+        <!--
           1.2.2: the FileProvider that exported downloaded APKs to the system
           installer was removed along with the in-app updater. The app now
           exports no content provider whatsoever.

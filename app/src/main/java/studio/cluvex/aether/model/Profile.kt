@@ -43,6 +43,9 @@ enum class SplitMode { OFF, INCLUDE, EXCLUDE }
  */
 enum class TeamAuth { OFF, SERVICE_TOKEN, EMAIL, TOKEN }
 
+/** Engine core log verbosity (1.2.4). Mapped to the engine's AETHER_LOG_LEVEL. */
+enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("warn"), INFO("info"), DEBUG("debug") }
+
 /**
  * User-tunable connection profile. Knows how to turn itself into the engine's
  * CLI arguments and environment variables.
@@ -136,6 +139,37 @@ data class ConnectionProfile(
     /** Destinations sent straight out, bypassing the tunnel (engine `--route-direct`). */
     val routeDirect: String = "",
 
+    // ---- Added in 1.2.4 (feature parity) ----
+
+    /** Kill switch: if the tunnel drops, keep a blocking blackhole TUN up so nothing leaks direct. */
+    val killSwitch: Boolean = false,
+    /** Strict kill switch: stay in lockdown even after a MANUAL disconnect until the user lifts it. */
+    val strictKillSwitch: Boolean = false,
+    /** Route IPv6 through the tunnel as well (prevents IPv6 leaks). On by default. */
+    val ipv6LeakProtection: Boolean = true,
+    /** Stop and report an error after [reconnectRetryLimit] failed engine restarts. */
+    val smartReconnect: Boolean = true,
+    /** Max automatic engine restarts when [smartReconnect] is on. */
+    val reconnectRetryLimit: Int = 5,
+    /** TLS ClientHello fragment chunk-size range, e.g. "16-32" (engine `--fragment-size`). */
+    val fragmentSize: String = "",
+    /** Inter-fragment delay range in ms, e.g. "2-10" (engine `--fragment-delay`). */
+    val fragmentDelay: String = "",
+    /** Skip the engine's end-to-end data check after connect (engine env). */
+    val noDataCheck: Boolean = false,
+    /** Restrict TLS curve groups, e.g. "X25519:P-256" (engine `--tls-groups`). */
+    val tlsGroups: String = "",
+    /** Endpoint validation window, seconds; 0 = engine default. */
+    val validateSecs: Int = 0,
+    /** Delay between engine-level reconnects, seconds; 0 = engine default. */
+    val reconnectSecs: Int = 0,
+    /** Do not fall back to alternate WireGuard profiles (engine `--no-profile-retry`). */
+    val noProfileRetry: Boolean = false,
+    /** Engine core log verbosity. */
+    val coreLogLevel: CoreLogLevel = CoreLogLevel.WARN,
+    /** Apps that get NO internet at all while the VPN is on (UID-filtering bridge). */
+    val blockedApps: List<String> = emptyList(),
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -221,6 +255,16 @@ data class ConnectionProfile(
             args += it.joinToString(",")
         }
 
+        // ---- 1.2.4 engine tuning ----
+        if (fragment) {
+            sanitizedRange(fragmentSize)?.let { args += "--fragment-size"; args += it }
+            sanitizedRange(fragmentDelay)?.let { args += "--fragment-delay"; args += it }
+        }
+        sanitizedTlsGroups()?.let { args += "--tls-groups"; args += it }
+        if (validateSecs > 0) { args += "--validate-secs"; args += validateSecs.coerceIn(1, 3600).toString() }
+        if (reconnectSecs > 0) { args += "--reconnect-secs"; args += reconnectSecs.coerceIn(1, 600).toString() }
+        if (noProfileRetry) args += "--no-profile-retry"
+
         return args
     }
 
@@ -266,6 +310,22 @@ data class ConnectionProfile(
                 TeamAuth.OFF -> Unit
             }
         }
+
+        // ---- 1.2.4 engine tuning ----
+        if (noDataCheck) {
+            put("AETHER_MASQUE_NO_DATA_CHECK", "1")
+            put("AETHER_WG_NO_DATA_CHECK", "1")
+        }
+        if (validateSecs > 0) {
+            put("AETHER_MASQUE_VALIDATE_SECS", validateSecs.coerceIn(1, 3600).toString())
+        }
+        if (reconnectSecs > 0) {
+            put("AETHER_MASQUE_RECONNECT_SECS", reconnectSecs.coerceIn(1, 600).toString())
+            put("AETHER_WG_RECONNECT_SECS", reconnectSecs.coerceIn(1, 600).toString())
+        }
+        if (noProfileRetry) put("AETHER_WG_NO_PROFILE_RETRY", "1")
+        sanitizedTlsGroups()?.let { put("AETHER_TLS_GROUPS", it) }
+        if (coreLogLevel != CoreLogLevel.WARN) put("AETHER_LOG_LEVEL", coreLogLevel.raw)
     }
 
     /**
@@ -309,6 +369,13 @@ data class ConnectionProfile(
             ScanMode.IRONCLAD -> 360_000L
         }
     }
+
+    /** Accepts `500` or `16-32` style ranges; anything else is dropped. */
+    private fun sanitizedRange(raw: String): String? =
+        raw.trim().takeIf { it.matches(Regex("^\\d{1,5}(-\\d{1,5})?$")) }
+
+    private fun sanitizedTlsGroups(): String? =
+        tlsGroups.trim().takeIf { it.matches(Regex("^[A-Za-z0-9:_-]{1,64}$")) }
 
     companion object {
         /** Safe default TUN MTU for Iranian mobile networks / aggressive DPI. */

@@ -200,4 +200,58 @@
     <string name="dns_label">DNS inside the tunnel</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">Leave empty for the engine default (1.1.1.1, 1.0.0.1). Invalid entries are ignored.</string>
+    <!-- Feature merge: home-screen widget, onboarding, ping, crash report -->
+    <string name="widget_desc">Connect or disconnect Aether with one tap</string>
+    <string name="widget_toggle_desc">Toggle connection</string>
+    <string name="ping_label">Ping</string>
+    <string name="ping_measuring">Measuring…</string>
+    <string name="ping_unavailable">N/A</string>
+    <string name="ping_hint">Tap to measure again</string>
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_start">Get started</string>
+    <string name="onboarding_title_1">Welcome to Aether</string>
+    <string name="onboarding_body_1">A fast, secure tunnel that beats censorship. One tap connects you through MASQUE, WireGuard or WARP×2.</string>
+    <string name="onboarding_title_2">Smart protocol selection</string>
+    <string name="onboarding_body_2">Smart mode analyzes your network and picks the protocol that actually works, with anti-DPI obfuscation when needed.</string>
+    <string name="onboarding_title_3">Private by design</string>
+    <string name="onboarding_body_3">No accounts, no logs, no trackers. Android will ask for VPN permission on your first connect; that is the system keeping you in control.</string>
+    <string name="crash_title">Aether stopped unexpectedly</string>
+    <string name="crash_subtitle">The details below were saved by the crash handler. You can copy them into a bug report.</string>
+    <string name="crash_copy">Copy details</string>
+    <string name="crash_copied">Copied</string>
+    <string name="crash_dismiss">Dismiss</string>
+    <!-- 1.2.4: feature parity -->
+    <string name="section_security">Security &amp; stability</string>
+    <string name="kill_switch_title">Kill Switch</string>
+    <string name="kill_switch_desc">Block all traffic if the tunnel drops unexpectedly, so nothing leaks outside the VPN</string>
+    <string name="strict_kill_switch_title">Strict Kill Switch</string>
+    <string name="strict_kill_switch_desc">Keep blocking even after a manual disconnect, until you lift it</string>
+    <string name="state_killswitch">Kill switch active - traffic blocked</string>
+    <string name="ipv6_leak_title">IPv6 Leak Protection</string>
+    <string name="ipv6_leak_desc">Route IPv6 traffic through the tunnel as well</string>
+    <string name="smart_reconnect_title">Smart Reconnect</string>
+    <string name="smart_reconnect_desc">Stop and report an error after a limited number of failed restarts</string>
+    <string name="reconnect_limit_label">Max reconnect attempts</string>
+    <string name="section_engine_tuning">Engine tuning</string>
+    <string name="fragment_size_label">Fragment size range</string>
+    <string name="fragment_size_hint">16-32</string>
+    <string name="fragment_delay_label">Fragment delay range (ms)</string>
+    <string name="fragment_delay_hint">2-10</string>
+    <string name="no_data_check_title">No Data Check</string>
+    <string name="no_data_check_desc">Skip the engine\'s end-to-end data probe after connecting</string>
+    <string name="tls_groups_label">TLS groups</string>
+    <string name="tls_groups_hint">X25519:P-256</string>
+    <string name="validate_secs_label">Validate seconds (0 = default)</string>
+    <string name="reconnect_secs_label">Reconnect seconds (0 = default)</string>
+    <string name="secs_hint">0</string>
+    <string name="no_profile_retry_title">No Profile Retry</string>
+    <string name="no_profile_retry_desc">Do not fall back to alternate WireGuard profiles</string>
+    <string name="core_log_level_label">Core log level</string>
+    <string name="blocked_select_apps">Blocked apps (%1$d)</string>
+    <string name="blocked_apps_desc">Blocked apps get no internet at all while the VPN is on. Activates the built-in filter bridge.</string>
+    <!-- 1.2.4: desktop-parity info row under the IP badge -->
+    <string name="meta_protocol">Protocol</string>
+    <string name="meta_endpoint">Endpoint</string>
+    <string name="meta_latency">Latency</string>
 </resources>
