@@ -1,4 +1,1 @@
-Pristine upstream copies of the files this app patches, at core 1.5.0.
-
-Do not edit. scripts/sync-core.sh uses them as the merge base so the app's
-engine patches can be rebased onto a new core instead of overwriting it.
+Pristine upstream copies of patched files at core 1.6.0. Do not edit.
