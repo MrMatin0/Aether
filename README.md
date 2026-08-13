@@ -6,6 +6,15 @@
 
 ---
 
+## What's new in v1.2.5
+
+- **Engine upgraded:** bundled core is now <span dir="ltr">1.6.0</span>.
+- **Build compatibility fixed:** the manual WireGuard range parser is app-owned and no longer depends on a removed internal helper, so the native engine compiles cleanly.
+- **Signing preserved:** version code is **9** and the existing signing configuration remains unchanged for in-place updates from the same repository.
+- **UI compatibility preserved:** existing protocol, proxy, routing, diagnostics, and advanced settings remain available.
+
+**Version:** app <span dir="ltr">1.2.5</span>, version code <span dir="ltr">9</span>.
+
 ## What's new in v1.2.4
 
 - **Kill Switch and Strict Kill Switch**: on an unexpected drop, a blocking blackhole TUN stays up so no traffic leaks outside the VPN; Strict mode keeps blocking even after a manual disconnect until you lift it yourself.
