@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -77,16 +78,16 @@ private fun IpBadge(
     ipLoading: Boolean,
 ) {
     val label = if (connected) {
-        stringResourceSafe(R.string.ip_server_label)
+        stringResource(R.string.ip_server_label)
     } else {
-        stringResourceSafe(R.string.ip_your_label)
+        stringResource(R.string.ip_your_label)
     }
 
     val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
     val value = when {
-        ipLoading && ipInfo == null -> stringResourceSafe(R.string.ip_checking)
+        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
         ipInfo != null -> "$flag  ${ipInfo.ip}"
-        else -> stringResourceSafe(R.string.ip_unavailable)
+        else -> stringResource(R.string.ip_unavailable)
     }
 
     Surface(
@@ -166,19 +167,19 @@ private fun MetaRow(connected: Boolean) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MetaCell(
-                label = stringResourceSafe(R.string.meta_protocol),
+                label = stringResource(R.string.meta_protocol),
                 value = protocol,
                 ltr = true,
                 modifier = Modifier.weight(1f),
             )
             MetaCell(
-                label = stringResourceSafe(R.string.meta_endpoint),
+                label = stringResource(R.string.meta_endpoint),
                 value = endpoint,
                 ltr = true,
                 modifier = Modifier.weight(1f),
             )
             MetaCell(
-                label = stringResourceSafe(R.string.meta_latency),
+                label = stringResource(R.string.meta_latency),
                 value = latency,
                 ltr = true,
                 modifier = Modifier.weight(1f),
@@ -240,7 +241,7 @@ private fun ConnectionTimer(connectedSince: Long) {
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            text = stringResourceSafe(R.string.connected_for),
+            text = stringResource(R.string.connected_for),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -254,7 +255,3 @@ private fun ConnectionTimer(connectedSince: Long) {
         )
     }
 }
-
-@Composable
-private fun stringResourceSafe(id: Int): String =
-    androidx.compose.ui.res.stringResource(id)

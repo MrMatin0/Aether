@@ -106,18 +106,10 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(this, CrashReportActivity::class.java))
         }
 
-        // Launched from the Quick Settings tile while VPN consent was still
-        // missing: run the normal connect flow, which shows the system's VPN
-        // consent dialog and then connects.
-        if (intent?.getBooleanExtra(EXTRA_CONNECT_ON_LAUNCH, false) == true) {
-            intent.removeExtra(EXTRA_CONNECT_ON_LAUNCH)
-            lifecycleScope.launch {
-                val current = AetherController.state.value
-                if (!current.isConnected && !current.isBusy) {
-                    toggleConnection(current)
-                }
-            }
-        }
+        // Launched from the Quick Settings tile or the home-screen widget while
+        // VPN consent was still missing: run the normal connect flow, which
+        // shows the system's VPN consent dialog and then connects.
+        handleConnectOnLaunch(intent)
 
         setContent {
             AetherTheme {
@@ -224,6 +216,31 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * DROPPED-CONSENT FIX: the tile and the widget start this activity with
+     * FLAG_ACTIVITY_NEW_TASK + SINGLE_TOP, so when the app is ALREADY running
+     * the extra arrives through [onNewIntent] and [onCreate] never runs again.
+     * Without this override the tap did nothing at all — the app came to the
+     * front and the VPN consent dialog the user was sent here for never
+     * appeared.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleConnectOnLaunch(intent)
+    }
+
+    private fun handleConnectOnLaunch(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_CONNECT_ON_LAUNCH, false) != true) return
+        intent.removeExtra(EXTRA_CONNECT_ON_LAUNCH)
+        lifecycleScope.launch {
+            val current = AetherController.state.value
+            if (!current.isConnected && !current.isBusy) {
+                toggleConnection(current)
             }
         }
     }

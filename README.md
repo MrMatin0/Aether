@@ -15,6 +15,16 @@
 
 **Version:** app <span dir="ltr">1.2.5</span>, version code <span dir="ltr">9</span>.
 
+### 🐞 Fixes in this build (debug + clean-up pass)
+
+- **Advanced settings now actually reach the engine.** In-tunnel **DNS**, the **Block / Direct routing rules** and the whole **Zero Trust (WARP for organizations)** block were saved and displayed, but the profile encoder that hands the settings to the VPN service silently dropped them — so the engine never received `--dns`, `--route-block`, `--route-direct`, `--team` or `--gateway`. Multi-line range/route fields no longer truncate either. Zero Trust secrets are read straight from the Keystore-sealed store instead of travelling inside an Intent.
+- **No more CPU drain in per-app blocking mode.** The userspace filter bridge read a non-blocking TUN descriptor, where an idle tunnel returns "0 bytes" forever — the reader looped on it and pinned a CPU core for the whole session. The interface is put in blocking mode for that path, EOF ends the loop, and repeated read errors back off instead of spinning.
+- **Stalled connections in that mode are gone too.** A data segment dropped because the writer queue was momentarily full still advanced the TCP sequence number, leaving a hole nothing could retransmit — the socket hung until it timed out. Data now applies back-pressure, and an unrecoverable queue resets the flow honestly.
+- **The traffic meter works with per-app blocking on**, instead of showing 0 B/s all session.
+- **A system-killed VPN service reconnects with your real profile** (it used to come back with factory defaults: Auto/Balanced, no kill switch, no split tunneling).
+- **The Quick Settings tile and the widget can grant VPN permission again** when the app is already open — the request used to be dropped and nothing happened.
+- **Crash reports keep the fatal line**, the routing decision cache is bounded, DNS answer parsing is bounds-checked, and dead code, unused strings and a leftover resource file were removed.
+
 ## What's new in v1.2.4
 
 - **Kill Switch and Strict Kill Switch**: on an unexpected drop, a blocking blackhole TUN stays up so no traffic leaks outside the VPN; Strict mode keeps blocking even after a manual disconnect until you lift it yourself.

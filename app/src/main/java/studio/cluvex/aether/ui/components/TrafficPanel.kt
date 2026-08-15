@@ -39,16 +39,19 @@ import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.ShareBridge
+import studio.cluvex.aether.core.SocksTunBridge
 
 /**
  * Live traffic meter shown while connected, like mainstream VPN apps:
  * instantaneous download/upload rate plus session totals.
  *
- * Data is the SUM of both possible traffic paths, so the meter works in every
+ * Data is the SUM of every possible traffic path, so the meter works in every
  * mode:
  *  - hev-socks5-tunnel's cumulative counters (system-VPN mode), exposed as
  *    direction-corrected totals via HevTunnel.traffic(). In proxy mode the TUN
  *    is skipped and this source is null.
+ *  - SocksTunBridge.active: the userspace filter bridge that replaces hev when
+ *    per-app blocking is on, and is then the only source of TUN byte counts.
  *  - ShareBridge.traffic(): bytes relayed through the local SOCKS5/HTTP share
  *    listeners. In proxy mode this is the ONLY source (external apps like
  *    Psiphon connect through it); in system-VPN mode it additionally counts
@@ -76,11 +79,15 @@ fun TrafficPanel(
         var lastAt = 0L
         while (true) {
             val hev = HevTunnel.traffic()
+            // Per-app blocking replaces hev with the userspace bridge, which is
+            // then the ONLY source of TUN byte counts — without it the meter sat
+            // at 0 B/s for the whole session in that mode.
+            val bridge = SocksTunBridge.active?.getStats()
             val share = ShareBridge.traffic()
-            val hasSource = hev != null || ShareBridge.active.value
+            val hasSource = hev != null || bridge != null || ShareBridge.active.value
             if (hasSource) {
-                val down = (hev?.downloadBytes ?: 0L) + share.downloadBytes
-                val up = (hev?.uploadBytes ?: 0L) + share.uploadBytes
+                val down = (hev?.downloadBytes ?: 0L) + (bridge?.rxBytes ?: 0L) + share.downloadBytes
+                val up = (hev?.uploadBytes ?: 0L) + (bridge?.txBytes ?: 0L) + share.uploadBytes
                 val now = SystemClock.elapsedRealtime()
                 if (lastAt > 0L && now > lastAt) {
                     val dtMs = now - lastAt

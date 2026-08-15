@@ -71,7 +71,7 @@ class SecretStore(context: Context) {
         }
     }
 
-    /** Wipes every sealed secret (used by "Reset settings"). */
+    /** Wipes every sealed secret. */
     fun clear() = prefs.edit().clear().apply()
 
     private fun key(): SecretKey {

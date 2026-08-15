@@ -77,7 +77,9 @@ class AetherTileService : TileService() {
 
     private fun openAppForConsent() {
         val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // SINGLE_TOP so an already-running MainActivity receives this intent
+            // in onNewIntent instead of the extra being silently dropped.
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(MainActivity.EXTRA_CONNECT_ON_LAUNCH, true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(

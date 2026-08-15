@@ -19,7 +19,9 @@ object TrafficSniffer {
 
     private fun sniffSni(data: ByteArray): String? {
         try {
-            if (data.size < 43) return null
+            // 5 (record) + 4 (handshake) + 2 (version) + 32 (random) = 43, so
+            // the session-id length byte lives at index 43 and needs 44 bytes.
+            if (data.size < 44) return null
             if (data[0] != 0x16.toByte()) return null
 
             var pos = 5
@@ -61,7 +63,9 @@ object TrafficSniffer {
                     val nameLen = ((data[pos + 1].toInt() and 0xFF) shl 8) or (data[pos + 2].toInt() and 0xFF)
                     pos += 3
                     if (nameType == 0x00.toByte() && pos + nameLen <= data.size) {
-                        return String(data, pos, nameLen)
+                        // Lower-cased like the HTTP Host path, so both sniffers
+                        // hand the routing engine the same shape of value.
+                        return String(data, pos, nameLen).lowercase(Locale.ROOT)
                     }
                 }
                 pos += extLen

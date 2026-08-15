@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.AetherApp
 import studio.cluvex.aether.MainActivity
@@ -30,11 +31,14 @@ import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
 import studio.cluvex.aether.core.SocksTunBridge
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.data.ProfileStore
+import studio.cluvex.aether.data.SecretStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.widget.AetherWidgetProvider
 import java.io.File
 
@@ -91,15 +95,22 @@ class AetherVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             else -> {
+                // A null intent means the SYSTEM restarted us after the process
+                // was killed (START_STICKY). There is no payload then, and
+                // decoding null used to yield a DEFAULT profile — so the tunnel
+                // silently came back up as AUTO/BALANCED with the kill switch,
+                // split tunneling and every other user setting reset. Flag that
+                // case so the session is rebuilt from the persisted profile.
+                val restored = intent == null
                 val profile = ProfileCodec.decode(intent?.getStringExtra(EXTRA_PROFILE))
                 startForeground(NOTIF_ID, buildNotification(getString(R.string.state_launching)))
-                startTunnel(profile)
+                startTunnel(profile, restored)
             }
         }
         return START_STICKY
     }
 
-    private fun startTunnel(profile: ConnectionProfile) {
+    private fun startTunnel(profile: ConnectionProfile, restored: Boolean = false) {
         lastProfile = profile
         // 1.2.2 PROTOCOL-SWITCH FIX: this used to bail out silently whenever a
         // previous run coroutine was still winding down ("if active, return"),
@@ -123,7 +134,7 @@ class AetherVpnService : VpnService() {
             }
             previousStop?.join()
             try {
-                connectFlow(profile)
+                connectFlow(profile, restored)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -136,8 +147,36 @@ class AetherVpnService : VpnService() {
         }
     }
 
-    private suspend fun connectFlow(profile: ConnectionProfile) {
+    /**
+     * Fills in the parts of the profile that cannot travel inside an Intent.
+     *
+     * - [restored] (system-initiated sticky restart, no payload): the whole
+     *   profile is re-read from the DataStore, which is the only place the
+     *   user's real settings still exist after a process kill.
+     * - Zero Trust secrets are always re-read from the Keystore-sealed
+     *   [SecretStore]: [ProfileCodec] deliberately keeps them out of the
+     *   Intent, because extras show up in system service dumps.
+     */
+    private suspend fun hydrate(profile: ConnectionProfile, restored: Boolean): ConnectionProfile {
+        if (restored) {
+            DiagnosticsLog.w(TAG, "Restarted by the system — reconnecting with the saved profile.")
+            // ProfileStore already unseals the Zero Trust secrets itself.
+            val saved = runCatching { ProfileStore(applicationContext).profile.first() }
+            (saved.exceptionOrNull() as? CancellationException)?.let { throw it }
+            return (saved.getOrNull() ?: profile).also { lastProfile = it }
+        }
+        if (profile.teamAuth == TeamAuth.OFF) return profile
+        val secrets = SecretStore(applicationContext)
+        return profile.copy(
+            accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
+            accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
+        ).also { lastProfile = it }
+    }
+
+    private suspend fun connectFlow(requested: ConnectionProfile, restored: Boolean) {
         DiagnosticsLog.clear()
+        // Hydrated AFTER the log is cleared, so its notes survive in the panel.
+        val profile = hydrate(requested, restored)
         // STALE-CIRCLES ROOT-CAUSE FIX: the four self-test circles were only
         // reset inside Diagnostics.run(), which starts AFTER the engine has
         // launched AND finished its endpoint scan — so on a reconnect the
@@ -457,10 +496,16 @@ class AetherVpnService : VpnService() {
 
     private fun currentScopeActive(): Boolean = runJob?.isActive ?: false
 
+    /**
+     * The profile MTU, clamped to what the TUN (and hev's lwIP netif) accept.
+     * Both must agree, so this is the single place the value is bounded.
+     */
+    private fun ConnectionProfile.safeMtu(): Int = mtu.coerceIn(MIN_MTU, MAX_MTU)
+
     private fun establishTun(profile: ConnectionProfile) {
         // User-tunable MTU (defaults to 1280 — safe for Iranian mobile/DPI).
         // Clamped to a sane range so a bad saved value can't break establish().
-        val mtu = profile.mtu.coerceIn(576, 9000)
+        val mtu = profile.safeMtu()
         val builder = Builder()
             .setSession("Aether")
             .setMtu(mtu)
@@ -478,7 +523,17 @@ class AetherVpnService : VpnService() {
 
         // KILL SWITCH (1.2.4): a blocking interface never falls back to
         // direct traffic while the tunnel is not forwarding.
-        if (profile.killSwitch || profile.strictKillSwitch) {
+        //
+        // BATTERY FIX (same flag, second reason): the userspace filter bridge
+        // reads this fd from a plain Java thread. `establish()` hands out a
+        // NON-BLOCKING fd by default, and on Android a non-blocking read with
+        // no packet pending returns 0 — so that reader spun read()→0→read()
+        // forever and pinned a CPU core for the entire session, while writes
+        // could fail with EAGAIN and silently drop packets. Blocking mode parks
+        // the reader on the fd instead: zero CPU while the tunnel is idle.
+        // (hev-socks5-tunnel manages the fd mode itself, and the two paths are
+        // mutually exclusive, so this only ever affects the bridge.)
+        if (profile.killSwitch || profile.strictKillSwitch || profile.blockedApps.isNotEmpty()) {
             builder.setBlocking(true)
         }
 
@@ -559,13 +614,17 @@ class AetherVpnService : VpnService() {
             // ONLY when blocking is configured; the battle-tested hev path
             // below stays the default for everyone else.
             val pfd = tun ?: throw IllegalStateException("TUN descriptor is null")
+            // Snapshot the blocked set ONCE: the bridge asks its provider on
+            // every packet, and `blockedApps.toSet()` allocated a fresh set per
+            // call — a per-packet allocation on the hottest path in the app.
+            val blocked = profile.blockedApps.toSet()
             val bridge = SocksTunBridge(
                 vpnService = this,
                 tunDescriptor = pfd,
                 socksHost = SOCKS_HOST,
                 socksPort = SOCKS_PORT,
-                mtu = profile.mtu.coerceIn(576, 9000),
-                blockedPackagesProvider = { profile.blockedApps.toSet() },
+                mtu = profile.safeMtu(),
+                blockedPackagesProvider = { blocked },
                 routingEngine = RoutingEngine(emptyList()),
             )
             DiagnosticsLog.i(TAG, "Starting userspace filter bridge (blocked apps=${profile.blockedApps.size})")
@@ -573,7 +632,7 @@ class AetherVpnService : VpnService() {
             tunBridge = bridge
             return
         }
-        val config = writeHevConfig(profile.mtu.coerceIn(576, 9000))
+        val config = writeHevConfig(profile.safeMtu())
         // Use the LIVE fd of the ParcelFileDescriptor (do NOT detach): hev uses it
         // while running and we close the pfd ourselves on teardown. The fd is only
         // valid inside THIS process, which is exactly why hev must run in-process.
@@ -747,7 +806,7 @@ class AetherVpnService : VpnService() {
         tun = null
         val builder = Builder()
             .setSession("Aether KillSwitch")
-            .setMtu(profile.mtu.coerceIn(576, 9000))
+            .setMtu(profile.safeMtu())
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
             .addRoute("0.0.0.0", 0)
             .setBlocking(true)
@@ -850,18 +909,19 @@ class AetherVpnService : VpnService() {
         private const val TAG = "vpn"
         private const val SOCKS_HOST = TunnelConfig.SOCKS_HOST
         private const val SOCKS_PORT = TunnelConfig.SOCKS_PORT
-        private const val MTU = TunnelConfig.MTU
-        private const val MAX_RETRIES = 3
         private val BACKOFF = longArrayOf(2000L, 5000L, 10000L)
 
-        /**
-         * Upper bound for one blocking wait on the engine process (1.2.2).
-         * The supervisor no longer polls; it parks on the process itself and
-         * only wakes up this often to re-check its own cancellation state.
-         */
-        private const val SUPERVISOR_WAIT_MS = 60_000L
+        /** Bounds a user-supplied MTU to what `VpnService.Builder` accepts. */
+        private const val MIN_MTU = 576
+        private const val MAX_MTU = 9000
 
-        /** Watchdog probe cadence while the tunnel is up (1.2.4). */
+        /**
+         * Watchdog probe cadence while the tunnel is up (1.2.4). It doubles as
+         * the upper bound for ONE blocking wait on the engine process: the
+         * supervisor never polls, it parks on the process itself and only wakes
+         * up this often to re-check its own cancellation state and to probe the
+         * tunnel end-to-end.
+         */
         private const val WATCHDOG_INTERVAL_MS = 30_000L
 
         /**

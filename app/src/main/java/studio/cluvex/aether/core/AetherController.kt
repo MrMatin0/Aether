@@ -16,6 +16,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.vpn.AetherVpnService
 
 /**
@@ -95,6 +96,20 @@ object AetherController {
  * line) for Intent transport. This format is forward/backward tolerant: unknown
  * keys are ignored and missing keys fall back to the model defaults, so old and
  * new builds can decode each other's payloads without crashing.
+ *
+ * DROPPED-SETTINGS FIX: the codec is the ONLY channel between the UI and
+ * [AetherVpnService], so anything it forgets is silently thrown away — the user
+ * configures it in Settings, sees it persisted, and the engine never learns
+ * about it. The 1.2.3 feature block (in-tunnel DNS, Zero Trust organization,
+ * `--route-block` / `--route-direct`) was never added here, so those fields
+ * reached the DataStore but never the engine's argv/env. Every non-secret field
+ * of [ConnectionProfile] is transported now.
+ *
+ * The two Zero Trust SECRETS ([ConnectionProfile.accessClientSecret],
+ * [ConnectionProfile.accessToken]) are deliberately NOT part of the payload:
+ * Intent extras are visible in system service dumps, so the service reads them
+ * straight from the Keystore-sealed store instead (see the VpnService's
+ * `hydrate`).
  */
 object ProfileCodec {
     fun encode(p: ConnectionProfile): String = buildList {
@@ -107,7 +122,10 @@ object ProfileCodec {
         add("noize=${p.noize.name}")
         add("endpoint=${p.endpointMode.name}")
         add("peer=${p.manualPeer}")
-        add("range=${p.manualRange}")
+        // The range field is multi-line in the UI. This codec is line-based, so
+        // an embedded newline would truncate the value (and turn the rest into a
+        // bogus key). Ranges are comma-separated for the engine anyway.
+        add("range=${p.manualRange.lineSequence().joinToString(",")}")
         add("keepalive=${p.keepalive}")
         add("fragment=${p.fragment}")
         add("ech=${p.ech}")
@@ -115,6 +133,16 @@ object ProfileCodec {
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
         add("splitApps=${p.splitApps.joinToString(",")}")
+        // Added in 1.2.3 (engine v1.5.0) — these were missing from the codec,
+        // so the engine never received them (see the class doc).
+        add("dns=${p.dnsServers}")
+        add("team=${p.team}")
+        add("teamAuth=${p.teamAuth.name}")
+        add("accessId=${p.accessClientId}")
+        add("accessEmail=${p.accessEmail}")
+        add("gateway=${p.gateway}")
+        add("routeBlock=${p.routeBlock.lineSequence().joinToString(",")}")
+        add("routeDirect=${p.routeDirect.lineSequence().joinToString(",")}")
         // Added in 1.2.4 (feature parity)
         add("kill=${p.killSwitch}")
         add("strictKill=${p.strictKillSwitch}")
@@ -165,6 +193,14 @@ object ProfileCodec {
                 splitMode = map["split"]?.let { enumOr<SplitMode>(it) } ?: d.splitMode,
                 splitApps = map["splitApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
                     ?: d.splitApps,
+                dnsServers = map["dns"] ?: d.dnsServers,
+                team = map["team"] ?: d.team,
+                teamAuth = map["teamAuth"]?.let { enumOr<TeamAuth>(it) } ?: d.teamAuth,
+                accessClientId = map["accessId"] ?: d.accessClientId,
+                accessEmail = map["accessEmail"] ?: d.accessEmail,
+                gateway = map["gateway"]?.toBooleanStrictOrNull() ?: d.gateway,
+                routeBlock = map["routeBlock"] ?: d.routeBlock,
+                routeDirect = map["routeDirect"] ?: d.routeDirect,
                 killSwitch = map["kill"]?.toBooleanStrictOrNull() ?: d.killSwitch,
                 strictKillSwitch = map["strictKill"]?.toBooleanStrictOrNull() ?: d.strictKillSwitch,
                 ipv6LeakProtection = map["v6leak"]?.toBooleanStrictOrNull() ?: d.ipv6LeakProtection,

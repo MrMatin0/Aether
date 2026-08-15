@@ -38,7 +38,6 @@
 
     <string name="tap_to_connect">Tap to connect securely</string>
     <string name="tap_to_disconnect">Tap to disconnect</string>
-    <string name="secure_via">Secure tunnel via %1$s</string>
     <string name="reconnect_attempt">Attempt %1$d of %2$d</string>
 
     <string name="notif_channel">VPN status</string>
@@ -58,7 +57,6 @@
 
     <!-- Diagnostics panel -->
     <string name="diag_title">Diagnostics &amp; logs</string>
-    <string name="diag_subtitle">Live status of every part of the tunnel</string>
     <string name="diag_run">Run test</string>
     <string name="diag_copy">Copy logs</string>
     <string name="diag_clear">Clear</string>
@@ -200,13 +198,9 @@
     <string name="dns_label">DNS inside the tunnel</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">Leave empty for the engine default (1.1.1.1, 1.0.0.1). Invalid entries are ignored.</string>
-    <!-- Feature merge: home-screen widget, onboarding, ping, crash report -->
+    <!-- Feature merge: home-screen widget, onboarding, crash report -->
     <string name="widget_desc">Connect or disconnect Aether with one tap</string>
     <string name="widget_toggle_desc">Toggle connection</string>
-    <string name="ping_label">Ping</string>
-    <string name="ping_measuring">Measuring…</string>
-    <string name="ping_unavailable">N/A</string>
-    <string name="ping_hint">Tap to measure again</string>
     <string name="onboarding_skip">Skip</string>
     <string name="onboarding_next">Next</string>
     <string name="onboarding_start">Get started</string>
