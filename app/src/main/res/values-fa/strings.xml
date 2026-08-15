@@ -38,7 +38,6 @@
 
     <string name="tap_to_connect">برای اتصال امن لمس کنید</string>
     <string name="tap_to_disconnect">برای قطع لمس کنید</string>
-    <string name="secure_via">تونل امن از طریق %1$s</string>
     <string name="reconnect_attempt">تلاش %1$d از %2$d</string>
 
     <string name="notif_channel">وضعیت VPN</string>
@@ -58,7 +57,6 @@
 
     <!-- Diagnostics panel -->
     <string name="diag_title">عیب‌یابی و لاگ‌ها</string>
-    <string name="diag_subtitle">وضعیت زنده‌ی همه‌ی بخش‌های تونل</string>
     <string name="diag_run">اجرای تست</string>
     <string name="diag_copy">کپی لاگ‌ها</string>
     <string name="diag_clear">پاک کردن</string>
@@ -199,13 +197,9 @@
     <string name="dns_label">DNS داخل تونل</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">برای مقدار پیش‌فرض هسته (1.1.1.1, 1.0.0.1) خالی بگذارید. ورودی‌های نامعتبر نادیده گرفته می‌شوند.</string>
-    <!-- Feature merge: widget, onboarding, ping, crash report -->
+    <!-- Feature merge: widget, onboarding, crash report -->
     <string name="widget_desc">اتصال یا قطع Aether با یک لمس</string>
     <string name="widget_toggle_desc">تغییر وضعیت اتصال</string>
-    <string name="ping_label">پینگ</string>
-    <string name="ping_measuring">در حال اندازه‌گیری…</string>
-    <string name="ping_unavailable">ناموجود</string>
-    <string name="ping_hint">برای اندازه‌گیری دوباره لمس کنید</string>
     <string name="onboarding_skip">رد کردن</string>
     <string name="onboarding_next">بعدی</string>
     <string name="onboarding_start">شروع</string>

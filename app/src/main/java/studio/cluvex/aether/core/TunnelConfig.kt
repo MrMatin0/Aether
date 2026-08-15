@@ -23,14 +23,13 @@ object TunnelConfig {
     const val TUN_IPV6_PREFIX = 126
 
     /**
-     * Fallback TUN MTU. The live value now comes from the user's
-     * [studio.cluvex.aether.model.ConnectionProfile.mtu]; this constant is only
-     * used when no profile MTU is available. Lowered from 8500 to 1280 because
-     * the oversized 8500 MTU caused path-MTU/fragmentation failures on Iranian
-     * mobile networks ("connected but some sites/Telegram won't open").
+     * DNS resolvers advertised on the TUN interface.
+     *
+     * NOTE: there is deliberately no MTU constant here any more. The one source
+     * of truth is [studio.cluvex.aether.model.ConnectionProfile.DEFAULT_MTU]
+     * (1280 — safe for Iranian mobile networks and aggressive DPI), clamped by
+     * the VpnService, which writes the SAME value into the TUN and into hev's
+     * `tunnel.mtu`.
      */
-    const val MTU = 1280
-
-    /** DNS resolvers advertised on the TUN interface. */
     val DNS_SERVERS = listOf("1.1.1.1", "8.8.8.8")
 }

@@ -113,10 +113,13 @@ class AetherWidgetProvider : AppWidgetProvider() {
             return
         }
         // VPN consent missing -> open the app so the system dialog can show.
+        // SINGLE_TOP: an already-running MainActivity must receive this intent
+        // in onNewIntent, otherwise the extra is dropped and the tap does
+        // nothing at all.
         if (VpnService.prepare(context) != null) {
             context.startActivity(
                 Intent(context, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     .putExtra(MainActivity.EXTRA_CONNECT_ON_LAUNCH, true),
             )
             return

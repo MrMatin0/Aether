@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import android.util.Log
 import studio.cluvex.aether.core.DiagnosticsLog
+import studio.cluvex.aether.core.LogLevel
 import java.io.File
 
 class AetherApp : Application() {
@@ -37,7 +38,12 @@ class AetherApp : Application() {
      * log was empty": the log lived only in memory. Now the crash cause is
      * persisted and reloaded into the panel on the next launch. (Native faults
      * inside the in-process tunnel can't be caught here, but every line logged
-     * up to that instant is already on disk because we flush on every write.)
+     * up to that instant is flushed together with the crash line below.)
+     *
+     * The FATAL line is written with [DiagnosticsLog.logBlocking]: normal log
+     * writes are handed to a background writer thread, which is NOT guaranteed
+     * to be scheduled again while the process is being torn down — so the one
+     * line that explains the crash was the line most likely to be lost.
      *
      * Feature merge: the same stack trace is ALSO written to a small
      * standalone file ([CRASH_FILE]). MainActivity checks for it on the next
@@ -48,8 +54,9 @@ class AetherApp : Application() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching {
-                DiagnosticsLog.e(
+                DiagnosticsLog.logBlocking(
                     "crash",
+                    LogLevel.ERROR,
                     "FATAL on thread '${thread.name}': $throwable\n" +
                         Log.getStackTraceString(throwable),
                 )

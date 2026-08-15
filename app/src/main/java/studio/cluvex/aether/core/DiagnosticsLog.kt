@@ -225,6 +225,33 @@ object DiagnosticsLog {
     fun e(tag: String, m: String) = log(tag, LogLevel.ERROR, m)
 
     /**
+     * Writes [message] to the log file ON THE CALLING THREAD.
+     *
+     * The normal path queues lines for a writer thread (so no hot path ever
+     * blocks on flash I/O), but that thread is not guaranteed to run again once
+     * the process is dying — which is exactly the case the crash handler cares
+     * about, and why the FATAL line could be missing from the very log that was
+     * meant to explain the crash. This appends synchronously instead, then
+     * mirrors the line into the in-memory buffer for the panel.
+     */
+    fun logBlocking(tag: String, level: LogLevel, message: String) {
+        val line = LogLine(System.currentTimeMillis(), tag, level, message)
+        synchronized(bufferLock) {
+            buffer.addLast(line)
+            while (buffer.size > MAX_LINES) buffer.removeFirst()
+        }
+        dirty.set(true)
+        runCatching {
+            // Drain whatever the writer thread has not flushed yet, so the log
+            // ends with a complete picture instead of a hole before the crash.
+            val pending = ArrayList<String>(64)
+            pendingWrites.drainTo(pending)
+            pending.add(line.format())
+            logFile?.appendText(pending.joinToString("\n", postfix = "\n"))
+        }
+    }
+
+    /**
      * Starts a fresh session. The prior on-disk log is rotated to `<name>.prev`
      * (never silently destroyed) so a crash log is always recoverable.
      */

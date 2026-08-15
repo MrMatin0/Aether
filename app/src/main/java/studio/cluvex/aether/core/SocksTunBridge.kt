@@ -26,7 +26,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import studio.cluvex.aether.model.RoutingMode
 
 sealed interface FlowKey
 
@@ -79,7 +81,18 @@ class SocksTunBridge(
     private val isRunning = AtomicBoolean(false)
     private var readThread: Thread? = null
     private var writeThread: Thread? = null
-    private val executor = Executors.newCachedThreadPool()
+    private val threadSeq = AtomicInteger(0)
+
+    /**
+     * One thread per session leg (session loop + its reader), so the pool has to
+     * be unbounded — a bounded pool would deadlock, because a session thread
+     * submits its own reader and then waits for it. Threads are named and marked
+     * daemon so they show up usefully in a thread dump and never keep the
+     * process alive after teardown.
+     */
+    private val executor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "Aether-Flow-${threadSeq.incrementAndGet()}").apply { isDaemon = true }
+    }
     private val tunOutputQueue = LinkedBlockingQueue<ByteArray>(32768)
     private val tcpSessions = ConcurrentHashMap<FlowKey, TcpSession>()
     private val udpSessions = ConcurrentHashMap<FlowKey, UdpSession>()
@@ -109,6 +122,7 @@ class SocksTunBridge(
         if (isRunning.getAndSet(true)) return
 
         LogRepository.i("Initializing tunnel bridge (MTU=$mtu)...")
+        active = this
 
         writeThread = Thread({
             val fos = FileOutputStream(tunDescriptor.fileDescriptor)
@@ -133,14 +147,33 @@ class SocksTunBridge(
             val fis = FileInputStream(tunDescriptor.fileDescriptor)
             val buffer = ByteArray(mtu + 200)
             waitForCore()
+            // SPIN FIX: `read` returning -1 (the TUN fd was closed under us) or
+            // failing repeatedly used to be treated as "nothing to do" and the
+            // loop went straight back to read() — a busy loop that outlived the
+            // session. EOF now ends the loop, and repeated errors are backed off
+            // before they can burn the battery. The fd itself is put in BLOCKING
+            // mode by the VpnService when this bridge is used (see
+            // establishTun), so an idle tunnel parks here instead of spinning on
+            // the EAGAIN-as-0 reads Android returns for a non-blocking fd.
+            var errors = 0
             while (isRunning.get()) {
                 try {
                     val n = fis.read(buffer)
-                    if (n <= 0) continue
+                    if (n < 0) break
+                    errors = 0
+                    if (n == 0) continue
                     txBytes.addAndGet(n.toLong())
                     processPacket(buffer, n)
+                } catch (_: InterruptedException) {
+                    break
                 } catch (e: Exception) {
-                    if (isRunning.get()) LogRepository.w("TUN read error: ${e.message}")
+                    if (!isRunning.get()) break
+                    LogRepository.w("TUN read error: ${e.message}")
+                    if (++errors >= MAX_CONSECUTIVE_TUN_ERRORS) {
+                        LogRepository.e("TUN reader giving up after $errors consecutive errors")
+                        break
+                    }
+                    runCatching { Thread.sleep(TUN_ERROR_BACKOFF_MS) }
                 }
             }
         }, "Aether-TunReader").apply {
@@ -152,6 +185,7 @@ class SocksTunBridge(
 
     fun stop() {
         if (!isRunning.getAndSet(false)) return
+        if (active === this) active = null
         tcpSessions.values.forEach { it.close() }
         tcpSessions.clear()
         udpSessions.values.forEach { it.close() }
@@ -159,36 +193,60 @@ class SocksTunBridge(
         executor.shutdownNow()
         readThread?.interrupt()
         writeThread?.interrupt()
+        readThread = null
+        writeThread = null
+        tunOutputQueue.clear()
     }
 
     fun getStats(): Stats = Stats(txBytes.get(), rxBytes.get())
 
+    /**
+     * Waits for the engine's local SOCKS5 listener to answer before the first
+     * packet is forwarded.
+     *
+     * NOTE: the loop used to `return@repeat` on success, which is Kotlin for
+     * *continue* — so a healthy engine still got all 25 probe connects instead
+     * of one. A plain loop with a real break keeps it to a single connect.
+     */
     private fun waitForCore() {
-        var ready = false
-        repeat(25) {
-            try {
+        var attempts = 0
+        while (attempts++ < CORE_WAIT_ATTEMPTS) {
+            val ready = runCatching {
                 Socket().use { s ->
                     runCatching { vpnService.protect(s) }
-                    s.connect(InetSocketAddress(socksHost, socksPort), 200)
+                    s.connect(InetSocketAddress(socksHost, socksPort), CORE_PROBE_TIMEOUT_MS)
                 }
-                ready = true
-                return@repeat
-            } catch (_: Exception) {
-                Thread.sleep(200)
+            }.isSuccess
+            if (ready) {
+                LogRepository.i("Link synchronization complete")
+                return
             }
+            if (!isRunning.get()) return
+            runCatching { Thread.sleep(CORE_WAIT_INTERVAL_MS) }.getOrElse { return }
         }
-        if (ready) LogRepository.i("Link synchronization complete")
+        LogRepository.w("Engine SOCKS5 port did not answer before the first packet — forwarding anyway")
     }
 
-    private fun enqueueTun(data: ByteArray, critical: Boolean = false) {
+    /**
+     * Hands a packet to the TUN writer.
+     *
+     * [critical] packets (SYN/ACK, RST, FIN, DNS answers) must not be lost, so
+     * they evict the oldest queued packet when the queue is full. Everything
+     * else applies BACK-PRESSURE instead of being dropped: this stack has no
+     * retransmission queue, and [TcpSession.readFromSocks] advances the sequence
+     * number for whatever it enqueues — so a silently dropped data segment used
+     * to leave a permanent hole in the stream and hang that connection forever.
+     * Returns false when the packet could not be queued at all.
+     */
+    private fun enqueueTun(data: ByteArray, critical: Boolean = false): Boolean {
+        if (tunOutputQueue.offer(data)) return true
         if (critical) {
-            if (!tunOutputQueue.offer(data)) {
-                tunOutputQueue.poll()
-                tunOutputQueue.offer(data)
-            }
-        } else {
-            tunOutputQueue.offer(data)
+            tunOutputQueue.poll()
+            return tunOutputQueue.offer(data)
         }
+        return runCatching {
+            tunOutputQueue.offer(data, TUN_QUEUE_WAIT_MS, TimeUnit.MILLISECONDS)
+        }.getOrDefault(false)
     }
 
     private fun processPacket(packet: ByteArray, len: Int) {
@@ -250,21 +308,14 @@ class SocksTunBridge(
             if ((flags and 0x02) != 0 && (flags and 0x10) == 0) {
                 val srcBytes = intToBytes(srcIp)
                 val dstBytes = intToBytes(dstIp)
-                val local = InetSocketAddress(InetAddress.getByAddress(srcBytes), srcPort)
-                val remote = InetSocketAddress(InetAddress.getByAddress(dstBytes), dstPort)
-                val uid = ownerUid(OsConstants.IPPROTO_TCP, local, remote)
-
-                if (uid == -1 && currentBlockedUids().isNotEmpty()) {
-                    LogRepository.w("Flow owner UID unresolved; permitting connection")
-                }
+                val uid = ownerUid(OsConstants.IPPROTO_TCP, srcBytes, srcPort, dstBytes, dstPort)
+                val seq = getLong(packet, hLen + 4)
 
                 if (isUidBlocked(uid)) {
-                    val seq = getLong(packet, hLen + 4)
                     enqueueTun(buildTcp4(dstIp, srcIp, dstPort, srcPort, null, 0, (seq + 1) and 0xFFFFFFFFL, 0x14), true)
                     return
                 }
 
-                val seq = getLong(packet, hLen + 4)
                 val newSession = TcpSession(key, 4, srcBytes, dstBytes, srcPort, dstPort, seq, uid)
                 tcpSessions[key] = newSession
                 executor.execute { newSession.run() }
@@ -274,29 +325,22 @@ class SocksTunBridge(
 
             val srcPort = getShort(packet, hLen)
             val dstPort = getShort(packet, hLen + 2)
+            // ONE copy per datagram: the same payload used to be cut out of the
+            // buffer up to three times (DNS guard, DNS sniffer, session queue).
+            val payload = packet.copyOfRange(hLen + 8, len)
 
-            if (dstPort == 53) {
-                val payload = packet.copyOfRange(hLen + 8, len)
-                val domain = extractDomainName(payload, payload.size)
-                val dstIpStr = InetAddress.getByAddress(packet.copyOfRange(16, 20)).hostAddress ?: ""
-                if (domain != null && routingEngine.resolve(dstIpStr, 53, domain, null, null).mode == studio.cluvex.aether.model.RoutingMode.BLOCK) {
-                    LogRepository.i("[DnsGuard] [Block] domain=$domain", "DnsGuard")
-                    val nxResponse = buildDnsNXResponse(payload)
-                    if (nxResponse != null) {
-                        enqueueTun(buildUdp4(dstIp, srcIp, 53, srcPort, nxResponse), true)
-                        return
-                    }
+            if (dstPort == 53 && isDnsBlocked(payload, intToBytes(dstIp))) {
+                val nxResponse = buildDnsNXResponse(payload)
+                if (nxResponse != null) {
+                    enqueueTun(buildUdp4(dstIp, srcIp, 53, srcPort, nxResponse), true)
+                    return
                 }
             }
-            
-            if (srcPort == 53) {
-                val payload = packet.copyOfRange(hLen + 8, len)
-                sniffDnsResponse(payload)
-            }
+
+            if (srcPort == 53) sniffDnsResponse(payload)
 
             val key = FlowKey4(17, srcIp, srcPort, dstIp, dstPort)
             val session = udpSessions[key]
-            val payload = packet.copyOfRange(hLen + 8, len)
 
             if (session != null) {
                 if (isUidBlocked(session.uid)) {
@@ -308,14 +352,7 @@ class SocksTunBridge(
             } else {
                 val srcBytes = intToBytes(srcIp)
                 val dstBytes = intToBytes(dstIp)
-                val local = InetSocketAddress(InetAddress.getByAddress(srcBytes), srcPort)
-                val remote = InetSocketAddress(InetAddress.getByAddress(dstBytes), dstPort)
-                val uid = ownerUid(OsConstants.IPPROTO_UDP, local, remote)
-
-                if (uid == -1 && currentBlockedUids().isNotEmpty()) {
-                    LogRepository.w("Flow owner UID unresolved; permitting connection")
-                }
-
+                val uid = ownerUid(OsConstants.IPPROTO_UDP, srcBytes, srcPort, dstBytes, dstPort)
                 if (isUidBlocked(uid)) return
 
                 val newSession = UdpSession(key, 4, srcBytes, dstBytes, srcPort, dstPort, uid)
@@ -373,21 +410,14 @@ class SocksTunBridge(
 
             val flags = packet[offset + 13].toInt() and 0xFF
             if ((flags and 0x02) != 0 && (flags and 0x10) == 0) {
-                val local = InetSocketAddress(InetAddress.getByAddress(srcIp), srcPort)
-                val remote = InetSocketAddress(InetAddress.getByAddress(dstIp), dstPort)
-                val uid = ownerUid(OsConstants.IPPROTO_TCP, local, remote)
-
-                if (uid == -1 && currentBlockedUids().isNotEmpty()) {
-                    LogRepository.w("Flow owner UID unresolved; permitting connection")
-                }
+                val uid = ownerUid(OsConstants.IPPROTO_TCP, srcIp, srcPort, dstIp, dstPort)
+                val seq = getLong(packet, offset + 4)
 
                 if (isUidBlocked(uid)) {
-                    val seq = getLong(packet, offset + 4)
                     enqueueTun(buildTcp6(dstIp, srcIp, dstPort, srcPort, null, 0, (seq + 1) and 0xFFFFFFFFL, 0x14), true)
                     return
                 }
 
-                val seq = getLong(packet, offset + 4)
                 val newSession = TcpSession(key, 6, srcIp, dstIp, srcPort, dstPort, seq, uid)
                 tcpSessions[key] = newSession
                 executor.execute { newSession.run() }
@@ -395,28 +425,21 @@ class SocksTunBridge(
         } else if (transport.nextHeader == 17) {
             if (len < offset + 8) return
 
-            if (dstPort == 53) {
-                val payload = packet.copyOfRange(offset + 8, len)
-                val domain = extractDomainName(payload, payload.size)
-                val dstIpStr = InetAddress.getByAddress(packet.copyOfRange(24, 40)).hostAddress ?: ""
-                if (domain != null && routingEngine.resolve(dstIpStr, 53, domain, null, null).mode == studio.cluvex.aether.model.RoutingMode.BLOCK) {
-                    LogRepository.i("[DnsGuard] [Block] domain=$domain", "DnsGuard")
-                    val nxResponse = buildDnsNXResponse(payload)
-                    if (nxResponse != null) {
-                        enqueueTun(buildUdp6(dstIp, srcIp, 53, srcPort, nxResponse), true)
-                        return
-                    }
+            // ONE copy per datagram (see the IPv4 branch).
+            val payload = packet.copyOfRange(offset + 8, len)
+
+            if (dstPort == 53 && isDnsBlocked(payload, dstIp)) {
+                val nxResponse = buildDnsNXResponse(payload)
+                if (nxResponse != null) {
+                    enqueueTun(buildUdp6(dstIp, srcIp, 53, srcPort, nxResponse), true)
+                    return
                 }
             }
-            
-            if (srcPort == 53) {
-                val payload = packet.copyOfRange(offset + 8, len)
-                sniffDnsResponse(payload)
-            }
+
+            if (srcPort == 53) sniffDnsResponse(payload)
 
             val key = FlowKey6(17, srcIp, srcPort, dstIp, dstPort)
             val session = udpSessions[key]
-            val payload = packet.copyOfRange(offset + 8, len)
 
             if (session != null) {
                 if (isUidBlocked(session.uid)) {
@@ -426,14 +449,7 @@ class SocksTunBridge(
                 }
                 session.queue(payload)
             } else {
-                val local = InetSocketAddress(InetAddress.getByAddress(srcIp), srcPort)
-                val remote = InetSocketAddress(InetAddress.getByAddress(dstIp), dstPort)
-                val uid = ownerUid(OsConstants.IPPROTO_UDP, local, remote)
-
-                if (uid == -1 && currentBlockedUids().isNotEmpty()) {
-                    LogRepository.w("Flow owner UID unresolved; permitting connection")
-                }
-
+                val uid = ownerUid(OsConstants.IPPROTO_UDP, srcIp, srcPort, dstIp, dstPort)
                 if (isUidBlocked(uid)) return
 
                 val newSession = UdpSession(key, 6, srcIp, dstIp, srcPort, dstPort, uid)
@@ -464,8 +480,34 @@ class SocksTunBridge(
         }
     }
 
-    private fun ownerUid(protocol: Int, local: InetSocketAddress, remote: InetSocketAddress): Int {
-        return connectionOwnerResolver.resolve(protocol, local, remote)
+    /**
+     * Owning app UID of a flow, or -1 when it cannot be resolved. An
+     * unresolvable UID is PERMITTED (fail-open), which is only worth a log line
+     * while a block list is actually active.
+     */
+    private fun ownerUid(
+        protocol: Int,
+        srcIp: ByteArray,
+        srcPort: Int,
+        dstIp: ByteArray,
+        dstPort: Int
+    ): Int {
+        val local = InetSocketAddress(InetAddress.getByAddress(srcIp), srcPort)
+        val remote = InetSocketAddress(InetAddress.getByAddress(dstIp), dstPort)
+        val uid = connectionOwnerResolver.resolve(protocol, local, remote)
+        if (uid == -1 && currentBlockedUids().isNotEmpty()) {
+            LogRepository.w("Flow owner UID unresolved; permitting connection")
+        }
+        return uid
+    }
+
+    /** True when this DNS query asks for a domain a BLOCK rule covers. */
+    private fun isDnsBlocked(payload: ByteArray, dstIp: ByteArray): Boolean {
+        val domain = extractDomainName(payload, payload.size) ?: return false
+        val dstIpStr = runCatching { InetAddress.getByAddress(dstIp).hostAddress }.getOrNull() ?: ""
+        if (routingEngine.resolve(dstIpStr, 53, domain, null, null).mode != RoutingMode.BLOCK) return false
+        LogRepository.i("[DnsGuard] [Block] domain=$domain", "DnsGuard")
+        return true
     }
 
     private fun underlyingNetwork(): Network? {
@@ -613,7 +655,7 @@ class SocksTunBridge(
                 var synAckSent = false
                 var sniffedDomain: String? = null
 
-                if (decision.mode == studio.cluvex.aether.model.RoutingMode.TUNNEL && cachedDomain == null && (serverPort == 80 || serverPort == 443)) {
+                if (decision.mode == RoutingMode.TUNNEL && cachedDomain == null && (serverPort == 80 || serverPort == 443)) {
                     val synAck = if (version == 4) {
                         buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
                     } else {
@@ -640,7 +682,7 @@ class SocksTunBridge(
                     }
                 }
 
-                val requestedDirect = decision.mode == studio.cluvex.aether.model.RoutingMode.DIRECT
+                val requestedDirect = decision.mode == RoutingMode.DIRECT
                 val directNetwork = if (requestedDirect) underlyingNetwork() else null
                 val useDirect = requestedDirect && directNetwork != null && (version == 4 || supportsIpv6(directNetwork))
 
@@ -663,7 +705,7 @@ class SocksTunBridge(
                     return
                 }
 
-                if (decision.mode == studio.cluvex.aether.model.RoutingMode.BLOCK) {
+                if (decision.mode == RoutingMode.BLOCK) {
                     if (synAckSent) {
                         val rst = if (version == 4) {
                             buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x04)
@@ -796,7 +838,18 @@ class SocksTunBridge(
                             buildTcp6(serverIp, clientIp, serverPort, clientPort, chunk, mySeq.get(), myAck.get(), 0x18)
                         }
 
-                        enqueueTun(packet)
+                        // STREAM-INTEGRITY FIX: the sequence number may only
+                        // advance for a segment the writer really accepted.
+                        // Dropping one silently (queue full) left a hole no
+                        // retransmission could ever fill, and the connection
+                        // hung until it timed out. If even the back-pressured
+                        // enqueue fails, tear the session down instead —
+                        // an honest reset beats a stalled socket.
+                        if (!enqueueTun(packet)) {
+                            LogRepository.w("TUN queue saturated — resetting stalled TCP session")
+                            close()
+                            return
+                        }
                         mySeq.set((mySeq.get() + chunkLen) and 0xFFFFFFFFL)
                         offset += chunkLen
                     }
@@ -841,7 +894,7 @@ class SocksTunBridge(
                 val targetDomain = DnsMap.get(targetIpStr)
                 
                 val decision = routingEngine.resolve(targetIpStr, serverPort, targetDomain, null, null)
-                val requestedDirect = decision.mode == studio.cluvex.aether.model.RoutingMode.DIRECT
+                val requestedDirect = decision.mode == RoutingMode.DIRECT
                 val directNetwork = if (requestedDirect) underlyingNetwork() else null
                 val isDirect = requestedDirect && directNetwork != null && (version == 4 || supportsIpv6(directNetwork))
 
@@ -863,7 +916,7 @@ class SocksTunBridge(
                     return
                 }
                 
-                if (decision.mode == studio.cluvex.aether.model.RoutingMode.BLOCK) {
+                if (decision.mode == RoutingMode.BLOCK) {
                     close()
                     return
                 }
@@ -1154,7 +1207,7 @@ class SocksTunBridge(
             
             repeat(aCount) {
                 if (pos + 12 > data.size) return@repeat
-                
+
                 if ((data[pos].toInt() and 0xFF) >= 0xC0) {
                     pos += 2
                 } else {
@@ -1164,7 +1217,12 @@ class SocksTunBridge(
                         pos += l + 1
                     }
                 }
-                
+
+                // The name above is variable-length, so re-check the bounds
+                // before reading TYPE/RDLENGTH — a truncated or malformed
+                // answer used to throw and abort the whole parse.
+                if (pos + 10 > data.size) return
+
                 val type = getShort(data, pos)
                 val rdLen = getShort(data, pos + 8)
                 pos += 10
@@ -1524,5 +1582,28 @@ class SocksTunBridge(
                 ((b[1].toInt() and 0xFF) shl 16) or
                 ((b[2].toInt() and 0xFF) shl 8) or
                 (b[3].toInt() and 0xFF)
+    }
+
+    companion object {
+        /**
+         * The bridge that is currently reading the TUN, or null. Published so
+         * the traffic meter has a byte source in per-app-blocking mode, where
+         * hev-socks5-tunnel — and therefore its stats API — never runs.
+         */
+        @Volatile
+        var active: SocksTunBridge? = null
+            private set
+
+        /** How long the TUN reader waits for the engine's SOCKS5 listener. */
+        private const val CORE_WAIT_ATTEMPTS = 25
+        private const val CORE_WAIT_INTERVAL_MS = 200L
+        private const val CORE_PROBE_TIMEOUT_MS = 200
+
+        /** Give up on the TUN fd after this many consecutive read errors. */
+        private const val MAX_CONSECUTIVE_TUN_ERRORS = 20
+        private const val TUN_ERROR_BACKOFF_MS = 50L
+
+        /** Back-pressure window for non-critical packets (see [enqueueTun]). */
+        private const val TUN_QUEUE_WAIT_MS = 250L
     }
 }

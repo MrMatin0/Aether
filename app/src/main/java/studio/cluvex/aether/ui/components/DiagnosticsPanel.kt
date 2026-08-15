@@ -35,9 +35,11 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
@@ -85,13 +87,13 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
                 Spacer(Modifier.size(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = androidx.compose.ui.res.stringResource(R.string.diag_title),
+                        text = stringResource(R.string.diag_title),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = androidx.compose.ui.res.stringResource(overall.captionRes),
+                        text = stringResource(overall.captionRes),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -117,7 +119,7 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
                             onClick = { scope.launch { Diagnostics.run() } },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(androidx.compose.ui.res.stringResource(R.string.diag_run))
+                            Text(stringResource(R.string.diag_run))
                         }
                         TextButton(
                             onClick = {
@@ -129,10 +131,10 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
                                 ).show()
                             },
                         ) {
-                            Text(androidx.compose.ui.res.stringResource(R.string.diag_copy))
+                            Text(stringResource(R.string.diag_copy))
                         }
                         TextButton(onClick = { DiagnosticsLog.clear() }) {
-                            Text(androidx.compose.ui.res.stringResource(R.string.diag_clear))
+                            Text(stringResource(R.string.diag_clear))
                         }
                     }
 
@@ -212,7 +214,7 @@ private fun LogConsole() {
     ) {
         if (lines.isEmpty()) {
             Text(
-                text = androidx.compose.ui.res.stringResource(R.string.diag_empty_logs),
+                text = stringResource(R.string.diag_empty_logs),
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF8A93A6),
             )
@@ -239,7 +241,7 @@ private fun logColor(level: LogLevel): Color = when (level) {
 }
 
 @Composable
-private fun StatusDot(color: Color, size: androidx.compose.ui.unit.Dp) {
+private fun StatusDot(color: Color, size: Dp) {
     Box(
         modifier = Modifier
             .size(size)

@@ -176,10 +176,9 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.blockedApps] = profile.blockedApps.joinToString(",")
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
+        // Writing a blank value clears the entry, so "Reset settings" (which
+        // saves a default profile) wipes them through this same path.
         secrets.write(SecretStore.ACCESS_SECRET, profile.accessClientSecret)
         secrets.write(SecretStore.ACCESS_TOKEN, profile.accessToken)
     }
-
-    /** Wipes the sealed Zero Trust secrets (used by "Reset settings"). */
-    fun clearSecrets() = secrets.clear()
 }

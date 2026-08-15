@@ -46,6 +46,9 @@ class RoutingEngine(rules: List<RoutingRule>) {
     private val decisionCache = ConcurrentHashMap<String, RoutingDecision>()
     private val containsDomainRules = compiledRules.any { !it.normalizedPattern.startsWith("ip:") }
 
+    /** Verdict every flow gets when no rules are configured at all. */
+    private val tunnelByDefault = RoutingDecision(RoutingMode.TUNNEL, null, MatchType.DEFAULT, null)
+
     fun hasDomainRules(): Boolean = containsDomainRules
 
     fun resolve(
@@ -55,16 +58,40 @@ class RoutingEngine(rules: List<RoutingRule>) {
         tlsSni: String?,
         httpHost: String?
     ): RoutingDecision {
+        // MEMORY-LEAK FIX: with no rules there is nothing to decide, yet every
+        // flow still allocated a cache key and kept it forever — and this
+        // classifier runs with an EMPTY rule list in Aether's default per-app
+        // blocking setup, so the map grew by one entry per unique
+        // ip:port:domain tuple for the whole life of the session.
+        if (compiledRules.isEmpty()) {
+            return if (resolvedDomain == null && tlsSni == null && httpHost == null) {
+                tunnelByDefault
+            } else {
+                RoutingDecision(
+                    RoutingMode.TUNNEL,
+                    null,
+                    MatchType.DEFAULT,
+                    normalizeDomain(resolvedDomain ?: tlsSni ?: httpHost),
+                )
+            }
+        }
         val normalizedDomain = normalizeDomain(resolvedDomain)
         val normalizedSni = normalizeDomain(tlsSni)
         val normalizedHost = normalizeDomain(httpHost)
         val key = "$destinationIp:$destinationPort:$normalizedDomain:$normalizedSni:$normalizedHost"
-        return decisionCache[key] ?: resolveInternal(
+        decisionCache[key]?.let { return it }
+        val decision = resolveInternal(
             destinationIp,
             normalizedDomain,
             normalizedSni,
             normalizedHost
-        ).also { decisionCache[key] = it }
+        )
+        // Bounded: a long session on a busy device sees tens of thousands of
+        // distinct destinations. Dropping the whole cache is fine — it only
+        // costs a re-match, never correctness.
+        if (decisionCache.size >= MAX_CACHE_ENTRIES) decisionCache.clear()
+        decisionCache[key] = decision
+        return decision
     }
 
     private fun resolveInternal(
@@ -173,7 +200,8 @@ class RoutingEngine(rules: List<RoutingRule>) {
         return value?.trim()?.trimEnd('.')?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
     }
 
-    fun clearCache() {
-        decisionCache.clear()
+    private companion object {
+        /** Upper bound for [decisionCache] before it is dropped wholesale. */
+        const val MAX_CACHE_ENTRIES = 4096
     }
 }

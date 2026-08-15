@@ -152,8 +152,11 @@ object ShareBridge {
      * meant "connected" with nothing listening on 1080/8118.
      */
     fun startSync(localOnly: Boolean = false): Boolean = synchronized(this) {
-        // Already up with a healthy listener? Nothing to do.
-        if (_active.value && (socksServer?.isClosed == false || httpServer?.isClosed == false)) {
+        // Already up with BOTH listeners healthy? Nothing to do. (The old check
+        // was an OR, so a session that had lost one of its two listeners still
+        // reported success — and in proxy mode that return value is the ground
+        // truth the VpnService gates "Connected" on.)
+        if (_active.value && socksServer?.isClosed == false && httpServer?.isClosed == false) {
             return@synchronized true
         }
 
