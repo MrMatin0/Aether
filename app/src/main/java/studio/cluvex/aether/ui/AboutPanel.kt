@@ -1,8 +1,6 @@
 package studio.cluvex.aether.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,10 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,9 +29,14 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.R
+import studio.cluvex.aether.ui.components.Hairline
+import studio.cluvex.aether.ui.components.SectionRule
+import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.theme.AetherNumeral
 
 private const val URL_ORIGINAL_GITHUB = "https://github.com/CluvexStudio/Aether"
 private const val URL_ORIGINAL_TELEGRAM = "https://t.me/CluvexStudio"
@@ -64,135 +63,146 @@ private val PORT_IMPROVEMENTS = listOf(
     "Automatic reconnect with backoff and per-scan-mode connect timeouts",
     "Protocol, scan-mode and IP-version controls in a Material 3 UI (English + فارسی)",
     "Quick Settings tile — connect/disconnect straight from the notification shade",
-    "Share the VPN over Wi‑Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops & other phones",
-    "Advanced settings reachable right from the home screen",
+    "Share the VPN over Wi\u2011Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops & other phones",
+    "Three-destination UI with a live connect pipeline, traffic sparkline and a real log console",
     "Signed per-ABI release APKs published automatically from GitHub Actions",
     "Engine version shown in About, so the bundled core is always verifiable",
     "Zero Trust (WARP for organizations), split routing rules and custom in-tunnel DNS",
 )
 
 /**
- * Collapsible "About" card: credits the upstream Aether project (Cluvex
- * Studio) with its GitHub + Telegram links and feature set, then lists what
- * this Android edition (QW-AI-Code) adds on top.
+ * Credits and provenance: the upstream engine (Cluvex Studio) and what this
+ * Android edition adds.
+ *
+ * The version numbers and links are what people actually come here for — they
+ * are needed to file a useful bug report — so those are always visible now.
+ * Only the two long feature lists are behind a toggle; rendering nineteen
+ * bullet points by default buried the one line someone needed.
  */
 @Composable
 fun AboutPanel(modifier: Modifier = Modifier) {
-    var expanded by remember { mutableStateOf(false) }
-    val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "aboutArrow")
+    var showFeatures by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "1.1.0"
+        }.getOrNull() ?: "1.2.5"
     }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-        ),
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
+    Column(modifier = modifier.fillMaxWidth()) {
+        SectionRule(label = stringResource(R.string.about_title))
+
+        Hairline(alpha = 0.55f)
+        VersionRow(
+            label = stringResource(R.string.about_version, "").trim(),
+            value = versionName ?: "",
+        )
+        Hairline(alpha = 0.55f)
+        // BuildConfig.CORE_VERSION is stamped at build time from
+        // native/aether/CORE_VERSION, i.e. from whatever sync-core.sh actually
+        // vendored for THIS build — so it is verifiable, not decorative.
+        VersionRow(
+            label = stringResource(R.string.about_core_version, "").trim(),
+            value = BuildConfig.CORE_VERSION,
+        )
+        Hairline(alpha = 0.55f)
+
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text = stringResource(R.string.about_original_title),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = stringResource(R.string.about_original_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        LinkRow(R.drawable.ic_github, "github.com/CluvexStudio/Aether", URL_ORIGINAL_GITHUB)
+        LinkRow(R.drawable.ic_telegram, "t.me/CluvexStudio", URL_ORIGINAL_TELEGRAM)
+
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text = stringResource(R.string.about_port_title),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = stringResource(R.string.about_port_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        LinkRow(R.drawable.ic_github, "github.com/QW-AI-Code", URL_PORT_GITHUB)
+
+        Spacer(Modifier.height(16.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showFeatures = !showFeatures }
+                .padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.about_subtitle),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.Rounded.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    .size(20.dp)
+                    .rotate(if (showFeatures) 180f else 0f),
+            )
+        }
+
+        AnimatedVisibility(visible = showFeatures) {
+            Column {
+                Text(
+                    text = stringResource(R.string.about_original_title),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.about_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = stringResource(R.string.about_subtitle),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Rounded.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.rotate(arrowRotation),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                Spacer(Modifier.height(8.dp))
+                FeatureList(ORIGINAL_FEATURES)
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    text = stringResource(R.string.about_port_title),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 20.dp)) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    Spacer(Modifier.height(14.dp))
-
-                    Text(
-                        text = stringResource(R.string.about_version, versionName),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    // Engine (core) version — same idea as the Windows edition's
-                    // About page, which shows app version AND core version so a
-                    // user can verify the bundled engine is current.
-                    // BuildConfig.CORE_VERSION is stamped at build time from
-                    // native/aether/CORE_VERSION, i.e. from whatever
-                    // scripts/sync-core.sh actually vendored for THIS build.
-                    Text(
-                        text = stringResource(R.string.about_core_version, BuildConfig.CORE_VERSION),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    Spacer(Modifier.height(16.dp))
-
-                    // ---- Original project (Cluvex Studio) ----
-                    SectionHeader(
-                        title = stringResource(R.string.about_original_title),
-                        note = stringResource(R.string.about_original_note),
-                    )
-                    LinkRow(R.drawable.ic_github, "github.com/CluvexStudio/Aether", URL_ORIGINAL_GITHUB)
-                    LinkRow(R.drawable.ic_telegram, "t.me/CluvexStudio", URL_ORIGINAL_TELEGRAM)
-                    Spacer(Modifier.height(6.dp))
-                    FeatureList(ORIGINAL_FEATURES)
-
-                    Spacer(Modifier.height(16.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    Spacer(Modifier.height(14.dp))
-
-                    // ---- This Android edition (QW-AI-Code) ----
-                    SectionHeader(
-                        title = stringResource(R.string.about_port_title),
-                        note = stringResource(R.string.about_port_note),
-                    )
-                    LinkRow(R.drawable.ic_github, "github.com/QW-AI-Code", URL_PORT_GITHUB)
-                    Spacer(Modifier.height(6.dp))
-                    FeatureList(PORT_IMPROVEMENTS)
-                }
+                Spacer(Modifier.height(8.dp))
+                FeatureList(PORT_IMPROVEMENTS)
             }
         }
     }
 }
 
 @Composable
-private fun SectionHeader(title: String, note: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-    )
-    Text(
-        text = note,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(6.dp))
+private fun VersionRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = AetherMetaLabel,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }
 
 @Composable
@@ -202,19 +212,19 @@ private fun LinkRow(iconRes: Int, label: String, url: String) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable { runCatching { uriHandler.openUri(url) } }
-            .padding(vertical = 7.dp),
+            .padding(vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             painter = painterResource(iconRes),
             contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(17.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(10.dp))
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -223,15 +233,15 @@ private fun LinkRow(iconRes: Int, label: String, url: String) {
 
 @Composable
 private fun FeatureList(items: List<String>) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items.forEach { item ->
             Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    text = "•",
+                    text = "\u2014",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(10.dp))
                 Text(
                     text = item,
                     style = MaterialTheme.typography.bodySmall,

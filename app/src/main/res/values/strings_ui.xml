@@ -26,6 +26,7 @@
     <string name="phase_ready">Ready</string>
     <string name="busy_elapsed">Elapsed %1$s</string>
     <string name="busy_hint">%1$s scan. On a heavily filtered network this can take a few minutes — you can leave this screen, it keeps going.</string>
+    <string name="state_verify_hint">Checking that traffic really flows end to end before calling this connected.</string>
 
     <!-- Settings -->
     <string name="section_connection">Connection</string>

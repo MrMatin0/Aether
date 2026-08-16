@@ -24,6 +24,7 @@
     <string name="phase_ready">آماده</string>
     <string name="busy_elapsed">زمان سپری‌شده %1$s</string>
     <string name="busy_hint">اسکن %1$s. روی شبکه‌های به‌شدت فیلترشده ممکن است چند دقیقه طول بکشد — می‌توانید این صفحه را ترک کنید، کار ادامه دارد.</string>
+    <string name="state_verify_hint">پیش از اعلام اتصال، بررسی می‌شود که ترافیک واقعاً انتهابه‌انتها عبور می‌کند.</string>
 
     <!-- تنظیمات -->
     <string name="section_connection">اتصال</string>
