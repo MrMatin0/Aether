@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
@@ -104,6 +105,9 @@ private const val TAB_DIAGNOSTICS = 2
  * New structure: three destinations on a bottom bar, with the primary action
  * pinned directly above it — also a reachability fix, since the old 220dp
  * circle sat in the upper half of the screen where a thumb cannot go.
+ *
+ * 1.3.0 adds the in-app language pill to the header and four panels to the
+ * Settings destination (language, saved setups, automation, session history).
  */
 @Composable
 fun HomeScreen(
@@ -179,10 +183,14 @@ fun HomeScreen(
 // ---------------------------------------------------------------- chrome ----
 
 /**
- * 1.3.0: the language pill lives HERE, between the wordmark and the state
- * badge. It is the one setting whose control must be readable by someone who
- * cannot read the rest of the app, so it cannot be the reward for finding the
- * right settings section.
+ * 1.3.0: the header carries the language pill next to the state pill.
+ *
+ * It belongs HERE, not in Settings. Someone who opened the app and cannot read
+ * it has no way to know which of three destinations, and which of its sections,
+ * would let them fix that. Two characters at the top of the first screen do.
+ *
+ * The title block keeps weight(1f) and the tagline is now clipped to one line,
+ * so a long translated tagline can never push the pills off the edge.
  */
 @Composable
 private fun TopBar(mode: ButtonMode, accent: Color) {
@@ -197,15 +205,19 @@ private fun TopBar(mode: ButtonMode, accent: Color) {
                 text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
             )
             Text(
                 text = stringResource(R.string.tagline),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        LanguageToggle(accent = accent)
         Spacer(Modifier.width(10.dp))
+        LanguageToggle(accent = accent)
+        Spacer(Modifier.width(8.dp))
         StatePill(mode = mode, accent = accent)
     }
 }
@@ -234,8 +246,6 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
     ) {
         Box(modifier = Modifier.size(7.dp).background(tint, CircleShape))
         Spacer(Modifier.width(8.dp))
-        // maxLines: the header now carries the language pill too, and the
-        // Persian state words are longer than the English ones.
         Text(text = label, style = AetherMetaLabel, color = tint, maxLines = 1)
     }
 }
@@ -473,10 +483,21 @@ private fun ElapsedCounter(active: Boolean) {
 }
 
 /**
- * Settings, top to bottom: language first (you cannot fix the wrong language
- * from a section you cannot read), then the engine knobs, then the things that
- * happen without you (automation), then setups you can move between phones,
- * then sharing, then what the app recorded, then about.
+ * The Settings destination.
+ *
+ * Order is deliberate and follows "how likely is this to be the reason you came
+ * here":
+ *
+ *   1. Language — if the app is in a language you cannot read, every other
+ *      section below is unusable, so it can never sit under them.
+ *   2. Engine settings (AdvancedPanel) — the controls that decide whether a
+ *      connection succeeds at all.
+ *   3. Saved setups — the settings that worked, re-applied in one tap. Gated on
+ *      [settingsEnabled] like the engine settings, because a setup rewrites the
+ *      same arguments and those are only read at launch.
+ *   4. Automation — when Aether connects by itself, and what it keeps.
+ *   5. Session history — what the tunnel actually did, after the fact.
+ *   6. Share / About — occasional, so last.
  */
 @Composable
 private fun SettingsTab(
@@ -501,18 +522,18 @@ private fun SettingsTab(
             onProfileChange = onProfileChange,
             enabled = settingsEnabled,
         )
-        AutomationPanel()
         PresetsPanel(
             profile = profile,
             onProfileChange = onProfileChange,
             enabled = settingsEnabled,
         )
+        AutomationPanel()
+        HistoryPanel()
         SharePanel(
             state = state,
             profile = profile,
             onProfileChange = onProfileChange,
         )
-        HistoryPanel()
         AboutPanel()
         Spacer(Modifier.height(32.dp))
     }
