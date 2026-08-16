@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ناوبری پایین -->
+    <string name="nav_connection">اتصال</string>
+    <string name="nav_settings">تنظیمات</string>
+    <string name="nav_diagnostics">عیب‌یابی</string>
+
+    <!-- کنش اصلی -->
+    <string name="action_connect">اتصال</string>
+    <string name="action_cancel">انصراف</string>
+    <string name="action_disconnect">قطع اتصال</string>
+    <string name="action_retry">تلاش مجدد</string>
+
+    <!-- نشان وضعیت -->
+    <string name="pill_off">محافظت‌نشده</string>
+    <string name="pill_working">در حال کار</string>
+    <string name="pill_secure">محافظت‌شده</string>
+    <string name="pill_failed">ناموفق</string>
+
+    <!-- مراحل اتصال -->
+    <string name="phase_engine">هسته</string>
+    <string name="phase_tunnel">تونل</string>
+    <string name="phase_verify">بررسی</string>
+    <string name="phase_ready">آماده</string>
+    <string name="busy_elapsed">زمان سپری‌شده %1$s</string>
+    <string name="busy_hint">اسکن %1$s. روی شبکه‌های به‌شدت فیلترشده ممکن است چند دقیقه طول بکشد — می‌توانید این صفحه را ترک کنید، کار ادامه دارد.</string>
+    <string name="state_verify_hint">پیش از اعلام اتصال، بررسی می‌شود که ترافیک واقعاً انتهابه‌انتها عبور می‌کند.</string>
+
+    <!-- تنظیمات -->
+    <string name="section_connection">اتصال</string>
+    <string name="settings_mode_basic">ضروری‌ها</string>
+    <string name="settings_mode_full">همه</string>
+    <string name="settings_locked">برای تغییر این تنظیمات ابتدا اتصال را قطع کنید.</string>
+    <string name="settings_expert_note">مقادیر پیش‌فرض برای بیشتر شبکه‌ها کار می‌کند. این‌ها را فقط وقتی اتصال مکرراً ناموفق است تغییر دهید.</string>
+
+    <!-- عیب‌یابی -->
+    <string name="diag_checks">بررسی اجزا</string>
+    <string name="diag_console">لاگ هسته</string>
+    <string name="log_all">همه</string>
+    <string name="log_warn">هشدارها</string>
+    <string name="log_err">خطاها</string>
+
+    <!-- ترافیک -->
+    <string name="traffic_title">ترافیک زنده</string>
+
+    <!-- آنبوردینگ -->
+    <string name="onboarding_step">%1$d از %2$d</string>
+</resources>

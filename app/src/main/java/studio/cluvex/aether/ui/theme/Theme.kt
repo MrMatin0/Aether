@@ -1,59 +1,100 @@
 package studio.cluvex.aether.ui.theme
 
 import android.app.Activity
-import android.os.Build
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// Fallback scheme: a stunning navy dark theme for devices below Android 12.
-private val AetherDarkColorScheme = darkColorScheme(
-    primary = AetherBlue,
-    onPrimary = Color.White,
-    secondary = AetherCyan,
-    onSecondary = Color(0xFF04211C),
-    tertiary = AetherCyan,
-    background = Navy900,
-    onBackground = OnDark,
-    surface = Navy800,
-    onSurface = OnDark,
-    surfaceVariant = Navy700,
-    onSurfaceVariant = OnDarkMuted,
-    error = AetherError,
-    onError = Color.White,
-    outline = Navy600,
+/*
+ * WHY DYNAMIC COLOUR IS GONE
+ *
+ * The old theme called dynamicDarkColorScheme() on Android 12+, so the app's
+ * colours came from the user's wallpaper. Three problems, all real:
+ *
+ *   1. State colour stopped meaning anything. "Connected" was drawn with
+ *      colorScheme.primary on some screens and a hardcoded cyan on others, so
+ *      on a warm wallpaper the "safe" colour could come out the same orange as
+ *      the "failed" colour.
+ *   2. Contrast was a lottery. Wallpaper-derived schemes can land on low
+ *      chroma greys where the log console and the hairline rules disappear.
+ *   3. A censorship-circumvention tool needs a recognisable identity. If every
+ *      phone renders it differently, screenshots in a support thread stop
+ *      matching what the person reporting the bug sees.
+ *
+ * So the scheme is now fixed and hand-built. The full surfaceContainer* family
+ * is specified too: dropdown menus and bottom sheets read those roles, and
+ * leaving them at Material's defaults is why menus used to appear as slightly
+ * purple grey boxes that matched nothing else on screen.
+ */
+private val AetherColorScheme = darkColorScheme(
+    primary = Signal,
+    onPrimary = OnSignal,
+    primaryContainer = SignalWash,
+    onPrimaryContainer = Signal,
+    inversePrimary = SignalDeep,
+
+    secondary = Ember,
+    onSecondary = OnEmber,
+    secondaryContainer = EmberWash,
+    onSecondaryContainer = Ember,
+
+    tertiary = Chalk,
+    onTertiary = Carbon00,
+    tertiaryContainer = Carbon20,
+    onTertiaryContainer = Chalk,
+
+    background = Carbon00,
+    onBackground = Chalk,
+
+    surface = Carbon10,
+    onSurface = Chalk,
+    surfaceVariant = Carbon20,
+    onSurfaceVariant = ChalkMuted,
+    surfaceTint = Signal,
+
+    surfaceBright = Carbon30,
+    surfaceDim = Carbon00,
+    surfaceContainerLowest = Carbon00,
+    surfaceContainerLow = Carbon05,
+    surfaceContainer = Carbon10,
+    surfaceContainerHigh = Carbon15,
+    surfaceContainerHighest = Carbon20,
+
+    inverseSurface = Chalk,
+    inverseOnSurface = Carbon00,
+
+    error = Clay,
+    onError = OnClay,
+    errorContainer = ClayWash,
+    onErrorContainer = Clay,
+
+    outline = Carbon40,
+    outlineVariant = Carbon30,
+    scrim = Color(0xCC050704),
 )
 
 /**
- * Material You: uses the wallpaper-derived dynamic dark palette on Android 12+,
- * and falls back to the navy scheme otherwise. Always dark by design.
+ * The app theme. Always dark, always these colours.
  */
 @Composable
 fun AetherTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context)
-    } else {
-        AetherDarkColorScheme
-    }
-
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
             WindowCompat.setDecorFitsSystemWindows(window, false)
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = false
+            controller.isAppearanceLightNavigationBars = false
         }
     }
 
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = AetherColorScheme,
         typography = AetherTypography,
         content = content,
     )
