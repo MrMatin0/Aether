@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="aether_background">#0A0E1A</color>
-    <color name="aether_surface">#0F1626</color>
-    <color name="aether_primary">#4C8DFF</color>
+    <!-- Kept in sync with ui/theme/Color.kt ("Carbon & Signal"). These feed the
+         window background, the notification and the home-screen widget, so they
+         must match what Compose draws or the app flashes a different colour on
+         cold start. -->
+    <color name="aether_background">#090B08</color>
+    <color name="aether_surface">#12160F</color>
+    <color name="aether_primary">#A9E34B</color>
+    <color name="aether_on_primary">#0B1204</color>
+    <color name="aether_text">#EDF2E6</color>
+    <color name="aether_text_muted">#A6B09B</color>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
 </resources>
