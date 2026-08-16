@@ -2,13 +2,13 @@ package studio.cluvex.aether.ui.components
 
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -42,7 +43,6 @@ import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SocksTunBridge
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
-import studio.cluvex.aether.ui.theme.Signal
 
 private const val HISTORY = 48
 
@@ -59,8 +59,8 @@ private const val HISTORY = 48
  * What is new is the reading of it. Two numbers that change every second tell
  * you the rate right now but nothing about the last minute, so a tunnel that
  * has quietly stalled looks identical to an idle one. The 48-sample sparkline
- * makes that difference obvious at a glance. The history lists are read inside
- * the Canvas draw lambda, so plotting costs a redraw, not a recomposition.
+ * makes that difference obvious at a glance. History is read inside the Canvas
+ * draw lambda, so plotting costs a redraw, not a recomposition.
  */
 @Composable
 fun TrafficPanel(
@@ -158,7 +158,7 @@ private fun RateCell(
                 imageVector = icon,
                 contentDescription = label,
                 tint = tint,
-                modifier = Modifier.height(14.dp).width(14.dp),
+                modifier = Modifier.size(14.dp),
             )
             Spacer(Modifier.width(6.dp))
             Text(
@@ -206,8 +206,8 @@ private fun Sparkline(
 
         drawLine(
             color = baseline,
-            start = androidx.compose.ui.geometry.Offset(0f, floorY),
-            end = androidx.compose.ui.geometry.Offset(size.width, floorY),
+            start = Offset(0f, floorY),
+            end = Offset(size.width, floorY),
             strokeWidth = 1f,
         )
 
@@ -260,6 +260,3 @@ private fun formatBytes(v: Long): String {
 }
 
 private fun formatRate(v: Long): String = formatBytes(v) + "/s"
-
-/** Kept so the accent import is meaningful if the palette is ever swapped. */
-private val UnusedAccentAnchor: Color = Signal

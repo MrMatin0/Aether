@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui.components
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,17 +14,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,21 +37,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.runtime.collectAsState
-import android.widget.Toast
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.CheckState
@@ -54,15 +57,40 @@ import studio.cluvex.aether.core.Diagnostics
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.LogLevel
 import studio.cluvex.aether.core.LogLine
+import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.theme.AetherMono
+import studio.cluvex.aether.ui.theme.Carbon00
+import studio.cluvex.aether.ui.theme.ChalkFaint
+import studio.cluvex.aether.ui.theme.ChalkMuted
+import studio.cluvex.aether.ui.theme.Clay
+import studio.cluvex.aether.ui.theme.Ember
+import studio.cluvex.aether.ui.theme.Signal
+
+private enum class LogFilter { ALL, WARN, ERROR }
 
 /**
- * A collapsible “pro” panel that shows the live status of every part of the
- * tunnel plus a scrollable, copyable technical log. This is what tells the user
- * exactly WHY no site loads even though the button says connected.
+ * The panel that answers "it says connected, so why does nothing load?".
+ *
+ * It used to be a collapsed card at the top of a drawer, which meant the one
+ * screen that explains a failure was also the hardest to find. It is now a
+ * first-class destination ([alwaysExpanded]) with:
+ *
+ *  - numbered checks, so "step 3 failed" is something a user can actually say
+ *    out loud in a bug report,
+ *  - a level filter, because the interesting line is usually one WARN inside
+ *    four hundred DEBUG lines,
+ *  - autoscroll, so a running scan streams instead of having to be dragged.
+ *
+ * The 1.2.2 performance rule still holds: the log flow is collected only by
+ * [LogConsole], and only while the console is actually on screen.
  */
 @Composable
-fun DiagnosticsPanel(modifier: Modifier = Modifier) {
-    var expanded by remember { mutableStateOf(false) }
+fun DiagnosticsPanel(
+    modifier: Modifier = Modifier,
+    alwaysExpanded: Boolean = false,
+    consoleMaxHeight: Dp = 300.dp,
+) {
+    var expanded by remember { mutableStateOf(alwaysExpanded) }
     val checks by DiagnosticsLog.checks.collectAsState()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
@@ -70,34 +98,31 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
 
     val overall = overallState(checks)
 
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-    ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            // Header (tap to expand).
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                StatusDot(color = overall.color, size = 12.dp)
-                Spacer(Modifier.size(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.diag_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = stringResource(overall.captionRes),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (alwaysExpanded) Modifier else Modifier.clickable { expanded = !expanded },
+                )
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(color = overall.color, size = 10.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.diag_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(overall.captionRes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!alwaysExpanded) {
                 Icon(
                     imageVector = Icons.Rounded.ExpandMore,
                     contentDescription = null,
@@ -105,43 +130,60 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
                     modifier = Modifier.rotate(if (expanded) 180f else 0f),
                 )
             }
+        }
 
-            AnimatedVisibility(visible = expanded) {
-                Column {
-                    Spacer(Modifier.height(16.dp))
-
-                    checks.forEach { CheckRow(it) }
-
-                    Spacer(Modifier.height(16.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { scope.launch { Diagnostics.run() } },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(stringResource(R.string.diag_run))
-                        }
-                        TextButton(
-                            onClick = {
-                                clipboard.setText(AnnotatedString(DiagnosticsLog.exportText()))
-                                Toast.makeText(
-                                    context,
-                                    context.getString(R.string.diag_copied),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            },
-                        ) {
-                            Text(stringResource(R.string.diag_copy))
-                        }
-                        TextButton(onClick = { DiagnosticsLog.clear() }) {
-                            Text(stringResource(R.string.diag_clear))
-                        }
-                    }
-
-                    Spacer(Modifier.height(12.dp))
-
-                    LogConsole()
+        AnimatedVisibility(visible = expanded) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    ActionPill(
+                        label = stringResource(R.string.diag_run),
+                        onClick = { scope.launch { Diagnostics.run() } },
+                        icon = Icons.Rounded.Refresh,
+                        filled = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ActionPill(
+                        label = stringResource(R.string.diag_copy),
+                        onClick = {
+                            clipboard.setText(AnnotatedString(DiagnosticsLog.exportText()))
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.diag_copied),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                        icon = Icons.Rounded.ContentCopy,
+                        tint = ChalkMuted,
+                    )
+                    ActionPill(
+                        label = stringResource(R.string.diag_clear),
+                        onClick = { DiagnosticsLog.clear() },
+                        icon = Icons.Rounded.Close,
+                        tint = ChalkMuted,
+                    )
                 }
+
+                SectionRule(label = stringResource(R.string.diag_checks))
+
+                if (checks.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.diag_idle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ChalkFaint,
+                    )
+                } else {
+                    Hairline(alpha = 0.55f)
+                    checks.forEachIndexed { index, check ->
+                        CheckRow(index = index + 1, check = check)
+                        Hairline(alpha = 0.55f)
+                    }
+                }
+
+                SectionRule(label = stringResource(R.string.diag_console))
+                LogConsole(maxHeight = consoleMaxHeight)
             }
         }
     }
@@ -150,28 +192,33 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
 private data class Overall(val color: Color, val captionRes: Int)
 
 private fun overallState(checks: List<ComponentCheck>): Overall = when {
-    checks.isEmpty() -> Overall(Color(0xFF8A93A6), R.string.diag_idle)
-    checks.any { it.state == CheckState.FAIL } -> Overall(Color(0xFFFF5C7A), R.string.diag_problem)
-    checks.all { it.state == CheckState.PASS } -> Overall(Color(0xFF32E0C4), R.string.diag_all_ok)
-    else -> Overall(Color(0xFFF5C451), R.string.diag_idle)
+    checks.isEmpty() -> Overall(ChalkFaint, R.string.diag_idle)
+    checks.any { it.state == CheckState.FAIL } -> Overall(Clay, R.string.diag_problem)
+    checks.all { it.state == CheckState.PASS } -> Overall(Signal, R.string.diag_all_ok)
+    else -> Overall(Ember, R.string.diag_idle)
 }
 
 @Composable
-private fun CheckRow(check: ComponentCheck) {
+private fun CheckRow(index: Int, check: ComponentCheck) {
     val color = when (check.state) {
-        CheckState.PASS -> Color(0xFF32E0C4)
-        CheckState.FAIL -> Color(0xFFFF5C7A)
-        CheckState.RUNNING -> Color(0xFFF5C451)
-        CheckState.PENDING -> Color(0xFF8A93A6)
+        CheckState.PASS -> Signal
+        CheckState.FAIL -> Clay
+        CheckState.RUNNING -> Ember
+        CheckState.PENDING -> ChalkFaint
     }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StatusDot(color = color, size = 10.dp)
-        Spacer(Modifier.size(12.dp))
+        Text(
+            text = index.toString().padStart(2, '0'),
+            style = AetherMetaLabel.copy(fontFamily = AetherMono, textDirection = TextDirection.Ltr),
+            color = ChalkFaint,
+            modifier = Modifier.width(24.dp),
+        )
+        Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = check.label,
@@ -186,65 +233,108 @@ private fun CheckRow(check: ComponentCheck) {
                 )
             }
         }
+        Spacer(Modifier.width(10.dp))
         Text(
             text = check.state.name,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
+            style = AetherMetaLabel,
+            fontWeight = FontWeight.Bold,
             color = color,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(color.copy(alpha = 0.12f))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
         )
     }
 }
 
 @Composable
-private fun LogConsole() {
-    // 1.2.2 UI-SPEED FIX: the log list was collected by the panel itself, so
-    // every engine line (hundreds during a scan) recomposed the whole
-    // diagnostics card — and the whole drawer around it — even while the log
-    // console was collapsed and invisible. The console is only composed when
-    // it is open, and it is the only thing subscribed to the log now.
+private fun LogConsole(maxHeight: Dp) {
     val lines: List<LogLine> = DiagnosticsLog.lines.collectAsState().value
+    var filter by remember { mutableStateOf(LogFilter.ALL) }
     val scroll = rememberScrollState()
+
+    val shown = when (filter) {
+        LogFilter.ALL -> lines
+        LogFilter.WARN -> lines.filter { it.level == LogLevel.WARN || it.level == LogLevel.ERROR }
+        LogFilter.ERROR -> lines.filter { it.level == LogLevel.ERROR }
+    }
+
+    // Follow the tail: a running scan should stream, not need dragging.
+    LaunchedEffect(shown.size) {
+        if (shown.isNotEmpty()) scroll.animateScrollTo(scroll.maxValue)
+    }
+
+    SegmentedSelector(
+        options = listOf(LogFilter.ALL, LogFilter.WARN, LogFilter.ERROR),
+        selected = filter,
+        onSelect = { filter = it },
+        label = {
+            when (it) {
+                LogFilter.ALL -> stringResource(R.string.log_all)
+                LogFilter.WARN -> stringResource(R.string.log_warn)
+                LogFilter.ERROR -> stringResource(R.string.log_err)
+            }
+        },
+    )
+
+    Spacer(Modifier.height(12.dp))
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 120.dp, max = 260.dp)
-            .background(Color(0xFF0C0F16), RoundedCornerShape(12.dp))
-            .padding(12.dp)
+            .heightIn(min = 140.dp, max = maxHeight)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Carbon00)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
             .verticalScroll(scroll),
     ) {
-        if (lines.isEmpty()) {
+        if (shown.isEmpty()) {
             Text(
                 text = stringResource(R.string.diag_empty_logs),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF8A93A6),
+                color = ChalkFaint,
             )
         } else {
             Column {
-                lines.forEach { line ->
-                    Text(
-                        text = line.format(),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = logColor(line.level),
-                    )
+                shown.forEach { line ->
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = glyph(line.level),
+                            fontFamily = AetherMono,
+                            fontSize = 11.sp,
+                            color = logColor(line.level),
+                            modifier = Modifier.width(14.dp),
+                        )
+                        Text(
+                            text = line.format(),
+                            fontFamily = AetherMono,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = logColor(line.level),
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+/** Level marker. A glyph in the gutter, never a coloured edge stripe. */
+private fun glyph(level: LogLevel): String = when (level) {
+    LogLevel.ERROR -> "!"
+    LogLevel.WARN -> "\u203A"
+    LogLevel.INFO -> "\u00B7"
+    LogLevel.DEBUG -> " "
+}
+
 private fun logColor(level: LogLevel): Color = when (level) {
-    LogLevel.ERROR -> Color(0xFFFF7A90)
-    LogLevel.WARN -> Color(0xFFF5C451)
-    LogLevel.INFO -> Color(0xFFB8C2D6)
-    LogLevel.DEBUG -> Color(0xFF7C8698)
+    LogLevel.ERROR -> Clay
+    LogLevel.WARN -> Ember
+    LogLevel.INFO -> ChalkMuted
+    LogLevel.DEBUG -> ChalkFaint
 }
 
 @Composable
 private fun StatusDot(color: Color, size: Dp) {
-    Box(
-        modifier = Modifier
-            .size(size)
-            .background(color, CircleShape),
-    )
+    Box(modifier = Modifier.size(size).background(color, CircleShape))
 }
