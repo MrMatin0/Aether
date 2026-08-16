@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 1.3.0 feature copy. Kept in its own file so strings.xml and strings_ui.xml
+     stay stable diffs. -->
+<resources>
+    <!-- Language -->
+    <string name="language_title">Language</string>
+    <string name="language_system">System</string>
+    <string name="language_english">English</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_hint">Applies immediately and is remembered. The pill at the top of the home screen does the same in one tap.</string>
+    <string name="language_pick_en">Switch to English</string>
+    <string name="language_pick_fa">Switch to Persian</string>
+
+    <!-- Automation -->
+    <string name="automation_title">Automation</string>
+    <string name="automation_subtitle">When Aether connects on its own, and what it keeps on this device.</string>
+    <string name="auto_launch_title">Connect when the app opens</string>
+    <string name="auto_launch_desc">Starts the tunnel with your last settings as soon as Aether is launched.</string>
+    <string name="auto_boot_title">Connect after a restart</string>
+    <string name="auto_boot_desc">Reconnects once the phone has booted. VPN permission must already have been granted.</string>
+    <string name="history_keep_title">Keep session history</string>
+    <string name="history_keep_desc">Stores start time, duration and data used for each session, on this device only. Turn off to record nothing.</string>
+    <string name="automation_always_on">Always-on VPN</string>
+    <string name="automation_battery">Battery limits</string>
+    <string name="automation_open_failed">This device doesn\'t expose that system screen.</string>
+    <string name="automation_system_hint">Always-on VPN keeps the tunnel up system-wide. Removing Aether from battery optimisation stops Android killing the tunnel in the background. Neither can be set from inside an app, so these open the system screens.</string>
+
+    <!-- Saved setups + config transfer -->
+    <string name="presets_title">Saved setups</string>
+    <string name="presets_subtitle">Keep the combinations that work on your networks and switch between them in one tap.</string>
+    <string name="presets_name_label">Name</string>
+    <string name="presets_name_placeholder">Mobile data, evening</string>
+    <string name="presets_save">Save current settings</string>
+    <string name="presets_apply">Apply</string>
+    <string name="presets_delete">Delete setup</string>
+    <string name="presets_saved">Saved as "%1$s".</string>
+    <string name="presets_applied">"%1$s" applied.</string>
+    <string name="presets_full">You can keep up to %1$d setups. Delete one first.</string>
+    <string name="presets_empty">Nothing saved yet.</string>
+    <string name="presets_locked">Disconnect first to apply a saved setup.</string>
+    <string name="backup_copy">Copy config</string>
+    <string name="backup_paste">Paste config</string>
+    <string name="backup_copied">Config copied. It carries no passwords or tokens.</string>
+    <string name="backup_imported">Config imported.</string>
+    <string name="backup_invalid">The clipboard doesn\'t contain an Aether config.</string>
+
+    <!-- Session history -->
+    <string name="history_title">Session history</string>
+    <string name="history_empty">No finished sessions recorded yet.</string>
+    <string name="history_off">Session history is off.</string>
+    <string name="history_summary">%1$d sessions · ↓ %2$s · ↑ %3$s</string>
+    <string name="history_row">%1$s · ↓ %2$s ↑ %3$s</string>
+    <string name="history_clear">Clear history</string>
+    <string name="history_cleared">History cleared.</string>
+</resources>

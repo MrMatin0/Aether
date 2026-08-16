@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ترجمهٔ فارسی قابلیت‌های ۱.۳.۰ -->
+<resources>
+    <!-- زبان -->
+    <string name="language_title">زبان</string>
+    <string name="language_system">سیستم</string>
+    <string name="language_english">English</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_hint">بی‌درنگ اعمال و ذخیره می‌شود. دکمهٔ بالای صفحهٔ اصلی هم همین کار را با یک لمس انجام می‌دهد.</string>
+    <string name="language_pick_en">تغییر به انگلیسی</string>
+    <string name="language_pick_fa">تغییر به فارسی</string>
+
+    <!-- خودکارسازی -->
+    <string name="automation_title">خودکارسازی</string>
+    <string name="automation_subtitle">این‌که Aether چه زمانی خودش وصل شود و چه چیزی روی این دستگاه نگه دارد.</string>
+    <string name="auto_launch_title">اتصال هنگام باز شدن برنامه</string>
+    <string name="auto_launch_desc">به‌محض اجرای Aether، تونل با آخرین تنظیمات شما بالا می‌آید.</string>
+    <string name="auto_boot_title">اتصال پس از روشن شدن دستگاه</string>
+    <string name="auto_boot_desc">بعد از بالا آمدن گوشی دوباره وصل می‌شود. اجازهٔ VPN باید از قبل داده شده باشد.</string>
+    <string name="history_keep_title">نگه‌داشتن تاریخچهٔ نشست‌ها</string>
+    <string name="history_keep_desc">زمان شروع، مدت و مصرف دادهٔ هر نشست، فقط روی همین دستگاه ذخیره می‌شود. برای ثبت‌نشدن هیچ‌چیز، خاموش کنید.</string>
+    <string name="automation_always_on">VPN همیشه‌روشن</string>
+    <string name="automation_battery">محدودیت باتری</string>
+    <string name="automation_open_failed">این دستگاه آن صفحهٔ سیستمی را در دسترس نمی‌گذارد.</string>
+    <string name="automation_system_hint">«VPN همیشه‌روشن» تونل را در کل سیستم بالا نگه می‌دارد و خارج‌کردن Aether از بهینه‌سازی باتری جلوی بستن تونل در پس‌زمینه توسط اندروید را می‌گیرد. هیچ‌کدام از داخل برنامه قابل تنظیم نیست، پس این دکمه‌ها صفحهٔ سیستمی را باز می‌کنند.</string>
+
+    <!-- تنظیمات ذخیره‌شده و انتقال پیکربندی -->
+    <string name="presets_title">تنظیمات ذخیره‌شده</string>
+    <string name="presets_subtitle">ترکیب‌هایی که روی شبکه‌های شما کار می‌کنند را ذخیره کنید و با یک لمس بین‌شان جابه‌جا شوید.</string>
+    <string name="presets_name_label">نام</string>
+    <string name="presets_name_placeholder">اینترنت همراه، شب</string>
+    <string name="presets_save">ذخیرهٔ تنظیمات فعلی</string>
+    <string name="presets_apply">اعمال</string>
+    <string name="presets_delete">حذف تنظیمات</string>
+    <string name="presets_saved">با نام «%1$s» ذخیره شد.</string>
+    <string name="presets_applied">«%1$s» اعمال شد.</string>
+    <string name="presets_full">تا %1$d مورد می‌توانید ذخیره کنید. اول یکی را حذف کنید.</string>
+    <string name="presets_empty">هنوز چیزی ذخیره نشده.</string>
+    <string name="presets_locked">برای اعمال تنظیمات ذخیره‌شده، اول قطع کنید.</string>
+    <string name="backup_copy">کپی پیکربندی</string>
+    <string name="backup_paste">جای‌گذاری پیکربندی</string>
+    <string name="backup_copied">پیکربندی کپی شد. هیچ رمز یا توکنی در آن نیست.</string>
+    <string name="backup_imported">پیکربندی وارد شد.</string>
+    <string name="backup_invalid">حافظهٔ موقت پیکربندی Aether ندارد.</string>
+
+    <!-- تاریخچهٔ نشست‌ها -->
+    <string name="history_title">تاریخچهٔ نشست‌ها</string>
+    <string name="history_empty">هنوز نشست تمام‌شده‌ای ثبت نشده.</string>
+    <string name="history_off">تاریخچهٔ نشست‌ها خاموش است.</string>
+    <string name="history_summary">%1$d نشست · ↓ %2$s · ↑ %3$s</string>
+    <string name="history_row">%1$s · ↓ %2$s ↑ %3$s</string>
+    <string name="history_clear">پاک‌کردن تاریخچه</string>
+    <string name="history_cleared">تاریخچه پاک شد.</string>
+</resources>
