@@ -66,6 +66,7 @@ import studio.cluvex.aether.ui.components.ConnectButton
 import studio.cluvex.aether.ui.components.ConnectionMeta
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.Hairline
+import studio.cluvex.aether.ui.components.LanguageToggle
 import studio.cluvex.aether.ui.components.NoticeBar
 import studio.cluvex.aether.ui.components.PhasePipeline
 import studio.cluvex.aether.ui.components.StatusLine
@@ -177,6 +178,12 @@ fun HomeScreen(
 
 // ---------------------------------------------------------------- chrome ----
 
+/**
+ * 1.3.0: the language pill lives HERE, between the wordmark and the state
+ * badge. It is the one setting whose control must be readable by someone who
+ * cannot read the rest of the app, so it cannot be the reward for finding the
+ * right settings section.
+ */
 @Composable
 private fun TopBar(mode: ButtonMode, accent: Color) {
     Row(
@@ -197,6 +204,8 @@ private fun TopBar(mode: ButtonMode, accent: Color) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        LanguageToggle(accent = accent)
+        Spacer(Modifier.width(10.dp))
         StatePill(mode = mode, accent = accent)
     }
 }
@@ -225,7 +234,9 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
     ) {
         Box(modifier = Modifier.size(7.dp).background(tint, CircleShape))
         Spacer(Modifier.width(8.dp))
-        Text(text = label, style = AetherMetaLabel, color = tint)
+        // maxLines: the header now carries the language pill too, and the
+        // Persian state words are longer than the English ones.
+        Text(text = label, style = AetherMetaLabel, color = tint, maxLines = 1)
     }
 }
 
@@ -461,6 +472,12 @@ private fun ElapsedCounter(active: Boolean) {
     )
 }
 
+/**
+ * Settings, top to bottom: language first (you cannot fix the wrong language
+ * from a section you cannot read), then the engine knobs, then the things that
+ * happen without you (automation), then setups you can move between phones,
+ * then sharing, then what the app recorded, then about.
+ */
 @Composable
 private fun SettingsTab(
     state: ConnectionState,
@@ -478,7 +495,14 @@ private fun SettingsTab(
             Spacer(Modifier.height(4.dp))
             NoticeBar(text = stringResource(R.string.settings_locked))
         }
+        LanguagePanel()
         AdvancedPanel(
+            profile = profile,
+            onProfileChange = onProfileChange,
+            enabled = settingsEnabled,
+        )
+        AutomationPanel()
+        PresetsPanel(
             profile = profile,
             onProfileChange = onProfileChange,
             enabled = settingsEnabled,
@@ -488,6 +512,7 @@ private fun SettingsTab(
             profile = profile,
             onProfileChange = onProfileChange,
         )
+        HistoryPanel()
         AboutPanel()
         Spacer(Modifier.height(32.dp))
     }
