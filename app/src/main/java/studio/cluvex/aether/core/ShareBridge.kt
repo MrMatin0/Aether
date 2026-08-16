@@ -84,6 +84,12 @@ object ShareBridge {
     private const val MAX_HEADER_BYTES = 64 * 1024
     private const val DIAL_TIMEOUT_MS = 10_000
 
+    /** Relay copy buffer. Sized to move a full TCP window per syscall pair. */
+    private const val RELAY_BUFFER_BYTES = 64 * 1024
+
+    /** Socket buffer both legs of a relayed connection ask the kernel for. */
+    private const val SOCKET_BUFFER_BYTES = 256 * 1024
+
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
 
@@ -239,11 +245,23 @@ object ShareBridge {
 
     // ------------------------------------------------------------- internals
 
-    private fun bind(port: Int): ServerSocket =
-        ServerSocket().apply {
-            reuseAddress = true
-            bind(InetSocketAddress(bindHost, port), 32)
-        }
+    private fun bind(port: Int): ServerSocket {
+        val server = ServerSocket()
+        server.reuseAddress = true
+        // Set BEFORE bind: accepted sockets inherit it, and a LAN client's TCP
+        // window scale is negotiated during the handshake — raising the buffer
+        // afterwards would be too late to widen the window.
+        runCatching { server.receiveBufferSize = SOCKET_BUFFER_BYTES }
+        server.bind(InetSocketAddress(bindHost, port), 32)
+        return server
+    }
+
+    /** Applies the relay's buffer sizing to one end of a proxied connection. */
+    private fun tune(socket: Socket) {
+        socket.tcpNoDelay = true
+        runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
+        runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }
+    }
 
     /**
      * Binds a FIXED port, retrying briefly so a listener that is still being
@@ -317,7 +335,7 @@ object ShareBridge {
                 }
                 thread(name = "$name-conn", isDaemon = true) {
                     try {
-                        client.tcpNoDelay = true
+                        tune(client)
                         handler(client)
                     } catch (_: Exception) {
                         // Per-connection errors are non-fatal by design.
@@ -333,7 +351,7 @@ object ShareBridge {
     private fun relayToLocalSocks(client: Socket) {
         val upstream = Socket()
         try {
-            upstream.tcpNoDelay = true
+            tune(upstream)
             upstream.connect(
                 InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
                 DIAL_TIMEOUT_MS,
@@ -415,7 +433,7 @@ object ShareBridge {
     private fun socksOpen(host: String, port: Int): Socket? {
         val socket = Socket()
         return try {
-            socket.tcpNoDelay = true
+            tune(socket)
             socket.connect(
                 InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
                 DIAL_TIMEOUT_MS,
@@ -495,7 +513,10 @@ object ShareBridge {
     }
 
     private fun pipe(from: Socket, to: Socket, counter: AtomicLong) {
-        val buffer = ByteArray(16 * 1024)
+        // THROUGHPUT: a 16 KB buffer meant four read/write syscall pairs for
+        // every 64 KB relayed, and the per-read flush() was pure ceremony — a
+        // raw socket stream has nothing buffered to flush.
+        val buffer = ByteArray(RELAY_BUFFER_BYTES)
         try {
             val input = from.getInputStream()
             val output = to.getOutputStream()
@@ -503,7 +524,6 @@ object ShareBridge {
                 val n = input.read(buffer)
                 if (n < 0) break
                 output.write(buffer, 0, n)
-                output.flush()
                 counter.addAndGet(n.toLong())
             }
         } catch (_: Exception) {
