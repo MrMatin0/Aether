@@ -102,6 +102,9 @@ class SocksTunBridge(
     private val txBytes = AtomicLong(0)
     private val rxBytes = AtomicLong(0)
 
+    /** Identification field for the IP fragments this bridge emits. */
+    private val ipIdSeq = AtomicInteger((0..0xFFFF).random())
+
     @Volatile
     private var cachedBlockedPackages: Set<String> = emptySet()
 
@@ -128,9 +131,20 @@ class SocksTunBridge(
             val fos = FileOutputStream(tunDescriptor.fileDescriptor)
             while (isRunning.get()) {
                 try {
-                    val packet = tunOutputQueue.poll(500, TimeUnit.MILLISECONDS) ?: continue
-                    fos.write(packet)
-                    rxBytes.addAndGet(packet.size.toLong())
+                    // THROUGHPUT: park on the queue only while it is empty. Once
+                    // there is work, drain it in a tight loop instead of paying a
+                    // timed poll (lock + park + timer arm) for every single
+                    // packet — at download rates the queue is never empty, so
+                    // that overhead was charged ~10k times a second for nothing.
+                    var packet: ByteArray? = tunOutputQueue.poll(500, TimeUnit.MILLISECONDS)
+                    if (packet == null) continue
+                    var written = 0L
+                    while (packet != null) {
+                        fos.write(packet)
+                        written += packet.size
+                        packet = tunOutputQueue.poll()
+                    }
+                    rxBytes.addAndGet(written)
                 } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {
@@ -264,6 +278,15 @@ class SocksTunBridge(
 
         val hLen = (packet[0].toInt() and 0x0F) * 4
         if (len < hLen) return
+
+        // FRAGMENT GUARD: only an unfragmented datagram (or the first fragment,
+        // which this stack cannot complete on its own) carries a transport
+        // header. A later fragment starts with payload bytes, and reading those
+        // as ports/flags invented a flow — complete with its own session and
+        // two threads — out of arbitrary data. Fragments are dropped instead.
+        val fragmentField = ((packet[6].toInt() and 0x1F) shl 8) or (packet[7].toInt() and 0xFF)
+        val moreFragments = (packet[6].toInt() and 0x20) != 0
+        if (fragmentField != 0 || moreFragments) return
 
         val srcIp = getInt(packet, 12)
         val dstIp = getInt(packet, 16)
@@ -586,6 +609,17 @@ class SocksTunBridge(
         private val mySeq = AtomicLong((100000..900000).random().toLong())
         private val myAck = AtomicLong((initialSeq + 1) and 0xFFFFFFFFL)
         private val connected = AtomicBoolean(false)
+
+        /**
+         * True once a SYN/ACK has been handed to the TUN. From the app's point
+         * of view the connection is open from that moment on, so its data must
+         * be accepted even while the upstream leg is still being dialled — see
+         * [handleFromTun].
+         */
+        private val synAcked = AtomicBoolean(false)
+
+        /** Guards against sending both a FIN and an RST for the same session. */
+        private val peerNotified = AtomicBoolean(false)
         private val clientClosed = AtomicBoolean(false)
         private val outputShutdown = AtomicBoolean(false)
         private val createdAt = SystemClock.elapsedRealtime()
@@ -595,6 +629,23 @@ class SocksTunBridge(
 
         fun isStaleUnconnected(): Boolean = !connected.get() && (SystemClock.elapsedRealtime() - createdAt > 1000)
 
+        /**
+         * Feeds one segment that arrived from the TUN into this session.
+         *
+         * HANDSHAKE FIX: the gate used to be [connected], which is only set
+         * after the upstream SOCKS leg is fully dialled. The domain-sniffing
+         * path deliberately answers the SYN *before* dialling and then waits for
+         * the client's first segment to read the TLS SNI out of it — but that
+         * segment hit this gate and was thrown away, so the wait ALWAYS ran out
+         * (a full second added to every fresh port 80/443 connection) and the
+         * client had to retransmit its ClientHello on its own RTO. Accepting
+         * data as soon as the SYN/ACK is out fixes both.
+         *
+         * PAYLOAD-BEFORE-FIN FIX: the FIN branch used to return before the
+         * payload was looked at, so a segment carrying data *and* FIN — the
+         * normal way a client ends a request — lost that data and acked as if
+         * it had never been sent.
+         */
         fun handleFromTun(seq: Long, payload: ByteArray?, flags: Int) {
             if (isClosed.get()) return
 
@@ -605,36 +656,39 @@ class SocksTunBridge(
                 return
             }
 
-            if (!connected.get()) {
+            if (!synAcked.get()) {
                 if ((flags and 0x01) != 0) {
                     close()
                 }
                 return
             }
 
-            val currentAck = myAck.get()
+            val fin = (flags and 0x01) != 0
+            val body = payload?.takeIf { it.isNotEmpty() }
+            val length = body?.size ?: 0
+            // A bare ACK carries nothing to acknowledge; replying to one would
+            // start an endless ACK ping-pong with the client.
+            if (body == null && !fin) return
 
-            if ((flags and 0x01) != 0) {
-                if (seq == currentAck) {
-                    myAck.set((seq + 1) and 0xFFFFFFFFL)
-                    sendAck()
-                    clientClosed.set(true)
-                } else {
-                    sendAck()
-                }
+            // No reassembly queue here, so anything out of order gets a
+            // duplicate ACK and has to be retransmitted.
+            if (seq != myAck.get()) {
+                sendAck()
                 return
             }
 
-            if (payload == null) return
-
-            if (seq == currentAck) {
-                if (queue.offer(payload)) {
-                    myAck.set((seq + payload.size) and 0xFFFFFFFFL)
-                    sendAck()
-                }
-            } else {
+            if (body != null && !queue.offer(body)) {
                 sendAck()
+                return
             }
+
+            var next = (seq + length) and 0xFFFFFFFFL
+            if (fin) {
+                next = (next + 1) and 0xFFFFFFFFL
+                clientClosed.set(true)
+            }
+            myAck.set(next)
+            sendAck()
         }
 
         private fun sendAck() {
@@ -646,26 +700,72 @@ class SocksTunBridge(
             enqueueTun(packet, true)
         }
 
+        /** Answers the client's SYN. Idempotent: the second call is a no-op. */
+        private fun sendSynAck() {
+            if (!synAcked.compareAndSet(false, true)) return
+            val synAck = if (version == 4) {
+                buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
+            } else {
+                buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
+            }
+            enqueueTun(synAck, true)
+            mySeq.set((mySeq.get() + 1) and 0xFFFFFFFFL)
+        }
+
+        /** Half-closes the connection towards the app (upstream saw EOF). */
+        private fun sendFin() {
+            if (!peerNotified.compareAndSet(false, true)) return
+            val fin = if (version == 4) {
+                buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x11)
+            } else {
+                buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x11)
+            }
+            enqueueTun(fin, true)
+            mySeq.set((mySeq.get() + 1) and 0xFFFFFFFFL)
+        }
+
+        /**
+         * Tears the connection down towards the app.
+         *
+         * FAIL-FAST FIX: every upstream failure (SOCKS greeting refused, CONNECT
+         * refused, direct dial refused, mid-stream I/O error) used to return
+         * silently, leaving the app with a socket that looked perfectly healthy.
+         * It then waited out its own timeout — tens of seconds of "the page just
+         * hangs" — instead of getting an instant error it could retry on.
+         */
+        private fun sendReset() {
+            if (!peerNotified.compareAndSet(false, true)) return
+            val rst = if (version == 4) {
+                buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x14)
+            } else {
+                buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x14)
+            }
+            enqueueTun(rst, true)
+        }
+
         fun run() {
             try {
                 val targetIpStr: String = InetAddress.getByAddress(serverIp).hostAddress ?: ""
                 val cachedDomain = DnsMap.get(targetIpStr)
                 
                 var decision = routingEngine.resolve(targetIpStr, serverPort, cachedDomain, null, null)
-                var synAckSent = false
                 var sniffedDomain: String? = null
 
-                if (decision.mode == RoutingMode.TUNNEL && cachedDomain == null && (serverPort == 80 || serverPort == 443)) {
-                    val synAck = if (version == 4) {
-                        buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
-                    } else {
-                        buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
-                    }
-                    enqueueTun(synAck, true)
-                    mySeq.set((mySeq.get() + 1) and 0xFFFFFFFFL)
-                    synAckSent = true
+                // Reading the TLS SNI / HTTP Host header out of the first
+                // segment means answering the SYN before the upstream leg even
+                // exists, so it is only worth doing when a domain can actually
+                // change the verdict. Aether drives this bridge with an EMPTY
+                // rule set (it is activated for per-app blocking, and the real
+                // routing rules live in the engine), where the detour decided
+                // nothing and only added latency to every fresh connection.
+                if (decision.mode == RoutingMode.TUNNEL &&
+                    cachedDomain == null &&
+                    (serverPort == 80 || serverPort == 443) &&
+                    routingEngine.hasDomainRules()
+                ) {
+                    sendSynAck()
 
-                    val firstPacket = queue.poll(1, TimeUnit.SECONDS)
+                    val firstPacket = queue.poll(SNIFF_WAIT_MS, TimeUnit.MILLISECONDS)
                     if (firstPacket != null) {
                         sniffedDomain = TrafficSniffer.sniffDomain(firstPacket, serverPort)
                         if (sniffedDomain != null) {
@@ -695,25 +795,13 @@ class SocksTunBridge(
                 }
 
                 if (requestedDirect && !useDirect) {
-                    val rst = if (version == 4) {
-                        buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x14)
-                    } else {
-                        buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x14)
-                    }
-                    enqueueTun(rst, true)
+                    sendReset()
                     close()
                     return
                 }
 
                 if (decision.mode == RoutingMode.BLOCK) {
-                    if (synAckSent) {
-                        val rst = if (version == 4) {
-                            buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x04)
-                        } else {
-                            buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x04)
-                        }
-                        enqueueTun(rst, true)
-                    }
+                    sendReset()
                     close()
                     return
                 }
@@ -724,10 +812,10 @@ class SocksTunBridge(
                 s.keepAlive = true
                 s.receiveBufferSize = 262144
                 s.sendBufferSize = 262144
-                
+
                 val ins: InputStream
                 val out: OutputStream
-                
+
                 if (useDirect) {
                     val network = requireNotNull(directNetwork)
                     network.bindSocket(s)
@@ -741,10 +829,16 @@ class SocksTunBridge(
                     s.connect(InetSocketAddress(socksHost, socksPort), 5000)
                     ins = s.getInputStream()
                     out = BufferedOutputStream(s.getOutputStream(), 131072)
-                    if (!socksHandshake(ins, out)) return
+                    if (!socksHandshake(ins, out)) {
+                        sendReset()
+                        return
+                    }
                     out.write(socksRequest(1, sniffedDomain ?: cachedDomain, serverIp, serverPort))
                     out.flush()
-                    if (readSocksReply(ins) == null) return
+                    if (readSocksReply(ins) == null) {
+                        sendReset()
+                        return
+                    }
                 }
 
                 connected.set(true)
@@ -752,15 +846,7 @@ class SocksTunBridge(
 
                 if (isClosed.get()) return
 
-                if (!synAckSent) {
-                    val synAck = if (version == 4) {
-                        buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
-                    } else {
-                        buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x12)
-                    }
-                    enqueueTun(synAck, true)
-                    mySeq.set((mySeq.get() + 1) and 0xFFFFFFFFL)
-                }
+                sendSynAck()
 
                 executor.execute { readFromSocks(ins) }
 
@@ -799,6 +885,9 @@ class SocksTunBridge(
             } catch (exception: Exception) {
                 if (isRunning.get() && !isClosed.get()) {
                     LogRepository.w("[Routing] TCP session failed: ${exception.localizedMessage}")
+                    // Tell the app the connection died instead of leaving it to
+                    // discover that on its own timeout.
+                    sendReset()
                 }
             } finally {
                 close()
@@ -814,14 +903,7 @@ class SocksTunBridge(
                     val n = ins.read(buffer)
 
                     if (n <= 0) {
-                        val fin = if (version == 4) {
-                            buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x11)
-                        } else {
-                            buildTcp6(serverIp, clientIp, serverPort, clientPort, null, mySeq.get(), myAck.get(), 0x11)
-                        }
-
-                        enqueueTun(fin, true)
-                        mySeq.set((mySeq.get() + 1) and 0xFFFFFFFFL)
+                        sendFin()
                         break
                     }
 
@@ -830,12 +912,17 @@ class SocksTunBridge(
                     var offset = 0
                     while (offset < n) {
                         val chunkLen = minOf(maxPayload, n - offset)
-                        val chunk = buffer.copyOfRange(offset, offset + chunkLen)
 
+                        // ZERO-COPY: the segment is written straight out of the
+                        // read buffer. Cutting a `chunk` array out first, and
+                        // then copying the whole TCP segment AGAIN just to
+                        // checksum it, meant every downloaded byte was moved
+                        // three times and allocated twice — pure GC pressure on
+                        // the hottest path in the app.
                         val packet = if (version == 4) {
-                            buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, chunk, mySeq.get(), myAck.get(), 0x18)
+                            buildTcp4(bytesToInt(serverIp), bytesToInt(clientIp), serverPort, clientPort, buffer, mySeq.get(), myAck.get(), 0x18, offset, chunkLen)
                         } else {
-                            buildTcp6(serverIp, clientIp, serverPort, clientPort, chunk, mySeq.get(), myAck.get(), 0x18)
+                            buildTcp6(serverIp, clientIp, serverPort, clientPort, buffer, mySeq.get(), myAck.get(), 0x18, offset, chunkLen)
                         }
 
                         // STREAM-INTEGRITY FIX: the sequence number may only
@@ -847,6 +934,7 @@ class SocksTunBridge(
                         // an honest reset beats a stalled socket.
                         if (!enqueueTun(packet)) {
                             LogRepository.w("TUN queue saturated — resetting stalled TCP session")
+                            sendReset()
                             close()
                             return
                         }
@@ -855,6 +943,7 @@ class SocksTunBridge(
                     }
                 }
             } catch (_: Exception) {
+                if (isRunning.get() && !isClosed.get()) sendReset()
             } finally {
                 close()
             }
@@ -999,33 +1088,37 @@ class SocksTunBridge(
         private fun receiveFromNetwork(sock: DatagramSocket, direct: Boolean) {
             try {
                 val buf = ByteArray(65535)
-                val maxPayload = if (version == 4) (mtu - 28).coerceAtLeast(8) else (mtu - 48).coerceAtLeast(8)
+                // One DatagramPacket for the whole session: `receive` only needs
+                // its length reset, and allocating a fresh one per datagram made
+                // the UDP path allocate twice for every packet.
+                val datagram = DatagramPacket(buf, buf.size)
 
                 while (!isClosed.get() && isRunning.get()) {
                     try {
-                        val packet = DatagramPacket(buf, buf.size)
-                        sock.receive(packet)
+                        datagram.setData(buf, 0, buf.size)
+                        sock.receive(datagram)
                         lastActivity.set(SystemClock.elapsedRealtime())
 
                         val source: SocksAddress
                         val payload: ByteArray
                         if (direct) {
-                            source = SocksAddress(packet.address, packet.port)
-                            payload = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
+                            source = SocksAddress(datagram.address, datagram.port)
+                            payload = datagram.data.copyOfRange(datagram.offset, datagram.offset + datagram.length)
                         } else {
-                            val parsed = parseSocksUdp(packet.data, packet.length) ?: continue
+                            val parsed = parseSocksUdp(datagram.data, datagram.length) ?: continue
                             source = parsed.first
                             payload = parsed.second
                         }
 
-                        if (payload.size > maxPayload) continue
                         if (source.port == 53) sniffDnsResponse(payload)
                         val srcBytes = source.address.address
 
+                        // Oversized datagrams are fragmented, not discarded:
+                        // see [emitUdp4].
                         if (version == 4 && srcBytes.size == 4) {
-                            enqueueTun(buildUdp4(bytesToInt(srcBytes), bytesToInt(clientIp), source.port, clientPort, payload))
+                            emitUdp4(bytesToInt(srcBytes), bytesToInt(clientIp), source.port, clientPort, payload)
                         } else if (version == 6 && srcBytes.size == 16) {
-                            enqueueTun(buildUdp6(srcBytes, clientIp, source.port, clientPort, payload))
+                            emitUdp6(srcBytes, clientIp, source.port, clientPort, payload)
                         }
                     } catch (_: SocketTimeoutException) {
                         if (SystemClock.elapsedRealtime() - lastActivity.get() > 120000) break
@@ -1290,6 +1383,13 @@ class SocksTunBridge(
         return minOf(data.size, i + 4)
     }
 
+    /**
+     * Builds one IPv4/TCP packet.
+     *
+     * [dataOffset]/[dataLen] describe the slice of [data] to send, so a caller
+     * that already holds a big read buffer does not have to cut a fresh array
+     * out of it for every segment.
+     */
     private fun buildTcp4(
         srcIp: Int,
         dstIp: Int,
@@ -1298,11 +1398,13 @@ class SocksTunBridge(
         data: ByteArray?,
         seq: Long,
         ack: Long,
-        flags: Int
+        flags: Int,
+        dataOffset: Int = 0,
+        dataLen: Int = data?.size ?: 0
     ): ByteArray {
         val isSynAck = flags == 0x12
         val optLen = if (isSynAck) 4 else 0
-        val dSize = data?.size ?: 0
+        val dSize = if (data == null) 0 else dataLen
         val total = 40 + optLen + dSize
         val p = ByteArray(total)
 
@@ -1337,10 +1439,11 @@ class SocksTunBridge(
             p[43] = (mss and 0xFF).toByte()
         }
 
-        data?.let { System.arraycopy(it, 0, p, 40 + optLen, it.size) }
+        if (data != null && dSize > 0) {
+            System.arraycopy(data, dataOffset, p, 40 + optLen, dSize)
+        }
 
-        val tcpSegment = p.copyOfRange(20, total)
-        var tcpCk = calculateTransportChecksum4(srcIp, dstIp, tcpSegment, 6)
+        var tcpCk = calculateTransportChecksum4(srcIp, dstIp, p, 20, total - 20, 6)
         if (tcpCk == 0) tcpCk = 0xFFFF
 
         p[36] = (tcpCk shr 8).toByte()
@@ -1357,11 +1460,13 @@ class SocksTunBridge(
         data: ByteArray?,
         seq: Long,
         ack: Long,
-        flags: Int
+        flags: Int,
+        dataOffset: Int = 0,
+        dataLen: Int = data?.size ?: 0
     ): ByteArray {
         val isSynAck = flags == 0x12
         val optLen = if (isSynAck) 4 else 0
-        val dSize = data?.size ?: 0
+        val dSize = if (data == null) 0 else dataLen
         val tcpLen = 20 + optLen + dSize
         val total = 40 + tcpLen
         val p = ByteArray(total)
@@ -1393,10 +1498,11 @@ class SocksTunBridge(
             p[63] = (mss and 0xFF).toByte()
         }
 
-        data?.let { System.arraycopy(it, 0, p, 60 + optLen, it.size) }
+        if (data != null && dSize > 0) {
+            System.arraycopy(data, dataOffset, p, 60 + optLen, dSize)
+        }
 
-        val tcpSegment = p.copyOfRange(40, total)
-        var tcpCk = calculateTransportChecksum6(srcIp, dstIp, tcpSegment, 6)
+        var tcpCk = calculateTransportChecksum6(srcIp, dstIp, p, 40, tcpLen, 6)
         if (tcpCk == 0) tcpCk = 0xFFFF
 
         p[56] = (tcpCk shr 8).toByte()
@@ -1435,8 +1541,7 @@ class SocksTunBridge(
 
         System.arraycopy(data, 0, p, 28, data.size)
 
-        val udpSegment = p.copyOfRange(20, total)
-        var udpCk = calculateTransportChecksum4(srcIp, dstIp, udpSegment, 17)
+        var udpCk = calculateTransportChecksum4(srcIp, dstIp, p, 20, udpLen, 17)
         if (udpCk == 0) udpCk = 0xFFFF
 
         p[26] = (udpCk shr 8).toByte()
@@ -1471,8 +1576,7 @@ class SocksTunBridge(
 
         System.arraycopy(data, 0, p, 48, data.size)
 
-        val udpSegment = p.copyOfRange(40, total)
-        var udpCk = calculateTransportChecksum6(srcIp, dstIp, udpSegment, 17)
+        var udpCk = calculateTransportChecksum6(srcIp, dstIp, p, 40, udpLen, 17)
         if (udpCk == 0) udpCk = 0xFFFF
 
         p[46] = (udpCk shr 8).toByte()
@@ -1481,43 +1585,151 @@ class SocksTunBridge(
         return p
     }
 
-    private fun calculateChecksum(b: ByteArray): Int {
-        return foldChecksum(sumBytes(b, 20, 0L))
+    /**
+     * Hands a UDP datagram to the TUN, fragmenting it when it does not fit the
+     * interface MTU.
+     *
+     * The datagram used to be DROPPED in that case (`if (payload.size >
+     * maxPayload) continue`), which silently broke every response bigger than
+     * the MTU — large DNS answers, QUIC/gaming traffic, anything a server sends
+     * as one big datagram. Fragments carry the checksum of the whole datagram,
+     * so the receiving app's kernel reassembles them transparently.
+     */
+    private fun emitUdp4(srcIp: Int, dstIp: Int, srcPort: Int, dstPort: Int, payload: ByteArray) {
+        // 20 bytes of IP header + 8 of UDP header have to fit in the 16-bit
+        // total-length field; a bigger datagram cannot be represented at all.
+        if (payload.size > MAX_UDP4_PAYLOAD) return
+        val packet = buildUdp4(srcIp, dstIp, srcPort, dstPort, payload)
+        if (packet.size <= mtu) {
+            enqueueTun(packet)
+            return
+        }
+        // Fragment payloads must be multiples of 8 bytes (the offset field
+        // counts 8-byte units); only the last one may be shorter.
+        val maxChunk = ((mtu - 20) / 8) * 8
+        if (maxChunk <= 0) return
+        val body = packet.size - 20
+        val id = ipIdSeq.incrementAndGet() and 0xFFFF
+        var offset = 0
+        while (offset < body) {
+            val chunk = minOf(maxChunk, body - offset)
+            val more = offset + chunk < body
+            val fragment = ByteArray(20 + chunk)
+            System.arraycopy(packet, 0, fragment, 0, 20)
+            System.arraycopy(packet, 20 + offset, fragment, 20, chunk)
+            val total = 20 + chunk
+            fragment[2] = (total shr 8).toByte()
+            fragment[3] = (total and 0xFF).toByte()
+            fragment[4] = (id shr 8).toByte()
+            fragment[5] = (id and 0xFF).toByte()
+            val flagsField = (if (more) 0x2000 else 0) or (offset / 8)
+            fragment[6] = (flagsField shr 8).toByte()
+            fragment[7] = (flagsField and 0xFF).toByte()
+            fragment[10] = 0
+            fragment[11] = 0
+            val ck = calculateChecksum(fragment)
+            fragment[10] = (ck shr 8).toByte()
+            fragment[11] = (ck and 0xFF).toByte()
+            // A datagram is only usable once every fragment arrives, so there is
+            // no point pushing the rest after one of them could not be queued.
+            if (!enqueueTun(fragment)) return
+            offset += chunk
+        }
     }
 
-    private fun calculateTransportChecksum4(srcIp: Int, dstIp: Int, segment: ByteArray, protocol: Int): Int {
+    /** IPv6 counterpart of [emitUdp4]; oversized datagrams get a fragment header. */
+    private fun emitUdp6(srcIp: ByteArray, dstIp: ByteArray, srcPort: Int, dstPort: Int, payload: ByteArray) {
+        if (payload.size > MAX_UDP6_PAYLOAD) return
+        val packet = buildUdp6(srcIp, dstIp, srcPort, dstPort, payload)
+        if (packet.size <= mtu) {
+            enqueueTun(packet)
+            return
+        }
+        // 40 bytes of base header + 8 bytes of fragment header per fragment.
+        val maxChunk = ((mtu - 48) / 8) * 8
+        if (maxChunk <= 0) return
+        val body = packet.size - 40
+        val id = ipIdSeq.incrementAndGet()
+        var offset = 0
+        while (offset < body) {
+            val chunk = minOf(maxChunk, body - offset)
+            val more = offset + chunk < body
+            val fragment = ByteArray(48 + chunk)
+            System.arraycopy(packet, 0, fragment, 0, 40)
+            val payloadLength = 8 + chunk
+            fragment[4] = (payloadLength shr 8).toByte()
+            fragment[5] = (payloadLength and 0xFF).toByte()
+            fragment[6] = 44
+            fragment[40] = 17
+            fragment[41] = 0
+            val offsetField = ((offset / 8) shl 3) or (if (more) 1 else 0)
+            fragment[42] = (offsetField shr 8).toByte()
+            fragment[43] = (offsetField and 0xFF).toByte()
+            setInt(fragment, 44, id)
+            System.arraycopy(packet, 40 + offset, fragment, 48, chunk)
+            if (!enqueueTun(fragment)) return
+            offset += chunk
+        }
+    }
+
+    private fun calculateChecksum(b: ByteArray): Int {
+        return foldChecksum(sumBytes(b, 0, 20, 0L))
+    }
+
+    /**
+     * Transport checksum over a slice of [packet] — no copy. Building the
+     * segment into a throwaway array first (`p.copyOfRange(20, total)`) doubled
+     * the memory traffic of every packet the bridge produced.
+     */
+    private fun calculateTransportChecksum4(
+        srcIp: Int,
+        dstIp: Int,
+        packet: ByteArray,
+        offset: Int,
+        length: Int,
+        protocol: Int
+    ): Int {
         var sum = 0L
         sum += ((srcIp ushr 16) and 0xFFFF).toLong()
         sum += (srcIp and 0xFFFF).toLong()
         sum += ((dstIp ushr 16) and 0xFFFF).toLong()
         sum += (dstIp and 0xFFFF).toLong()
         sum += protocol.toLong()
-        sum += segment.size.toLong()
-        sum = sumBytes(segment, segment.size, sum)
+        sum += length.toLong()
+        sum = sumBytes(packet, offset, offset + length, sum)
         return foldChecksum(sum)
     }
 
-    private fun calculateTransportChecksum6(srcIp: ByteArray, dstIp: ByteArray, segment: ByteArray, protocol: Int): Int {
+    private fun calculateTransportChecksum6(
+        srcIp: ByteArray,
+        dstIp: ByteArray,
+        packet: ByteArray,
+        offset: Int,
+        length: Int,
+        protocol: Int
+    ): Int {
         var sum = 0L
-        sum = sumBytes(srcIp, 16, sum)
-        sum = sumBytes(dstIp, 16, sum)
-        sum += segment.size.toLong()
+        sum = sumBytes(srcIp, 0, 16, sum)
+        sum = sumBytes(dstIp, 0, 16, sum)
+        sum += length.toLong()
         sum += protocol.toLong()
-        sum = sumBytes(segment, segment.size, sum)
+        sum = sumBytes(packet, offset, offset + length, sum)
         return foldChecksum(sum)
     }
 
-    private fun sumBytes(b: ByteArray, end: Int, initial: Long): Long {
+    /** One's-complement 16-bit sum of `b[from until to]`. */
+    private fun sumBytes(b: ByteArray, from: Int, to: Int, initial: Long): Long {
         var sum = initial
-        var i = 0
+        var i = from
+        val last = to - 1
 
-        while (i < end - 1) {
+        while (i < last) {
             sum += ((b[i].toInt() and 0xFF) shl 8) or (b[i + 1].toInt() and 0xFF)
             i += 2
         }
 
-        if (end % 2 != 0) {
-            sum += (b[end - 1].toInt() and 0xFF) shl 8
+        if (i < to) {
+            sum += (b[i].toInt() and 0xFF) shl 8
         }
 
         return sum
@@ -1605,5 +1817,21 @@ class SocksTunBridge(
 
         /** Back-pressure window for non-critical packets (see [enqueueTun]). */
         private const val TUN_QUEUE_WAIT_MS = 250L
+
+        /**
+         * How long a session waits for the client's first segment when it needs
+         * the TLS SNI / HTTP Host header to classify the flow. A client that has
+         * just been given a SYN/ACK sends its request within one loopback round
+         * trip, so this is a safety net, not a budget — and it is only ever
+         * reached when domain rules are actually configured.
+         */
+        private const val SNIFF_WAIT_MS = 400L
+
+        /**
+         * Largest UDP payload that still fits the 16-bit length fields of an
+         * IPv4 / IPv6 datagram (65535 minus the headers).
+         */
+        private const val MAX_UDP4_PAYLOAD = 65535 - 20 - 8
+        private const val MAX_UDP6_PAYLOAD = 65535 - 8
     }
 }

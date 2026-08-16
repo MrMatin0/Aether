@@ -4,6 +4,14 @@ on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
+  # A pull request builds the branch as a VERIFICATION run: it compiles the app
+  # and checks the signature and native payload, but it deliberately publishes
+  # nothing and pushes nothing back (see the `github.event_name` guards below).
+  # Without this, a change could only be compile-checked AFTER it was merged
+  # into main — or by dispatching a run that published a public Release from
+  # unreviewed code.
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
@@ -115,7 +123,7 @@ jobs:
       # keeps the repo from recording an upgrade that does not compile.
       # Never runs on tag builds.
       - name: Commit core upgrade + README changelog
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           if [ ! -f native/.core-sync-state ]; then
@@ -241,7 +249,7 @@ jobs:
       # that no longer contains the orphans. Best-effort: a failed push must
       # never fail a release.
       - name: Commit stale-source purge
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && github.event_name != 'pull_request'
         run: |
           set -uo pipefail
           if [ -z "$(git status --porcelain)" ]; then
@@ -367,7 +375,7 @@ jobs:
       # Persist the signer fingerprint on the first build so every later build
       # is checked against it automatically.
       - name: Pin signer fingerprint (first build only)
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           [ -f /tmp/expected-signer.txt ] || exit 0
@@ -406,7 +414,7 @@ jobs:
       # build of THIS repository is checked against the certificate the
       # previous release was signed with.
       - name: Pin CI signer fingerprint
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           [ -f /tmp/expected-signer-ci.txt ] || exit 0
@@ -475,13 +483,30 @@ jobs:
           echo "Built APKs:"
           ls -la "$OUT"
 
+      # A pull request publishes no Release, so the APKs are attached to the run
+      # instead. That is what makes a change testable on a real device before it
+      # is merged — which matters most for tunnel/throughput work, where the only
+      # honest verification is traffic through a real link.
+      - name: Upload APKs for review (pull request)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-${{ env.VERSION_NAME }}-pr${{ github.event.pull_request.number }}
+          path: artifacts/*.apk
+          if-no-files-found: error
+
       # Publish a Release on every successful build: each APK shows up as its
       # own downloadable asset. The release TITLE is just "Aether vX.Y.Z"
       # (no "(build N)" suffix); the tag still embeds the run number so every
       # build gets a unique tag. The "What's new" body comes from
       # .github/release-notes.md - update that file whenever the version changes.
+      #
+      # NEVER on a pull request: a PR is unreviewed code, and publishing it as
+      # `make_latest` would offer it to every user as the current download.
       - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
+
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', env.VERSION_NAME, github.run_number) }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && format('Aether {0}', github.ref_name) || format('Aether v{0}', env.VERSION_NAME) }}
