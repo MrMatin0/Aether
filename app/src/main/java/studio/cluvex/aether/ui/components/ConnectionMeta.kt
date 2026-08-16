@@ -1,19 +1,22 @@
 package studio.cluvex.aether.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,26 +27,42 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.theme.AetherMono
+import studio.cluvex.aether.ui.theme.AetherNumeral
+import studio.cluvex.aether.ui.theme.ChalkFaint
+
+private const val DASH = "\u2014"
+private const val ELLIPSIS = "\u2026"
+private const val LATENCY_REFRESH_MS = 4_000L
 
 /**
- * Shows, under the main button:
- *   - the IP + country flag (exit server when connected, operator IP when not),
- *   - the desktop-parity info row (1.2.4): PROTOCOL / ENDPOINT / live LATENCY,
- *   - a live HH:MM:SS uptime counter while connected.
+ * The session ledger: everything factual about the current connection, in one
+ * scannable column.
+ *
+ * WHY IT IS NOT CARDS ANY MORE: this used to be three translucent rounded
+ * surfaces stacked on top of each other (IP badge, meta row, timer), each with
+ * its own padding and its own centre alignment, inside a screen that was itself
+ * a column of cards. Nested cards add borders and shadows without adding
+ * meaning, and centred label/value pairs are the hardest possible layout to
+ * scan. A hairline ledger with left labels and right-aligned monospaced values
+ * reads top-to-bottom in one pass.
+ *
+ * Every technical value stays pinned LTR — that BiDi fix is load-bearing in
+ * the Persian locale, where `104.28.197.15` otherwise renders reordered.
  */
 @Composable
 fun ConnectionMeta(
@@ -53,92 +72,12 @@ fun ConnectionMeta(
     ipLoading: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        IpBadge(connected = connected, ipInfo = ipInfo, ipLoading = ipLoading)
-
-        // Desktop-parity info row (1.2.4): directly under the IP badge,
-        // exactly like the Windows edition. Replaces the old standalone
-        // ping badge, whose job the LATENCY cell now does live.
-        MetaRow(connected = connected)
-
-        if (connectedSince != null) {
-            ConnectionTimer(connectedSince = connectedSince)
-        }
-    }
-}
-
-@Composable
-private fun IpBadge(
-    connected: Boolean,
-    ipInfo: IpEndpoint?,
-    ipLoading: Boolean,
-) {
-    val label = if (connected) {
-        stringResource(R.string.ip_server_label)
-    } else {
-        stringResource(R.string.ip_your_label)
-    }
-
-    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
-    val value = when {
-        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
-        ipInfo != null -> "$flag  ${ipInfo.ip}"
-        else -> stringResource(R.string.ip_unavailable)
-    }
-
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            AnimatedContent(
-                targetState = value,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                label = "ip",
-            ) { shown ->
-                Text(
-                    text = shown,
-                    // BiDi fix: "104.28.197.15" + country flag is LTR technical
-                    // text; in the Persian (RTL) locale the BiDi algorithm
-                    // reordered the digits/dots. Pin the direction to LTR.
-                    style = MaterialTheme.typography.titleSmall.copy(textDirection = TextDirection.Ltr),
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-    }
-}
-
-/**
- * Desktop-parity info row (ported from the Windows edition's meta cells):
- * PROTOCOL, ENDPOINT and a live LATENCY, in one card with three equal cells
- * so nothing overlaps or overflows on narrow screens. All values are pinned
- * LTR where they are technical (IP:port, milliseconds).
- */
-@Composable
-private fun MetaRow(connected: Boolean) {
     val meta by EngineMeta.state.collectAsState()
     val ping by PingMonitor.state.collectAsState()
 
-    // Live latency like the desktop edition: re-measure every few seconds
-    // while the tunnel is up. PingMonitor serialises concurrent runs behind
-    // a mutex and each run is one cheap TCP handshake through the tunnel, so
-    // a 4 s cadence stays battery-friendly.
+    // Live latency, same cadence and same single-owner rule as before:
+    // PingMonitor serialises runs behind a mutex, so one cheap TCP handshake
+    // every few seconds stays battery-friendly.
     LaunchedEffect(connected) {
         while (connected) {
             PingMonitor.pingOnce(viaTunnel = true)
@@ -146,86 +85,167 @@ private fun MetaRow(connected: Boolean) {
         }
     }
 
-    val protocol = if (connected) meta.protocol ?: "\u2014" else "\u2014"
-    val endpoint = if (connected) meta.endpoint ?: "\u2026" else "\u2014"
-    val latency = when {
-        !connected -> "\u2014"
-        ping.ms >= 0 -> "${ping.ms} ms"
-        ping.running -> "\u2026"
-        else -> "\u2014"
+    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
+    val ipValue = when {
+        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
+        ipInfo != null -> "$flag ${ipInfo.ip}"
+        else -> stringResource(R.string.ip_unavailable)
     }
 
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Column(modifier = modifier.fillMaxWidth()) {
+        Hairline()
+        LedgerRow(
+            label = if (connected) {
+                stringResource(R.string.ip_server_label)
+            } else {
+                stringResource(R.string.ip_your_label)
+            },
         ) {
-            MetaCell(
-                label = stringResource(R.string.meta_protocol),
-                value = protocol,
-                ltr = true,
-                modifier = Modifier.weight(1f),
+            AnimatedContent(
+                targetState = ipValue,
+                transitionSpec = {
+                    fadeIn(tween(AetherDur.Base)) togetherWith fadeOut(tween(AetherDur.Quick))
+                },
+                label = "ip",
+            ) { shown ->
+                Text(
+                    text = shown,
+                    style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        Hairline(alpha = 0.55f)
+        LedgerRow(label = stringResource(R.string.meta_protocol)) {
+            ValueText(if (connected) meta.protocol ?: DASH else DASH, mono = false)
+        }
+
+        Hairline(alpha = 0.55f)
+        LedgerRow(label = stringResource(R.string.meta_endpoint)) {
+            ValueText(
+                text = if (connected) meta.endpoint ?: ELLIPSIS else DASH,
+                mono = true,
             )
-            MetaCell(
-                label = stringResource(R.string.meta_endpoint),
-                value = endpoint,
-                ltr = true,
-                modifier = Modifier.weight(1f),
-            )
-            MetaCell(
-                label = stringResource(R.string.meta_latency),
-                value = latency,
-                ltr = true,
-                modifier = Modifier.weight(1f),
+        }
+
+        Hairline(alpha = 0.55f)
+        LedgerRow(label = stringResource(R.string.meta_latency)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (connected) {
+                    QualityBars(ms = ping.ms)
+                    Spacer(Modifier.width(10.dp))
+                }
+                ValueText(
+                    text = when {
+                        !connected -> DASH
+                        ping.ms >= 0 -> "${ping.ms} ms"
+                        ping.running -> ELLIPSIS
+                        else -> DASH
+                    },
+                    mono = true,
+                    fill = false,
+                )
+            }
+        }
+
+        if (connectedSince != null) {
+            Hairline(alpha = 0.55f)
+            UptimeRow(connectedSince)
+        }
+        Hairline()
+    }
+}
+
+@Composable
+private fun LedgerRow(
+    label: String,
+    value: @Composable () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = AetherMetaLabel,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            modifier = Modifier.width(96.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Box(modifier = Modifier.weight(1f)) { value() }
+    }
+}
+
+@Composable
+private fun ValueText(text: String, mono: Boolean, fill: Boolean = true) {
+    Text(
+        text = text,
+        style = if (mono) {
+            AetherNumeral.copy(textDirection = TextDirection.Ltr)
+        } else {
+            MaterialTheme.typography.titleMedium
+        },
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.End,
+        modifier = if (fill) Modifier.fillMaxWidth() else Modifier,
+    )
+}
+
+/**
+ * Five bars, filled by latency band. A number alone means nothing to most
+ * people; "four of five bars" is instantly legible and matches how everyone
+ * already reads signal strength.
+ */
+@Composable
+private fun QualityBars(ms: Long) {
+    val filled = when {
+        ms < 0L -> 0
+        ms < 80L -> 5
+        ms < 150L -> 4
+        ms < 250L -> 3
+        ms < 400L -> 2
+        else -> 1
+    }
+    val tone = when {
+        filled >= 4 -> MaterialTheme.colorScheme.primary
+        filled >= 2 -> MaterialTheme.colorScheme.secondary
+        filled == 1 -> MaterialTheme.colorScheme.error
+        else -> ChalkFaint
+    }
+    Row(
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        repeat(5) { index ->
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height((5 + index * 2).dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(
+                        if (index < filled) tone else MaterialTheme.colorScheme.outlineVariant,
+                    ),
             )
         }
     }
 }
 
 @Composable
-private fun MetaCell(
-    label: String,
-    value: String,
-    ltr: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier.padding(horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall.copy(
-                textDirection = if (ltr) TextDirection.Ltr else TextDirection.Content,
-            ),
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
-private const val LATENCY_REFRESH_MS = 4_000L
-
-@Composable
-private fun ConnectionTimer(connectedSince: Long) {
+private fun UptimeRow(connectedSince: Long) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(connectedSince) {
         while (true) {
@@ -234,24 +254,32 @@ private fun ConnectionTimer(connectedSince: Long) {
         }
     }
     val elapsed = (now - connectedSince).coerceAtLeast(0L) / 1000L
-    val h = elapsed / 3600
-    val m = (elapsed % 3600) / 60
-    val s = elapsed % 60
-    val text = "%02d:%02d:%02d".format(h, m, s)
+    val text = "%02d:%02d:%02d".format(elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
             text = stringResource(R.string.connected_for),
-            style = MaterialTheme.typography.labelSmall,
+            style = AetherMetaLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            modifier = Modifier.width(96.dp),
         )
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.width(12.dp))
         Text(
             text = text,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 34.sp,
+            style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = AetherMono,
+                textDirection = TextDirection.Ltr,
+            ),
             color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
         )
     }
 }
