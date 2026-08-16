@@ -7,6 +7,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
+      1.3.0: "Connect after a restart" (Settings > Automation). Opt-in and off
+      by default; the receiver does nothing at all unless the user turned it on
+      AND VPN consent was already granted.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
       1.2.2 SECURITY: REQUEST_INSTALL_PACKAGES was REMOVED together with the
       in-app updater. The app can no longer download or hand an APK to the
       system package installer, so there is no runtime code-delivery path at
@@ -91,6 +97,19 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/aether_widget_info" />
+        </receiver>
+
+        <!--
+          1.3.0: reconnect after a reboot. NOT exported — only the system
+          delivers BOOT_COMPLETED, so no other app can nudge the tunnel up.
+        -->
+        <receiver
+            android:name=".vpn.BootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
         </receiver>
 
         <!--
