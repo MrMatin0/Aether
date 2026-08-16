@@ -55,7 +55,9 @@ fun accentFor(mode: ButtonMode): Color = when (mode) {
 }
 
 private const val TICKS = 72
-private const val DEG = (PI / 180.0).toFloat()
+
+/** Degrees -> radians. Plain val: a conversion call is not a const expression. */
+private val DEG = (PI / 180.0).toFloat()
 
 /**
  * The centrepiece: an aperture ring of 72 ticks around a power glyph.

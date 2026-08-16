@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -121,7 +122,7 @@ fun HomeScreen(
         else -> ButtonMode.IDLE
     }
     val accent = accentFor(mode)
-    var tab by rememberSaveable { mutableIntStateOf(TAB_CONNECTION) }
+    var tab by rememberSaveable { mutableStateOf(TAB_CONNECTION) }
 
     // Engine arguments are read at launch, so editing them mid-session would
     // silently do nothing until the next connect. Idle and Error are the only
@@ -210,7 +211,11 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
             ButtonMode.ERROR -> R.string.pill_failed
         },
     )
-    val tint by animateColorAsState(accent, tween(AetherDur.Base, easing = AetherEaseOut), label = "pill")
+    val tint by animateColorAsState(
+        targetValue = accent,
+        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        label = "pill",
+    )
     Row(
         modifier = Modifier
             .clip(CircleShape)
@@ -241,7 +246,11 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
         ButtonMode.ERROR -> Icons.Rounded.Refresh
     }
     val filled = mode == ButtonMode.CONNECTED
-    val tint by animateColorAsState(accent, tween(AetherDur.Base, easing = AetherEaseOut), label = "action")
+    val tint by animateColorAsState(
+        targetValue = accent,
+        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        label = "action",
+    )
 
     Surface(
         onClick = onClick,
@@ -512,17 +521,18 @@ private fun stateTitle(state: ConnectionState): String = when (state) {
 }
 
 @Composable
-private fun stateSubtitle(state: ConnectionState, profile: ConnectionProfile): String = when (state) {
-    is ConnectionState.Idle -> stringResource(R.string.tap_to_connect)
-    // The exit IP + flag lives in the ledger below, so the subtitle never leaks
-    // the internal 127.0.0.1:port address.
-    is ConnectionState.Connected -> stringResource(R.string.tap_to_disconnect)
-    is ConnectionState.Launching,
-    is ConnectionState.Connecting,
-    -> stringResource(R.string.busy_hint, scanLabel(profile.scanMode))
-    is ConnectionState.Verifying -> stringResource(R.string.state_verify_hint)
-    is ConnectionState.Reconnecting ->
-        stringResource(R.string.reconnect_attempt, state.attempt, state.maxAttempts)
-    is ConnectionState.Disconnecting -> stringResource(R.string.state_disconnecting)
-    is ConnectionState.Error -> state.message
-}
+private fun stateSubtitle(state: ConnectionState, profile: ConnectionProfile): String =
+    when (state) {
+        is ConnectionState.Idle -> stringResource(R.string.tap_to_connect)
+        // The exit IP + flag lives in the ledger below, so the subtitle never
+        // leaks the internal 127.0.0.1:port address.
+        is ConnectionState.Connected -> stringResource(R.string.tap_to_disconnect)
+        is ConnectionState.Launching,
+        is ConnectionState.Connecting,
+        -> stringResource(R.string.busy_hint, scanLabel(profile.scanMode))
+        is ConnectionState.Verifying -> stringResource(R.string.state_verify_hint)
+        is ConnectionState.Reconnecting ->
+            stringResource(R.string.reconnect_attempt, state.attempt, state.maxAttempts)
+        is ConnectionState.Disconnecting -> stringResource(R.string.state_disconnecting)
+        is ConnectionState.Error -> state.message
+    }
