@@ -5,8 +5,8 @@
 # WHY THIS EXISTS
 # ---------------
 # 1.2.2 deleted several source files (the in-app updater, the country/location
-# picker, the forced-exit policy). When the new sources are copied on top of an
-# existing 1.2.1 repository, *added and changed* files are overwritten but the
+# picker, the forced-exit policy). When the new sources are copied on top of
+# an existing 1.2.1 repository, *added and changed* files are overwritten but
 # *deleted* ones stay behind. Those orphans still reference symbols and string
 # resources that no longer exist, so the Kotlin compiler fails with a wall of
 # "Unresolved reference" errors (UpdateChecker.kt -> GITHUB_REPO,
@@ -59,13 +59,20 @@ fi
 # Safety net: catch ANY remaining orphan that references a string resource
 # which no longer exists. This costs a second and fails with a precise message
 # instead of a three-minute Gradle run ending in "Unresolved reference".
+#
+# IMPORTANT: Android merges every XML file under res/values/ and values-*/.
+# The redesign intentionally keeps its new copy in strings_ui.xml so the
+# historical strings.xml stays readable. Parsing only strings.xml creates a
+# false negative for valid resources, so collect definitions from all values
+# XML files here, exactly matching the Android resource model.
 # ---------------------------------------------------------------------------
-STRINGS="app/src/main/res/values/strings.xml"
-if [ -f "$STRINGS" ] && [ -d app/src/main/java ]; then
-	sed -n 's/.*<string[[:space:]][^>]*name="\([^"]*\)".*/\1/p' "$STRINGS" | sort -u > /tmp/aether-defined-strings.txt
+if [ -d app/src/main/res ] && [ -d app/src/main/java ]; then
+	find app/src/main/res -type f -path '*/values*/*.xml' -print0 \
+		| xargs -0 sed -n 's/.*<string[[:space:]][^>]*name="\([^"]*\)".*/\1/p' \
+		| sort -u > /tmp/aether-defined-strings.txt
 	# NOTE: only the app's OWN resources are checked. Framework resources
-	# (android.R.string.cancel, ...) are never declared in strings.xml and must
-	# not be reported as missing.
+	# (android.R.string.cancel, ...) are never declared in the app's resource
+	# XML and must not be reported as missing.
 	grep -rn --include='*.kt' -oE '[A-Za-z0-9_.]*R\.string\.[A-Za-z0-9_]+' app/src/main/java \
 		| grep -v ':android\.R\.string\.' \
 		| sed -E 's/^([^:]+):([0-9]+):[A-Za-z0-9_.]*R\.string\.(.+)$/\1|\2|\3/' | sort -u > /tmp/aether-used-strings.txt

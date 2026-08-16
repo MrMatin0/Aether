@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.ui.components.ActionPill
+import studio.cluvex.aether.ui.components.LanguageToggle
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 
 private const val PAGES = 3
@@ -48,6 +50,11 @@ private const val PAGES = 3
  * placeholder. Each page now draws its own figure in the same visual language
  * as the connect ring, so onboarding and the app look like the same product.
  * A step counter and a segmented track replace the three identical dots.
+ *
+ * 1.3.0: the language pill is in the header here too. This is the ONE screen a
+ * new user cannot navigate away from, and it used to be locked to the phone's
+ * language — so the person most likely to need Persian copy had to read three
+ * English pages before reaching anything that could switch it.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -79,13 +86,17 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     ),
                     style = AetherMetaLabel,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
+                LanguageToggle(accent = accent)
+                Spacer(Modifier.width(4.dp))
                 TextButton(onClick = onFinished) {
                     Text(
                         text = stringResource(R.string.onboarding_skip),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }

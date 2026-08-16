@@ -1,5 +1,6 @@
 package studio.cluvex.aether
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -25,9 +26,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import studio.cluvex.aether.core.AetherController
+import studio.cluvex.aether.core.AppLocale
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionProfile
@@ -79,6 +82,16 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best effort */ }
 
+    /**
+     * 1.3.0 IN-APP LANGUAGE: on API 33+ the platform has already applied the
+     * per-app locale, and this is a no-op wrapper; below that, this IS the
+     * mechanism — the activity's resources (and layout direction) are
+     * reconfigured here, before a single string is resolved.
+     */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -109,7 +122,13 @@ class MainActivity : ComponentActivity() {
         // Launched from the Quick Settings tile or the home-screen widget while
         // VPN consent was still missing: run the normal connect flow, which
         // shows the system's VPN consent dialog and then connects.
+        //
+        // Read the flag BEFORE handleConnectOnLaunch consumes it, so the 1.3.0
+        // auto-connect below can't fire a second connect for the same launch.
+        val launchedToConnect =
+            intent?.getBooleanExtra(EXTRA_CONNECT_ON_LAUNCH, false) == true
         handleConnectOnLaunch(intent)
+        if (savedInstanceState == null && !launchedToConnect) maybeAutoConnectOnLaunch()
 
         setContent {
             AetherTheme {
@@ -237,6 +256,23 @@ class MainActivity : ComponentActivity() {
     private fun handleConnectOnLaunch(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_CONNECT_ON_LAUNCH, false) != true) return
         intent.removeExtra(EXTRA_CONNECT_ON_LAUNCH)
+        lifecycleScope.launch {
+            val current = AetherController.state.value
+            if (!current.isConnected && !current.isBusy) {
+                toggleConnection(current)
+            }
+        }
+    }
+
+    /**
+     * 1.3.0: "Connect when the app opens" (Settings > Automation). Off by
+     * default, cold starts only, and it goes through the SAME toggle path as
+     * the button — including the consent dialog when permission was never
+     * granted, because silently doing nothing would look like a broken switch.
+     */
+    private fun maybeAutoConnectOnLaunch() {
+        AppPrefs.init(applicationContext)
+        if (!AppPrefs.state.value.autoConnectOnLaunch) return
         lifecycleScope.launch {
             val current = AetherController.state.value
             if (!current.isConnected && !current.isBusy) {
