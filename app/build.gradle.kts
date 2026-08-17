@@ -8,6 +8,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Human-friendly ABI -> versionCode offset so each split APK gets a unique code.
 val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
 
 val keystoreProps = Properties().apply {
@@ -43,9 +44,7 @@ android {
         versionCode = 10
         versionName = "1.3.0"
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
         val githubRepo = System.getenv("GITHUB_REPOSITORY")
             ?: (project.findProperty("githubRepo") as? String ?: "")
@@ -56,6 +55,41 @@ android {
         val coreVersion = rootProject.file("native/aether/CORE_VERSION")
             .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifBlank { "unknown" }
         buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            if (hasReleaseKeystore) {
+                storeFile = rootProject.file(releaseStorePath!!)
+                storePassword = signingValue("storePassword", "KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "KEY_PASSWORD")
+            } else if (useCiKeystore) {
+                storeFile = ciKeystoreFile
+                storePassword = "aether-ci-keystore"
+                keyAlias = "aether-ci"
+                keyPassword = "aether-ci-keystore"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = if (hasReleaseKeystore || useCiKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                null
+            }
+        }
     }
 
     splits {
@@ -114,22 +148,18 @@ androidComponents {
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
-
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-service:2.8.7")
-
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-
     testImplementation(kotlin("test"))
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
