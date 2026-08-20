@@ -9,7 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,11 +49,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.IpEndpoint
@@ -134,6 +138,15 @@ fun HomeScreen(
     // states where a change can actually take effect.
     val settingsEnabled = state is ConnectionState.Idle || state is ConnectionState.Error
 
+    // Connecting is not instant and the visual answer arrives a beat later, so
+    // the tap itself gets a physical acknowledgement. Both entry points (the
+    // ring and the pinned button) go through here, so the feel is identical.
+    val haptics = LocalHapticFeedback.current
+    val onPrimaryAction: () -> Unit = {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        onToggleConnection()
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         AmbientBackground(accent = accent, active = state.isConnected)
 
@@ -169,12 +182,12 @@ fun HomeScreen(
                         connectedSince = connectedSince,
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
-                        onToggleConnection = onToggleConnection,
+                        onToggleConnection = onPrimaryAction,
                     )
                 }
             }
 
-            PrimaryAction(mode = mode, accent = accent, onClick = onToggleConnection)
+            PrimaryAction(mode = mode, accent = accent, onClick = onPrimaryAction)
             TabBar(selected = tab, accent = accent, onSelect = { tab = it })
         }
     }
@@ -224,14 +237,7 @@ private fun TopBar(mode: ButtonMode, accent: Color) {
 
 @Composable
 private fun StatePill(mode: ButtonMode, accent: Color) {
-    val label = stringResource(
-        when (mode) {
-            ButtonMode.IDLE -> R.string.pill_off
-            ButtonMode.BUSY -> R.string.pill_working
-            ButtonMode.CONNECTED -> R.string.pill_secure
-            ButtonMode.ERROR -> R.string.pill_failed
-        },
-    )
+    val label = stateLabel(mode)
     val tint by animateColorAsState(
         targetValue = accent,
         animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
@@ -252,14 +258,7 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
 
 @Composable
 private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) {
-    val label = stringResource(
-        when (mode) {
-            ButtonMode.IDLE -> R.string.action_connect
-            ButtonMode.BUSY -> R.string.action_cancel
-            ButtonMode.CONNECTED -> R.string.action_disconnect
-            ButtonMode.ERROR -> R.string.action_retry
-        },
-    )
+    val label = actionLabel(mode)
     val icon: ImageVector = when (mode) {
         ButtonMode.IDLE -> Icons.Rounded.PowerSettingsNew
         ButtonMode.BUSY -> Icons.Rounded.Close
@@ -334,6 +333,14 @@ private fun TabBar(selected: Int, accent: Color, onSelect: (Int) -> Unit) {
     }
 }
 
+/**
+ * One destination in the bottom bar.
+ *
+ * selectable() rather than clickable(): the accent tint and the 20dp underline
+ * are the ONLY signal that a tab is current, and neither exists for a screen
+ * reader. Role.Tab plus the selected flag makes the bar announce "Settings,
+ * tab, 2 of 3, selected" instead of three identical buttons.
+ */
 @Composable
 private fun TabItem(
     label: String,
@@ -354,7 +361,7 @@ private fun TabItem(
     )
     Column(
         modifier = modifier
-            .clickable(onClick = onClick)
+            .selectable(selected = active, role = Role.Tab, onClick = onClick)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -406,7 +413,14 @@ private fun ConnectionTab(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(6.dp))
-        ConnectButton(mode = mode, onClick = onToggleConnection)
+        ConnectButton(
+            mode = mode,
+            onClick = onToggleConnection,
+            // The ring is the primary control and it is drawn on a Canvas, so
+            // without these it is an unlabelled 244dp box to TalkBack.
+            stateLabel = stateLabel(mode),
+            actionLabel = actionLabel(mode),
+        )
         Spacer(Modifier.height(20.dp))
 
         StatusLine(
@@ -456,6 +470,12 @@ private fun ConnectionTab(
  *
  * Without it, a four-minute Ironclad scan and a hung process look identical,
  * and people force-quit the app mid-scan.
+ *
+ * Locale.US, not the default locale: AppLocale sets the JVM default to fa, so
+ * plain "%d".format() printed the clock in Persian-Indic digits while the
+ * latency and traffic readouts (which already pin Locale.US) stayed Latin. Two
+ * numbering systems on one screen, in a monospaced style that only lines up
+ * with one of them. Prose keeps the locale's digits; instrument readouts do not.
  */
 @Composable
 private fun ElapsedCounter(active: Boolean) {
@@ -471,7 +491,7 @@ private fun ElapsedCounter(active: Boolean) {
     Text(
         text = stringResource(
             R.string.busy_elapsed,
-            "%d:%02d".format(seconds / 60, seconds % 60),
+            String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60),
         ),
         style = MaterialTheme.typography.bodySmall.copy(
             fontFamily = AetherMono,
@@ -553,6 +573,33 @@ private fun DiagnosticsTab() {
 }
 
 // ----------------------------------------------------------------- copy -----
+
+/**
+ * The one-word state, as shown in the header pill.
+ *
+ * Shared with the ring's semantics so a sighted user and a screen-reader user
+ * are told the same thing in the same words.
+ */
+@Composable
+private fun stateLabel(mode: ButtonMode): String = stringResource(
+    when (mode) {
+        ButtonMode.IDLE -> R.string.pill_off
+        ButtonMode.BUSY -> R.string.pill_working
+        ButtonMode.CONNECTED -> R.string.pill_secure
+        ButtonMode.ERROR -> R.string.pill_failed
+    },
+)
+
+/** What a tap on the ring or the pinned button will do. */
+@Composable
+private fun actionLabel(mode: ButtonMode): String = stringResource(
+    when (mode) {
+        ButtonMode.IDLE -> R.string.action_connect
+        ButtonMode.BUSY -> R.string.action_cancel
+        ButtonMode.CONNECTED -> R.string.action_disconnect
+        ButtonMode.ERROR -> R.string.action_retry
+    },
+)
 
 @Composable
 private fun stateTitle(state: ConnectionState): String = when (state) {
