@@ -5,10 +5,12 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -48,8 +51,8 @@ fun LanguageToggle(accent: Color, modifier: Modifier = Modifier) {
 
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(13.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(13.dp))
             .padding(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -70,6 +73,18 @@ fun LanguageToggle(accent: Color, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * One chip.
+ *
+ * The tap target is 44x40dp rather than the text's own ~30x26dp. Two characters
+ * make a beautiful chip and a miserable button, and this particular button is
+ * the one someone reaches for precisely because they cannot read the rest of
+ * the screen — missing it twice is the worst possible first experience.
+ *
+ * selectable() with Role.RadioButton also fixes the announcement: the two chips
+ * are one either/or choice, and the accent tint that says which one is live is
+ * invisible to a screen reader.
+ */
 @Composable
 private fun LanguageChip(
     text: String,
@@ -89,19 +104,29 @@ private fun LanguageChip(
         label = "langfg",
     )
     val interaction = remember { MutableInteractionSource() }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-        color = foreground,
-        maxLines = 1,
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
-            .clip(RoundedCornerShape(9.dp))
+            .sizeIn(minWidth = 44.dp, minHeight = 40.dp)
+            .clip(RoundedCornerShape(10.dp))
             .background(background)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 5.dp)
+            .selectable(
+                selected = selected,
+                interactionSource = interaction,
+                indication = null,
+                role = Role.RadioButton,
+                onClick = onClick,
+            )
             .semantics { contentDescription = description },
-    )
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = foreground,
+            maxLines = 1,
+        )
+    }
 }
 
 /**

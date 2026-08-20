@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.EngineMeta
@@ -244,6 +245,15 @@ private fun QualityBars(ms: Long) {
     }
 }
 
+/**
+ * Session uptime.
+ *
+ * Locale.US, not the default locale: AppLocale sets the JVM default to fa when
+ * the UI is Persian, so plain "%02d".format() rendered this clock in
+ * Persian-Indic digits directly under a latency value and a traffic readout
+ * that both already pin Locale.US. One instrument panel, two numbering systems,
+ * in a monospaced style whose advance widths only match Latin figures.
+ */
 @Composable
 private fun UptimeRow(connectedSince: Long) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -254,7 +264,13 @@ private fun UptimeRow(connectedSince: Long) {
         }
     }
     val elapsed = (now - connectedSince).coerceAtLeast(0L) / 1000L
-    val text = "%02d:%02d:%02d".format(elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
+    val text = String.format(
+        Locale.US,
+        "%02d:%02d:%02d",
+        elapsed / 3600,
+        (elapsed % 3600) / 60,
+        elapsed % 60,
+    )
 
     Row(
         modifier = Modifier
