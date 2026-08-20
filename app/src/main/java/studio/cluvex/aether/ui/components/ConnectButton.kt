@@ -31,6 +31,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
@@ -76,11 +79,19 @@ private val DEG = (PI / 180.0).toFloat()
  * state read, so an active ring costs redraws of one Canvas, never a
  * recomposition of the screen around it. While idle it is snapped to 0 and no
  * animation is running.
+ *
+ * ACCESSIBILITY: everything above is painted on a Canvas, and the glyph in the
+ * middle is decorative, so until now the app's primary control was a silent
+ * 244dp box. [stateLabel] is published as the node's state and [actionLabel] as
+ * the click label, both in the same words the header pill and the pinned button
+ * use, so TalkBack announces "Protected, button, double tap to disconnect".
  */
 @Composable
 fun ConnectButton(
     mode: ButtonMode,
     onClick: () -> Unit,
+    stateLabel: String,
+    actionLabel: String,
     modifier: Modifier = Modifier,
 ) {
     val accent = accentFor(mode)
@@ -127,8 +138,11 @@ fun ConnectButton(
             .clickable(
                 interactionSource = interaction,
                 indication = null,
+                onClickLabel = actionLabel,
+                role = Role.Button,
                 onClick = onClick,
-            ),
+            )
+            .semantics { stateDescription = stateLabel },
     ) {
         Canvas(modifier = Modifier.size(244.dp)) {
             val radius = size.minDimension / 2f

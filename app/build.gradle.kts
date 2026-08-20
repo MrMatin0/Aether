@@ -1,4 +1,6 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import java.io.File
+import java.net.URI
 import java.util.Base64
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -37,6 +39,69 @@ if (useCiKeystore) {
     )
 }
 
+// ------------------------------------------------------------- VAZIRMATN ----
+//
+// The UI face, for BOTH scripts (ui/theme/Type.kt). Font binaries follow the
+// same rule as the native cores: never committed. The five weights the type
+// scale actually uses are downloaded once into a gitignored res source set, so
+// they are compiled INTO the APK.
+//
+// Why not the Google Fonts downloadable-font provider, which would need no
+// files at all: it resolves over the network through Play Services at runtime.
+// This app exists for people on filtered networks with no Play Services and no
+// route to Google, i.e. it would fall back to the system font in exactly the
+// situation where the app is being used. A bundled font always renders.
+val vazirmatnVersion = "33.003"
+val vazirmatnFontDir = file("src/main/res-fonts/font")
+val vazirmatnFontPath = vazirmatnFontDir.relativeTo(rootDir).invariantSeparatorsPath
+val vazirmatnWeights = mapOf(
+    "vazirmatn_regular" to "Vazirmatn-Regular.ttf",
+    "vazirmatn_medium" to "Vazirmatn-Medium.ttf",
+    "vazirmatn_semibold" to "Vazirmatn-SemiBold.ttf",
+    "vazirmatn_bold" to "Vazirmatn-Bold.ttf",
+    "vazirmatn_extrabold" to "Vazirmatn-ExtraBold.ttf",
+)
+
+// Created at configuration time so resource merging never sees a missing dir.
+vazirmatnFontDir.mkdirs()
+
+val fetchVazirmatn = tasks.register("fetchVazirmatn") {
+    group = "build setup"
+    description = "Downloads the Vazirmatn weights used by the Compose type scale."
+    val fontDir = vazirmatnFontDir
+    val weights = vazirmatnWeights
+    val version = vazirmatnVersion
+    val relPath = vazirmatnFontPath
+    doLast {
+        // Host assembled from fragments, same convention as scripts/fetch-natives.sh.
+        val base = "https://" + "raw.githubusercontent.com" +
+            "/rastikerdar/vazirmatn/v" + version + "/fonts/ttf"
+        val failed = mutableListOf<String>()
+        weights.forEach { (resName, fileName) ->
+            val target = File(fontDir, "$resName.ttf")
+            // Already vendored (previous build, or copied in by hand): leave it.
+            if (target.length() > 1024L) return@forEach
+            val ok = runCatching {
+                URI("$base/$fileName").toURL().openStream().use { stream ->
+                    target.outputStream().use { stream.copyTo(it) }
+                }
+            }.isSuccess && target.length() > 1024L
+            if (!ok) {
+                target.delete()
+                failed += fileName
+            }
+        }
+        if (failed.isNotEmpty()) {
+            throw GradleException(
+                "Could not fetch Vazirmatn (${failed.joinToString()}). Run " +
+                    "scripts/fetch-fonts.sh on a connected machine, or copy the TTFs " +
+                    "into $relPath yourself (lowercase names, e.g. " +
+                    "vazirmatn_regular.ttf), then build again.",
+            )
+        }
+    }
+}
+
 android {
     namespace = "studio.cluvex.aether"
     compileSdk = 37
@@ -59,6 +124,14 @@ android {
         val coreVersion = rootProject.file("native/aether/CORE_VERSION")
             .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifBlank { "unknown" }
         buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
+    }
+
+    sourceSets {
+        getByName("main") {
+            // Fetched font binaries live outside res/ so the committed resource
+            // tree stays free of blobs. See fetchVazirmatn above.
+            res.srcDir("src/main/res-fonts")
+        }
     }
 
     signingConfigs {
@@ -120,6 +193,9 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
+
+// The font has to be on disk before resource merging reads the source set.
+tasks.named("preBuild") { dependsOn(fetchVazirmatn) }
 
 // android.kotlinOptions was removed in Kotlin 2.4; the compiler options live here now.
 kotlin {
