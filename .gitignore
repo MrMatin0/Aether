@@ -19,6 +19,11 @@ build/
 app/src/main/jniLibs/
 app/src/main/cpp/hev-socks5-tunnel/
 
+# UI font binaries, same rule as the native cores: never committed. The
+# fetchVazirmatn Gradle task (or scripts/fetch-fonts.sh) populates this res
+# source set on the first build.
+app/src/main/res-fonts/
+
 # Build-time working copy of native sources (the engine is vendored under
 # native/aether instead — THAT one is committed; this .native cache is not).
 .native/
