@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -34,7 +34,7 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install NDK
         run: |
@@ -42,7 +42,7 @@ jobs:
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.22"
 
@@ -56,14 +56,16 @@ jobs:
 
       # This repo intentionally ships no gradle-wrapper.jar, so the build runs
       # with the Gradle that is on PATH. Leaving that to the runner image is a
-      # time bomb: GitHub keeps bumping its preinstalled Gradle, and AGP 8.7.2
-      # only supports the 8.x line (Gradle 9 fails the build outright with an
-      # "unsupported" / plugin-compatibility error). Pin the exact version the
-      # wrapper descriptor already declares so the toolchain can never drift.
+      # time bomb: GitHub keeps bumping its preinstalled Gradle, and AGP only
+      # supports a narrow window of Gradle versions (AGP 9.3 requires 9.5.0 as
+      # both its minimum and its default; an older 8.x or a much newer line
+      # fails the build outright with a plugin-compatibility error). Pin the
+      # exact version the wrapper descriptor already declares so the toolchain
+      # can never drift.
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.5.0"
 
       - name: Show build toolchain
         run: |
@@ -489,7 +491,7 @@ jobs:
       # honest verification is traffic through a real link.
       - name: Upload APKs for review (pull request)
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aether-${{ env.VERSION_NAME }}-pr${{ github.event.pull_request.number }}
           path: artifacts/*.apk
@@ -505,7 +507,7 @@ jobs:
       # `make_latest` would offer it to every user as the current download.
       - name: Publish GitHub Release
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
 
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', env.VERSION_NAME, github.run_number) }}
