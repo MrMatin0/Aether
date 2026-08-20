@@ -1,6 +1,7 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
 import java.util.Base64
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -10,6 +11,10 @@ plugins {
 
 // Human-friendly ABI -> versionCode offset so each split APK gets a unique code.
 val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
+
+// The variant callbacks below must not read the android DSL back (AGP 9 no longer
+// guarantees that is safe), so the base version code lives here instead.
+val baseVersionCode = 10
 
 val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
@@ -35,13 +40,13 @@ if (useCiKeystore) {
 
 android {
     namespace = "studio.cluvex.aether"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 10
+        targetSdk = 37
+        versionCode = baseVersionCode
         versionName = "1.3.0"
 
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
@@ -105,7 +110,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
 
     buildFeatures {
         compose = true
@@ -115,6 +119,13 @@ android {
     packaging {
         jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
+}
+
+// android.kotlinOptions was removed in Kotlin 2.4; the compiler options live here now.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -138,7 +149,7 @@ androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
             val abiName = output.filters.find { it.filterType == ABI }?.identifier
-            val base = (android.defaultConfig.versionCode ?: 1) * 1000
+            val base = baseVersionCode * 1000
             val offset = abiCodes[abiName ?: "universal"] ?: 0
             output.versionCode.set(base + offset)
         }
@@ -146,20 +157,20 @@ androidComponents {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
     implementation(composeBom)
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-service:2.11.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     testImplementation(kotlin("test"))
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
