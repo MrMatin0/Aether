@@ -5,9 +5,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import studio.cluvex.aether.core.AppLanguage
+import studio.cluvex.aether.core.AppLocale
 
 /*
  * WHY DYNAMIC COLOUR IS GONE
@@ -79,6 +83,12 @@ private val AetherColorScheme = darkColorScheme(
 
 /**
  * The app theme. Always dark, always these colours.
+ *
+ * The type scale is the one thing that is not identical in both languages: fa
+ * gets extra leading (see [PERSIAN_LEADING]) because Vazirmatn's Persian ink
+ * extent does not fit the tight Latin display steps. The language is read from
+ * [AppLocale], the same source of truth the header pill and Settings use, so
+ * there is no second place that can disagree about which language is on screen.
  */
 @Composable
 fun AetherTheme(content: @Composable () -> Unit) {
@@ -93,9 +103,15 @@ fun AetherTheme(content: @Composable () -> Unit) {
         }
     }
 
+    val context = LocalContext.current
+    val persian = AppLocale.effective(context) == AppLanguage.PERSIAN
+    val typography = remember(persian) {
+        aetherTypography(leading = if (persian) PERSIAN_LEADING else 1f)
+    }
+
     MaterialTheme(
         colorScheme = AetherColorScheme,
-        typography = AetherTypography,
+        typography = typography,
         content = content,
     )
 }
