@@ -248,4 +248,5 @@
     <string name="meta_protocol">Protocol</string>
     <string name="meta_endpoint">Endpoint</string>
     <string name="meta_latency">Latency</string>
+    <string name="meta_latency_test">Test</string>
 </resources>

@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,9 +15,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,10 +30,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
@@ -35,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
@@ -48,7 +57,6 @@ import studio.cluvex.aether.ui.theme.ChalkFaint
 
 private const val DASH = "\u2014"
 private const val ELLIPSIS = "\u2026"
-private const val LATENCY_REFRESH_MS = 4_000L
 
 /**
  * The session ledger: everything factual about the current connection, in one
@@ -75,15 +83,12 @@ fun ConnectionMeta(
 ) {
     val meta by EngineMeta.state.collectAsState()
     val ping by PingMonitor.state.collectAsState()
+    val scope = rememberCoroutineScope()
 
-    // Live latency, same cadence and same single-owner rule as before:
-    // PingMonitor serialises runs behind a mutex, so one cheap TCP handshake
-    // every few seconds stays battery-friendly.
+    // Manual-only latency: nothing probes in the background. The value is
+    // refreshed exactly when the user taps the test button next to it.
     LaunchedEffect(connected) {
-        while (connected) {
-            PingMonitor.pingOnce(viaTunnel = true)
-            delay(LATENCY_REFRESH_MS)
-        }
+        if (!connected) PingMonitor.reset()
     }
 
     val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
@@ -155,6 +160,13 @@ fun ConnectionMeta(
                     mono = true,
                     fill = false,
                 )
+                if (connected) {
+                    Spacer(Modifier.width(12.dp))
+                    PingTestButton(
+                        running = ping.running,
+                        onClick = { scope.launch { PingMonitor.pingOnce(viaTunnel = true) } },
+                    )
+                }
             }
         }
 
@@ -240,6 +252,45 @@ private fun QualityBars(ms: Long) {
                     .background(
                         if (index < filled) tone else MaterialTheme.colorScheme.outlineVariant,
                     ),
+            )
+        }
+    }
+}
+
+/**
+ * The only trigger for a latency measurement: an explicit user tap. Disabled
+ * while a probe is in flight so the label doubles as progress feedback.
+ */
+@Composable
+private fun PingTestButton(
+    running: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = !running,
+        shape = RoundedCornerShape(10.dp),
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.primary,
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.primary.copy(alpha = if (running) 0.2f else 0.45f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Refresh,
+                contentDescription = stringResource(R.string.meta_latency_test),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = stringResource(R.string.meta_latency_test),
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
             )
         }
     }
