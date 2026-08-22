@@ -15,7 +15,9 @@ val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
 
 // The variant callbacks below must not read the android DSL back (AGP 9 no longer
 // guarantees that is safe), so the base version code lives here instead.
-val baseVersionCode = 10
+// 1.4.3: 10 -> 11. This MUST move with versionName, otherwise Android treats the
+// new APK as the same build and refuses to install it as an update.
+val baseVersionCode = 11
 
 val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
@@ -111,7 +113,7 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = baseVersionCode
-        versionName = "1.3.0"
+        versionName = "1.4.3"
 
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 

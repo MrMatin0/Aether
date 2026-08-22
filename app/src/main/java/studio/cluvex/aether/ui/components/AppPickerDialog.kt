@@ -2,7 +2,6 @@ package studio.cluvex.aether.ui.components
 
 import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +11,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -30,7 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +47,21 @@ data class AppEntry(val packageName: String, val label: String)
  * A multi-select dialog listing the device's launchable apps. Used to pick
  * which apps the split-tunnel policy applies to. Apps are loaded off the main
  * thread (PackageManager queries can be slow on devices with many apps).
+ *
+ * 1.4.3 FIXES:
+ *
+ * 1. DOUBLE SEMANTICS. The row was `clickable` AND the [Checkbox] kept its own
+ *    `onCheckedChange`, so every app in the list produced two accessibility
+ *    nodes: an unlabelled button and a checkbox with no name. On a device with
+ *    120 apps that is 240 stops to swipe through, none of which said what they
+ *    toggled. `toggleable` with [Role.Checkbox] collapses each row into one node
+ *    that announces the app name and its checked state, and the Checkbox becomes
+ *    pure state.
+ *
+ * 2. LAYOUT. Neither text line was bounded and the label column had no weight,
+ *    so a single app with a long name (or a long reverse-DNS package id, which
+ *    is most of them) stretched the whole dialog to the screen edge and clipped
+ *    the rest of the content instead of ellipsising its own line.
  */
 @Composable
 fun AppPickerDialog(
@@ -73,6 +90,8 @@ fun AppPickerDialog(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
 
                 OutlinedTextField(
@@ -115,30 +134,40 @@ fun AppPickerDialog(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable {
-                                            if (isChecked) chosen.remove(app.packageName)
-                                            else chosen.add(app.packageName)
-                                        }
+                                        .toggleable(
+                                            value = isChecked,
+                                            role = Role.Checkbox,
+                                            onValueChange = { checked ->
+                                                if (checked) chosen.add(app.packageName)
+                                                else chosen.remove(app.packageName)
+                                            },
+                                        )
                                         .padding(vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Checkbox(
                                         checked = isChecked,
-                                        onCheckedChange = {
-                                            if (it) chosen.add(app.packageName)
-                                            else chosen.remove(app.packageName)
-                                        },
+                                        // The ROW owns the gesture and the state.
+                                        onCheckedChange = null,
                                     )
-                                    Column(modifier = Modifier.padding(start = 8.dp)) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(start = 8.dp),
+                                    ) {
                                         Text(
                                             text = app.label,
                                             style = MaterialTheme.typography.bodyLarge,
                                             color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
                                             text = app.packageName,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
                                         )
                                     }
                                 }

@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -111,6 +112,8 @@ fun TrafficPanel(
             text = stringResource(R.string.traffic_title),
             style = AetherMetaLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
@@ -143,6 +146,15 @@ fun TrafficPanel(
     }
 }
 
+/**
+ * One direction.
+ *
+ * 1.4.3: the rate is a 19sp monospaced line inside a half-width column. At a
+ * large system font scale "1023.9 KB/s" is wider than the cell, and a
+ * `maxLines = 1` Text with no overflow strategy clips instead of ellipsising —
+ * so the meter could show "1023.9 K" and read as a plausible but wrong number.
+ * Truncation must always be visible on an instrument readout.
+ */
 @Composable
 private fun RateCell(
     icon: ImageVector,
@@ -165,6 +177,8 @@ private fun RateCell(
                 text = label,
                 style = AetherMetaLabel,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -176,16 +190,32 @@ private fun RateCell(
             ),
             color = MaterialTheme.colorScheme.onBackground,
             maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = stringResource(R.string.traffic_total, formatBytes(total)),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+/**
+ * The 48-sample rate plot.
+ *
+ * 1.4.3 DENSITY FIX: every dimension in here was a raw FLOAT, and a raw float
+ * in a DrawScope is a PIXEL, not a dp. So the baseline rule was 1px and both
+ * traces were 2px wide — correct on the 1x device this was eyeballed on, and a
+ * near-invisible sub-hairline on any modern 2.75x/3x phone, which is why the
+ * sparkline looked "faint" or "missing" on real hardware while rendering fine
+ * in the preview. Everything is converted through `dp.toPx()` now, exactly like
+ * the connect ring already did, so the plot has the same visual weight on every
+ * screen. The vertical headroom is clamped so a very short cell cannot invert
+ * the plot.
+ */
 @Composable
 private fun Sparkline(
     down: List<Long>,
@@ -200,15 +230,18 @@ private fun Sparkline(
             .height(52.dp)
             .padding(top = 2.dp),
     ) {
+        val hairline = 1.dp.toPx()
+        val trace = 2.dp.toPx()
         val peak = maxOf(down.maxOrNull() ?: 0L, up.maxOrNull() ?: 0L, 1L).toFloat()
         val step = if (HISTORY > 1) size.width / (HISTORY - 1).toFloat() else size.width
-        val floorY = size.height - 1f
+        val floorY = size.height - hairline
+        val headroom = (size.height - 6.dp.toPx()).coerceAtLeast(1f)
 
         drawLine(
             color = baseline,
             start = Offset(0f, floorY),
             end = Offset(size.width, floorY),
-            strokeWidth = 1f,
+            strokeWidth = hairline,
         )
 
         fun buildPath(values: List<Long>): Path? {
@@ -216,7 +249,7 @@ private fun Sparkline(
             val path = Path()
             values.forEachIndexed { index, value ->
                 val x = index * step
-                val y = floorY - (value / peak) * (size.height - 6f)
+                val y = floorY - (value / peak) * headroom
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             return path
@@ -237,14 +270,14 @@ private fun Sparkline(
             drawPath(
                 path = line,
                 color = downTint,
-                style = Stroke(width = 2f, cap = StrokeCap.Round),
+                style = Stroke(width = trace, cap = StrokeCap.Round),
             )
         }
         buildPath(up)?.let { line ->
             drawPath(
                 path = line,
                 color = upTint.copy(alpha = 0.9f),
-                style = Stroke(width = 2f, cap = StrokeCap.Round),
+                style = Stroke(width = trace, cap = StrokeCap.Round),
             )
         }
     }

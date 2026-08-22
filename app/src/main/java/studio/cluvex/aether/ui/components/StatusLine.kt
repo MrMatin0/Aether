@@ -16,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
@@ -28,6 +29,14 @@ import studio.cluvex.aether.ui.theme.AetherEaseOut
  * ("am I protected?") at the same visual weight as the helper text under it.
  * Now the state word is the loudest thing on the screen after the ring, and
  * the explanation sits under it in body copy where it belongs.
+ *
+ * 1.4.3: both lines are bounded now. The title was an unbounded 30sp display
+ * step, so "Reconnecting" in Persian (بازاتصال…) plus a large system font
+ * scale could grow to three lines and shove the pipeline, the traffic meter
+ * and the session ledger below the fold — on the one screen where the whole
+ * point is that everything important is visible at once. Two lines with an
+ * ellipsis keeps the layout stable at every font scale; the subtitle already
+ * had a line cap but no overflow strategy, so it hard-cut mid-glyph.
  */
 @Composable
 fun StatusLine(
@@ -54,6 +63,8 @@ fun StatusLine(
                 text = value,
                 style = MaterialTheme.typography.displaySmall,
                 color = accent,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -67,6 +78,7 @@ fun StatusLine(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

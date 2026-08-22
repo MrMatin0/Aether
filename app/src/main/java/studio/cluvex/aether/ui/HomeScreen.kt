@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -54,6 +55,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -219,6 +221,7 @@ private fun TopBar(mode: ButtonMode, accent: Color) {
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = stringResource(R.string.tagline),
@@ -256,6 +259,15 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
     }
 }
 
+/**
+ * The pinned primary action.
+ *
+ * 1.4.3: the height was a hard 58dp around a bold 15sp label. At a large system
+ * font scale the label no longer fit that box and was clipped top and bottom —
+ * on the one control the entire app exists for. `heightIn` keeps 58dp as the
+ * FLOOR and lets the button grow instead, and the label is bounded to one
+ * ellipsised line so a long translation cannot wrap the icon out of alignment.
+ */
 @Composable
 private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) {
     val label = actionLabel(mode)
@@ -277,14 +289,14 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 22.dp, vertical = 10.dp)
-            .height(58.dp),
+            .heightIn(min = 58.dp),
         shape = RoundedCornerShape(18.dp),
         color = if (filled) tint else Color.Transparent,
         contentColor = if (filled) OnSignal else tint,
         border = if (filled) null else BorderStroke(1.5.dp, tint.copy(alpha = 0.5f)),
     ) {
         Row(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -294,6 +306,8 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -340,6 +354,12 @@ private fun TabBar(selected: Int, accent: Color, onSelect: (Int) -> Unit) {
  * are the ONLY signal that a tab is current, and neither exists for a screen
  * reader. Role.Tab plus the selected flag makes the bar announce "Settings,
  * tab, 2 of 3, selected" instead of three identical buttons.
+ *
+ * 1.4.3: the touch feedback is clipped to a rounded shape. The indication was
+ * painted on an unclipped node, so a tap flashed a hard-edged rectangle that
+ * ran the full height of the bar and butted straight into the neighbouring tab
+ * and the hairline above it — the only square-cornered surface in an otherwise
+ * fully rounded UI.
  */
 @Composable
 private fun TabItem(
@@ -361,6 +381,7 @@ private fun TabItem(
     )
     Column(
         modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
             .selectable(selected = active, role = Role.Tab, onClick = onClick)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -371,6 +392,7 @@ private fun TabItem(
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
             color = color,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(6.dp))
         Box(
@@ -476,6 +498,13 @@ private fun ConnectionTab(
  * latency and traffic readouts (which already pin Locale.US) stayed Latin. Two
  * numbering systems on one screen, in a monospaced style that only lines up
  * with one of them. Prose keeps the locale's digits; instrument readouts do not.
+ *
+ * 1.4.3: the clock is centred. It sits directly under the phase pipeline in a
+ * column whose every other child is centre-aligned, but it also carries
+ * `fillMaxWidth()` with no text alignment — which makes it the ONE element on
+ * the connect screen that hangs off to the start edge. It looked like a
+ * misaligned stray, and in the Persian locale it flipped sides between
+ * languages for no reason a user could explain.
  */
 @Composable
 private fun ElapsedCounter(active: Boolean) {
@@ -498,6 +527,9 @@ private fun ElapsedCounter(active: Boolean) {
             textDirection = TextDirection.Ltr,
         ),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = Modifier.fillMaxWidth(),
     )
 }
