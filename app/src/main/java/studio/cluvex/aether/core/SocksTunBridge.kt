@@ -90,10 +90,27 @@ class SocksTunBridge(
      * daemon so they show up usefully in a thread dump and never keep the
      * process alive after teardown.
      */
-    private val executor = Executors.newCachedThreadPool { runnable ->
+    private var executor = newSessionExecutor()
+
+    /** [stop] shuts the pool down for good; [start] must build a fresh one. */
+    private fun newSessionExecutor() = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "Aether-Flow-${threadSeq.incrementAndGet()}").apply { isDaemon = true }
     }
+
+    /**
+     * Packets headed FOR the TUN, split by delivery guarantee:
+     *
+     *  - [tunOutputQueue] carries DATA segments. It applies back-pressure: the
+     *    sequence number of a data segment is committed as soon as it is
+     *    enqueued ([TcpSession.readFromSocks]), so a silently dropped one would
+     *    leave a hole no retransmission could ever fill.
+     *  - [tunControlQueue] carries control packets (SYN/ACK, ACK, FIN, RST, DNS
+     *    answers). When it saturates, evicting another CONTROL packet is
+     *    recoverable (peers retry all of these); evicting DATA never was — that
+     *    was exactly the stream corruption the old single-queue eviction caused.
+     */
     private val tunOutputQueue = LinkedBlockingQueue<ByteArray>(32768)
+    private val tunControlQueue = LinkedBlockingQueue<ByteArray>(4096)
     private val tcpSessions = ConcurrentHashMap<FlowKey, TcpSession>()
     private val udpSessions = ConcurrentHashMap<FlowKey, UdpSession>()
     private val connectivityManager by lazy { vpnService.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager }
@@ -126,6 +143,11 @@ class SocksTunBridge(
 
         LogRepository.i("Initializing tunnel bridge (MTU=$mtu)...")
         active = this
+        // A stop()/start() cycle needs a FRESH pool: shutdownNow() leaves the
+        // old executor rejecting every submission forever, and each rejected
+        // session launch was swallowed as a generic TUN read error — so a
+        // restarted bridge silently forwarded nothing.
+        executor = newSessionExecutor()
 
         writeThread = Thread({
             val fos = FileOutputStream(tunDescriptor.fileDescriptor)
@@ -136,13 +158,15 @@ class SocksTunBridge(
                     // timed poll (lock + park + timer arm) for every single
                     // packet — at download rates the queue is never empty, so
                     // that overhead was charged ~10k times a second for nothing.
-                    var packet: ByteArray? = tunOutputQueue.poll(500, TimeUnit.MILLISECONDS)
+                    // Control packets are always drained first.
+                    var packet: ByteArray? = tunControlQueue.poll()
+                    if (packet == null) packet = tunOutputQueue.poll(500, TimeUnit.MILLISECONDS)
                     if (packet == null) continue
                     var written = 0L
                     while (packet != null) {
                         fos.write(packet)
                         written += packet.size
-                        packet = tunOutputQueue.poll()
+                        packet = tunControlQueue.poll() ?: tunOutputQueue.poll()
                     }
                     rxBytes.addAndGet(written)
                 } catch (_: InterruptedException) {
@@ -210,6 +234,7 @@ class SocksTunBridge(
         readThread = null
         writeThread = null
         tunOutputQueue.clear()
+        tunControlQueue.clear()
     }
 
     fun getStats(): Stats = Stats(txBytes.get(), rxBytes.get())
@@ -244,20 +269,23 @@ class SocksTunBridge(
     /**
      * Hands a packet to the TUN writer.
      *
-     * [critical] packets (SYN/ACK, RST, FIN, DNS answers) must not be lost, so
-     * they evict the oldest queued packet when the queue is full. Everything
-     * else applies BACK-PRESSURE instead of being dropped: this stack has no
-     * retransmission queue, and [TcpSession.readFromSocks] advances the sequence
-     * number for whatever it enqueues — so a silently dropped data segment used
-     * to leave a permanent hole in the stream and hang that connection forever.
-     * Returns false when the packet could not be queued at all.
+     * [critical] packets (SYN/ACK, RST, FIN, DNS answers) go to the dedicated
+     * control queue, which the writer always drains first. When IT saturates,
+     * evicting another control packet is honest: the peer retransmits every
+     * one of these (a lost ACK rides a dup-ACK, a lost SYN/ACK rides the
+     * client's SYN RTO, FIN/RST loss falls back to idle reapers). The old
+     * single-queue eviction could instead drop a DATA segment whose sequence
+     * number was already committed — a permanent hole that hung the stream.
+     * Data itself applies BACK-PRESSURE and never gets evicted. Returns false
+     * when the packet could not be queued at all.
      */
     private fun enqueueTun(data: ByteArray, critical: Boolean = false): Boolean {
-        if (tunOutputQueue.offer(data)) return true
         if (critical) {
-            tunOutputQueue.poll()
-            return tunOutputQueue.offer(data)
+            if (tunControlQueue.offer(data)) return true
+            tunControlQueue.poll()
+            return tunControlQueue.offer(data)
         }
+        if (tunOutputQueue.offer(data)) return true
         return runCatching {
             tunOutputQueue.offer(data, TUN_QUEUE_WAIT_MS, TimeUnit.MILLISECONDS)
         }.getOrDefault(false)
@@ -305,9 +333,15 @@ class SocksTunBridge(
 
                 if (isPureSyn && !session.isConnected()) {
                     if (session.isStaleUnconnected()) {
+                        // Long-unanswered SYN: recycle the session so the next
+                        // retransmission builds a fresh one.
                         tcpSessions.remove(key, session)
                         session.close()
                     } else {
+                        // Still within the dial window: re-answer instead of
+                        // dropping. A dropped SYN RTO makes the client wait a
+                        // full extra timeout for an answer we already owe it.
+                        session.resendSynAck()
                         return
                     }
                 } else {
@@ -409,9 +443,15 @@ class SocksTunBridge(
 
                 if (isPureSyn && !session.isConnected()) {
                     if (session.isStaleUnconnected()) {
+                        // Long-unanswered SYN: recycle the session so the next
+                        // retransmission builds a fresh one.
                         tcpSessions.remove(key, session)
                         session.close()
                     } else {
+                        // Still within the dial window: re-answer instead of
+                        // dropping. A dropped SYN RTO makes the client wait a
+                        // full extra timeout for an answer we already owe it.
+                        session.resendSynAck()
                         return
                     }
                 } else {
@@ -605,6 +645,10 @@ class SocksTunBridge(
     ) {
         private val queue = java.util.concurrent.LinkedBlockingDeque<ByteArray>(8192)
         private val isClosed = AtomicBoolean(false)
+
+        // Volatile: close() can be called from the TUN reader thread while the
+        // session thread is still dialling and has not published the socket yet.
+        @Volatile
         private var sock: Socket? = null
         private val mySeq = AtomicLong((100000..900000).random().toLong())
         private val myAck = AtomicLong((initialSeq + 1) and 0xFFFFFFFFL)
@@ -627,7 +671,21 @@ class SocksTunBridge(
 
         fun isConnected(): Boolean = connected.get()
 
-        fun isStaleUnconnected(): Boolean = !connected.get() && (SystemClock.elapsedRealtime() - createdAt > 1000)
+        /**
+         * Recycle threshold for a session whose client SYN never led anywhere.
+         * Deliberately ABOVE the client's first retransmission (~1 s): the
+         * deferred SYN/ACK path can legitimately spend longer than that
+         * dialling upstream on high-RTT links, and killing the session mid-dial
+         * just restarts the same dial from scratch — repeatedly, until the
+         * client gives up entirely.
+         */
+        fun isStaleUnconnected(): Boolean =
+            !connected.get() && (SystemClock.elapsedRealtime() - createdAt > STALE_UNCONNECTED_MS)
+
+        /** Re-answers a retransmitted client SYN; no-op once the SYN/ACK is out. */
+        fun resendSynAck() {
+            if (!synAcked.get()) sendSynAck()
+        }
 
         /**
          * Feeds one segment that arrived from the TUN into this session.
@@ -657,9 +715,20 @@ class SocksTunBridge(
             }
 
             if (!synAcked.get()) {
+                // Upstream leg still dialling: a retransmitted initial SYN is
+                // expected here and is answered by [resendSynAck] upstream.
                 if ((flags and 0x01) != 0) {
                     close()
                 }
+                return
+            }
+
+            if ((flags and 0x02) != 0) {
+                // SYN on an ESTABLISHED session: the peer crashed or rebooted
+                // into the same 4-tuple. Reset so its new connect attempt fails
+                // fast instead of hanging until its own timeout.
+                sendReset()
+                close()
                 return
             }
 
@@ -812,6 +881,12 @@ class SocksTunBridge(
                 s.keepAlive = true
                 s.receiveBufferSize = 262144
                 s.sendBufferSize = 262144
+                // Bound the handshake phase: connect() carries a timeout, but
+                // the SOCKS greeting/reply reads below are plain blocking reads
+                // — a stalled proxy would wedge this session thread forever,
+                // with no RST ever reaching the app. Cleared once connected so
+                // long-lived idle flows are not cut.
+                runCatching { s.soTimeout = DIAL_READ_TIMEOUT_MS }
 
                 val ins: InputStream
                 val out: OutputStream
@@ -843,6 +918,9 @@ class SocksTunBridge(
 
                 connected.set(true)
                 lastActivity.set(SystemClock.elapsedRealtime())
+                // Handshake over — restore unlimited blocking reads for the
+                // data phase (the idle reaper owns liveness from here on).
+                runCatching { s.soTimeout = 0 }
 
                 if (isClosed.get()) return
 
@@ -950,9 +1028,13 @@ class SocksTunBridge(
         }
 
         fun close() {
-            if (isClosed.getAndSet(true)) return
+            // The CAS only guards the notification bookkeeping and the map
+            // removal. Resource release runs UNCONDITIONALLY: close() can race
+            // the dialling thread (which observes sock == null here and creates
+            // the socket a moment later) — that socket's own finally-block then
+            // still closes it, instead of early-returning on a taken CAS.
+            if (!isClosed.getAndSet(true)) tcpSessions.remove(key, this)
             runCatching { sock?.close() }
-            tcpSessions.remove(key, this)
         }
     }
 
@@ -967,7 +1049,15 @@ class SocksTunBridge(
     ) {
         private val payloadQueue = LinkedBlockingQueue<ByteArray>(2048)
         private val isClosed = AtomicBoolean(false)
+
+        // Volatile + unconditionally closed in [close]: stop() can race the
+        // session thread while it is still resolving/associating, before these
+        // fields are assigned — the old CAS-first close leaked both sockets on
+        // that interleaving.
+        @Volatile
         private var ctrlSock: Socket? = null
+
+        @Volatile
         private var udpSock: DatagramSocket? = null
         private val lastActivity = AtomicLong(SystemClock.elapsedRealtime())
 
@@ -1014,6 +1104,8 @@ class SocksTunBridge(
                 ctrlSock = ctrl
                 runCatching { vpnService.protect(ctrl) }
                 ctrl.tcpNoDelay = true
+                // The ASSOCIATE exchange below is plain blocking reads.
+                runCatching { ctrl.soTimeout = DIAL_READ_TIMEOUT_MS }
                 
                 val relayHost: InetAddress
                 val relayPort: Int
@@ -1132,10 +1224,9 @@ class SocksTunBridge(
         }
 
         fun close() {
-            if (isClosed.getAndSet(true)) return
+            if (!isClosed.getAndSet(true)) udpSessions.remove(key, this)
             runCatching { ctrlSock?.close() }
             runCatching { udpSock?.close() }
-            udpSessions.remove(key, this)
         }
     }
 
@@ -1205,6 +1296,10 @@ class SocksTunBridge(
 
     private fun parseSocksUdp(data: ByteArray, len: Int): Pair<SocksAddress, ByteArray>? {
         if (len < 4) return null
+        // FRAG != 0 marks a FRAGMENTED datagram. There is no reassembly here,
+        // so the payload slice of one fragment would be relayed as if it were
+        // the whole datagram — refuse it instead.
+        if ((data[2].toInt() and 0xFF) != 0) return null
 
         val atyp = data[3].toInt() and 0xFF
         val offset: Int
@@ -1307,6 +1402,11 @@ class SocksTunBridge(
                     while (pos < data.size) {
                         val l = data[pos].toInt() and 0xFF
                         if (l == 0) { pos++; break }
+                        // A compression POINTER can also appear after one or
+                        // more labels; treating its bytes as a label length
+                        // landed the parse at an arbitrary offset and invented
+                        // wrong IP→domain entries.
+                        if (l >= 0xC0) { pos += 2; break }
                         pos += l + 1
                     }
                 }
@@ -1817,6 +1917,16 @@ class SocksTunBridge(
 
         /** Back-pressure window for non-critical packets (see [enqueueTun]). */
         private const val TUN_QUEUE_WAIT_MS = 250L
+
+        /**
+         * Recycle threshold for a session whose client SYN never led to a
+         * connection. Above the client's first SYN RTO (~1 s) so a slow
+         * upstream dial is not killed mid-flight; see [TcpSession.isStaleUnconnected].
+         */
+        private const val STALE_UNCONNECTED_MS = 3_000L
+
+        /** Read timeout covering the SOCKS5 handshake phase of a dial. */
+        private const val DIAL_READ_TIMEOUT_MS = 10_000
 
         /**
          * How long a session waits for the client's first segment when it needs

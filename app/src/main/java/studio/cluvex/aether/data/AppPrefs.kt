@@ -53,6 +53,7 @@ object AppPrefs {
         )
     }
 
+    @Synchronized
     fun update(context: Context, behaviour: AppBehaviour) {
         init(context)
         prefs?.edit()

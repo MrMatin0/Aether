@@ -116,6 +116,14 @@ object DiagnosticsLog {
     private var logFile: File? = null
 
     /**
+     * Serialises EVERY mutation of [logFile] — the writer thread's appends,
+     * [trimFile]'s truncate-and-rewrite, [clear]'s wipe and [logBlocking]'s
+     * synchronous crash-line append. Without it, a trim racing the crash-line
+     * append could destroy exactly the line the log exists to preserve.
+     */
+    private val fileLock = Any()
+
+    /**
      * Wires the persistent log file (call once from Application.onCreate). If a
      * file from a previous run exists (e.g. it ended in a crash), its contents
      * are preserved to `<name>.prev` and loaded back into the panel so the
@@ -197,10 +205,18 @@ object DiagnosticsLog {
                 // Block for the first line, then sweep up whatever else queued.
                 batch.add(pendingWrites.take())
                 pendingWrites.drainTo(batch, 256)
-                val file = logFile ?: continue
-                runCatching {
-                    file.appendText(batch.joinToString("\n", postfix = "\n"))
-                    if (file.length() > MAX_FILE_BYTES) trimFile(file)
+                var file = logFile
+                while (file == null) {
+                    // init() has not run yet. Waiting beats the old behaviour,
+                    // which dropped the whole drained batch on the floor.
+                    Thread.sleep(200)
+                    file = logFile
+                }
+                synchronized(fileLock) {
+                    runCatching {
+                        file.appendText(batch.joinToString("\n", postfix = "\n"))
+                        if (file.length() > MAX_FILE_BYTES) trimFile(file)
+                    }
                 }
             }
         }
@@ -247,7 +263,10 @@ object DiagnosticsLog {
             val pending = ArrayList<String>(64)
             pendingWrites.drainTo(pending)
             pending.add(line.format())
-            logFile?.appendText(pending.joinToString("\n", postfix = "\n"))
+            val file = logFile ?: return@runCatching
+            synchronized(fileLock) {
+                file.appendText(pending.joinToString("\n", postfix = "\n"))
+            }
         }
     }
 
@@ -261,10 +280,12 @@ object DiagnosticsLog {
         _lines.value = emptyList()
         runCatching {
             logFile?.let { f ->
-                if (f.exists() && f.length() > 0L) {
-                    f.copyTo(File(f.parentFile, f.name + ".prev"), overwrite = true)
+                synchronized(fileLock) {
+                    if (f.exists() && f.length() > 0L) {
+                        f.copyTo(File(f.parentFile, f.name + ".prev"), overwrite = true)
+                    }
+                    f.writeText("")
                 }
-                f.writeText("")
             }
         }
     }

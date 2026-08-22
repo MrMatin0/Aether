@@ -95,9 +95,13 @@ object HevTunnel {
         try {
             TProxyService.TProxyStopService()
             DiagnosticsLog.i("tunnel", "hev-socks5-tunnel stop requested")
+            running = false
         } catch (t: Throwable) {
+            // Only clear the flag when the native loop actually acknowledged
+            // the stop: isAlive()/stats() must keep reporting the truth if
+            // TProxyStopService failed, or the supervisor and traffic meters
+            // would read a dead core as live (or vice versa).
             DiagnosticsLog.w("tunnel", "TProxyStopService failed: ${t.message}")
         }
-        running = false
     }
 }

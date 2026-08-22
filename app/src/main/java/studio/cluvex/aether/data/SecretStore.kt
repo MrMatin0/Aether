@@ -4,7 +4,9 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import studio.cluvex.aether.core.DiagnosticsLog
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -37,7 +39,7 @@ class SecretStore(context: Context) {
     /** Reads and decrypts [name]; returns "" when unset or undecryptable. */
     fun read(name: String): String {
         val stored = prefs.getString(name, null) ?: return ""
-        return runCatching {
+        return try {
             val blob = Base64.decode(stored, Base64.NO_WRAP)
             if (blob.size <= IV_LEN) return ""
             val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -47,10 +49,18 @@ class SecretStore(context: Context) {
                 GCMParameterSpec(TAG_BITS, blob.copyOfRange(0, IV_LEN)),
             )
             String(cipher.doFinal(blob.copyOfRange(IV_LEN, blob.size)), Charsets.UTF_8)
-        }.getOrElse {
-            // Key invalidated or restored onto another device: drop the
-            // unusable ciphertext instead of keeping a value we can't read.
+        } catch (e: AEADBadTagException) {
+            // Key invalidated or restored onto another device: the ciphertext
+            // is PERMANENTLY undecryptable for this key. Drop the unusable
+            // blob instead of keeping a value we can never read again.
             prefs.edit().remove(name).apply()
+            ""
+        } catch (e: Exception) {
+            // Transient Keystore/TEE failure (early-boot contention, provider
+            // hiccup): keep the ciphertext — a later read can still succeed.
+            // Deleting here would silently destroy valid credentials because
+            // of one bad cipher op.
+            DiagnosticsLog.w("secrets", "decrypt failed for $name: ${e.message}")
             ""
         }
     }
@@ -74,7 +84,7 @@ class SecretStore(context: Context) {
     /** Wipes every sealed secret. */
     fun clear() = prefs.edit().clear().apply()
 
-    private fun key(): SecretKey {
+    private fun key(): SecretKey = synchronized(keyLock) {
         val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
         (ks.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey?.let { return it }
 
@@ -92,7 +102,7 @@ class SecretStore(context: Context) {
                 .setRandomizedEncryptionRequired(true)
                 .build(),
         )
-        return generator.generateKey()
+        generator.generateKey()
     }
 
     companion object {
@@ -104,5 +114,13 @@ class SecretStore(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_LEN = 12
         private const val TAG_BITS = 128
+
+        /**
+         * Guards Keystore access across ALL SecretStore instances. Without it,
+         * two concurrent first-time readers each see no key and both generate
+         * one under the same alias — AndroidKeyStore silently replaces the
+         * entry and everything sealed by the losing key becomes unreadable.
+         */
+        private val keyLock = Any()
     }
 }

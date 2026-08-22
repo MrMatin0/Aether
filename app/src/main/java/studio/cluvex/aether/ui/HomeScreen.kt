@@ -57,7 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import java.util.Locale
+
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.IpEndpoint
@@ -491,7 +491,7 @@ private fun ElapsedCounter(active: Boolean) {
     Text(
         text = stringResource(
             R.string.busy_elapsed,
-            String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60),
+            formatDuration(seconds * 1000L),
         ),
         style = MaterialTheme.typography.bodySmall.copy(
             fontFamily = AetherMono,

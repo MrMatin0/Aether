@@ -84,6 +84,13 @@ object ShareBridge {
     private const val MAX_HEADER_BYTES = 64 * 1024
     private const val DIAL_TIMEOUT_MS = 10_000
 
+    /**
+     * Read timeout for accepted clients and relayed legs. Bounds how long a
+     * dead/stalled peer can pin its connection thread and socket; generous
+     * enough that legitimate idle periods (long-poll, keep-alive) survive.
+     */
+    private const val IDLE_TIMEOUT_MS = 120_000
+
     /** Relay copy buffer. Sized to move a full TCP window per syscall pair. */
     private const val RELAY_BUFFER_BYTES = 64 * 1024
 
@@ -216,13 +223,18 @@ object ShareBridge {
 
     /** Turn sharing off. Safe to call from any thread. */
     fun stop() {
-        _active.value = false
+        // Bump the session id FIRST; the flag flip happens inside the guarded
+        // section below. Flipping _active outside the lock raced startSync:
+        // stop() -> false, startSync (still holding the monitor) finished and
+        // set it back to true, then the stop thread matched its session id,
+        // killed the FRESH listeners — leaving active==true over dead ports.
         val stopSession = synchronized(this) { ++session }
         thread(name = "share-stop", isDaemon = true) {
             synchronized(this) {
                 // Only close if no NEWER session started meanwhile: a stale
                 // async stop must never kill a fresh session's listeners.
                 if (session == stopSession) {
+                    _active.value = false
                     val hadServers = socksServer != null || httpServer != null
                     closeServers()
                     if (hadServers) DiagnosticsLog.i(TAG, "Sharing OFF")
@@ -330,12 +342,23 @@ object ShareBridge {
             while (!server.isClosed) {
                 val client = try {
                     server.accept()
-                } catch (_: Exception) {
-                    break // server closed -> sharing stopped
+                } catch (e: Exception) {
+                    // A closed server means sharing stopped; anything else
+                    // (EMFILE/ENOBUFS under fd pressure) is transient —
+                    // exiting the loop would leave a silently dead listener
+                    // that startSync's health check still reports as healthy.
+                    if (server.isClosed) break
+                    DiagnosticsLog.w(TAG, "$name accept failed: ${e.message}")
+                    runCatching { Thread.sleep(200) }
+                    continue
                 }
                 thread(name = "$name-conn", isDaemon = true) {
                     try {
                         tune(client)
+                        // Bounds a client that connects and then never speaks:
+                        // without it each stalled peer parks its own thread
+                        // and socket forever.
+                        runCatching { client.soTimeout = IDLE_TIMEOUT_MS }
                         handler(client)
                     } catch (_: Exception) {
                         // Per-connection errors are non-fatal by design.
@@ -347,15 +370,20 @@ object ShareBridge {
         }
     }
 
-    /** SOCKS5 share = byte-for-byte relay into the engine's loopback SOCKS5. */
-    private fun relayToLocalSocks(client: Socket) {
-        val upstream = Socket()
-        try {
-            tune(upstream)
-            upstream.connect(
+    /** Dials the engine's loopback SOCKS5 with the standard relay tuning. */
+    private fun dialEngine(): Socket =
+        Socket().apply {
+            tune(this)
+            connect(
                 InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
                 DIAL_TIMEOUT_MS,
             )
+        }
+
+    /** SOCKS5 share = byte-for-byte relay into the engine's loopback SOCKS5. */
+    private fun relayToLocalSocks(client: Socket) {
+        val upstream = dialEngine()
+        try {
             relay(client, upstream)
         } finally {
             runCatching { upstream.close() }
@@ -378,7 +406,7 @@ object ShareBridge {
             val host = target.substringBeforeLast(':')
             val port = target.substringAfterLast(':').toIntOrNull() ?: 443
             val upstream = socksOpen(host, port) ?: run {
-                client.getOutputStream().writeAscii("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                respondError(client, "502 Bad Gateway")
                 return
             }
             try {
@@ -393,7 +421,7 @@ object ShareBridge {
         // Plain HTTP with an absolute URI, e.g. "GET http://example.com/x HTTP/1.1".
         val url = target.removePrefix("http://")
         if (url == target) { // https:// or malformed — TLS must use CONNECT
-            client.getOutputStream().writeAscii("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+            respondError(client, "400 Bad Request")
             return
         }
         val hostPort = url.substringBefore('/')
@@ -402,7 +430,7 @@ object ShareBridge {
         val port = hostPort.substringAfter(':', "80").toIntOrNull() ?: 80
 
         val upstream = socksOpen(host, port) ?: run {
-            client.getOutputStream().writeAscii("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+            respondError(client, "502 Bad Gateway")
             return
         }
         try {
@@ -431,14 +459,9 @@ object ShareBridge {
 
     /** Opens a TCP stream to host:port THROUGH the engine's SOCKS5 proxy. */
     private fun socksOpen(host: String, port: Int): Socket? {
-        val socket = Socket()
+        val socket = dialEngine()
         return try {
-            tune(socket)
-            socket.connect(
-                InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
-                DIAL_TIMEOUT_MS,
-            )
-            socket.soTimeout = 30_000
+            socket.soTimeout = DIAL_TIMEOUT_MS
             val out = socket.getOutputStream()
             val inp = socket.getInputStream()
 
@@ -473,7 +496,10 @@ object ShareBridge {
             }
             inp.readExact(remaining) ?: throw IllegalStateException("SOCKS5 reply truncated")
 
-            socket.soTimeout = 0
+            // Handshake done: swap the tight dial timeout for the session idle
+            // timeout (never 0 — a dead peer must not pin this socket's relay
+            // thread forever).
+            socket.soTimeout = IDLE_TIMEOUT_MS
             socket
         } catch (e: Exception) {
             DiagnosticsLog.e(TAG, "Upstream dial failed for $host:$port — $e")
@@ -509,7 +535,10 @@ object ShareBridge {
     private fun relay(client: Socket, upstream: Socket) {
         val reverse = thread(isDaemon = true) { pipe(upstream, client, downloadBytesCounter) }
         pipe(client, upstream, uploadBytesCounter)
-        runCatching { reverse.join(1_000) }
+        // Grace for the reverse leg to drain a response tail after the client
+        // half-closed. One second truncated real downloads on high-RTT paths;
+        // both sockets are closed right after, which unblocks it regardless.
+        runCatching { reverse.join(10_000) }
     }
 
     private fun pipe(from: Socket, to: Socket, counter: AtomicLong) {
@@ -547,5 +576,10 @@ object ShareBridge {
     private fun OutputStream.writeAscii(s: String) {
         write(s.toByteArray(Charsets.ISO_8859_1))
         flush()
+    }
+
+    /** Writes an HTTP error status line and closes the reply. */
+    private fun respondError(client: Socket, status: String) {
+        runCatching { client.getOutputStream().writeAscii("HTTP/1.1 $status\r\nConnection: close\r\n\r\n") }
     }
 }

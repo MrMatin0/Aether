@@ -63,6 +63,10 @@ object SessionTracker {
     /** Newest first. */
     val sessions: StateFlow<List<SessionRecord>> = _sessions.asStateFlow()
 
+    // openedAt/peakDown/peakUp are shared between the state-collector and the
+    // sampler coroutine (different worker threads), so every access below is
+    // guarded by this object's monitor. Long tearing on 32-bit ARM alone makes
+    // unsynchronized access unsafe.
     private var openedAt: Long? = null
     private var peakDown = 0L
     private var peakUp = 0L
@@ -86,22 +90,24 @@ object SessionTracker {
     }
 
     private fun onState(state: ConnectionState) {
-        when (state) {
-            is ConnectionState.Connected -> if (openedAt == null) {
-                openedAt = System.currentTimeMillis()
-                peakDown = 0L
-                peakUp = 0L
+        synchronized(this) {
+            when (state) {
+                is ConnectionState.Connected -> if (openedAt == null) {
+                    openedAt = System.currentTimeMillis()
+                    peakDown = 0L
+                    peakUp = 0L
+                }
+                // A transient reconnect is the SAME session, exactly like the
+                // connected-since timer in AetherController.
+                is ConnectionState.Reconnecting -> Unit
+                else -> closeSession()
             }
-            // A transient reconnect is the SAME session, exactly like the
-            // connected-since timer in AetherController.
-            is ConnectionState.Reconnecting -> Unit
-            else -> closeSession()
         }
     }
 
     private suspend fun sampleLoop() {
         while (true) {
-            if (openedAt != null) sample()
+            synchronized(this) { if (openedAt != null) sample() }
             delay(SAMPLE_MS)
         }
     }
@@ -122,6 +128,7 @@ object SessionTracker {
         }
     }
 
+    /** Only call while holding this object's monitor (see [onState]). */
     private fun closeSession() {
         val startedAt = openedAt ?: return
         openedAt = null

@@ -40,6 +40,10 @@ class ConnectionOwnerResolver(
                     lines.drop(1).firstNotNullOfOrNull { line ->
                         val columns = line.trim().split(Regex("\\s+"))
                         if (columns.size < 8) return@firstNotNullOfOrNull null
+                        // TCP keeps closed/torn-down rows (TIME_WAIT & co.)
+                        // around with uid 0; matching one of those would
+                        // misattribute the flow to the OS instead of its app.
+                        if (protocol == 6 && columns[3] != "01") return@firstNotNullOfOrNull null
                         val localEndpoint = columns[1].split(':')
                         val remoteEndpoint = columns[2].split(':')
                         if (localEndpoint.size != 2 || remoteEndpoint.size != 2) return@firstNotNullOfOrNull null

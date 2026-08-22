@@ -128,18 +128,6 @@ private fun SessionRow(record: SessionRecord) {
 private fun formatWhen(millis: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(millis))
 
-private fun formatDuration(ms: Long): String {
-    val seconds = ms / 1000L
-    val hours = seconds / 3600L
-    val minutes = (seconds % 3600L) / 60L
-    val rest = seconds % 60L
-    return if (hours > 0L) {
-        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, rest)
-    } else {
-        String.format(Locale.US, "%d:%02d", minutes, rest)
-    }
-}
-
 private fun formatBytes(v: Long): String {
     if (v < 1024L) return "$v B"
     val kb = v / 1024.0

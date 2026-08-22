@@ -47,6 +47,7 @@
     <string name="err_engine_timeout">هسته نتوانست پراکسی محلی را به‌موقع باز کند.</string>
     <string name="err_engine_died">هسته به‌طور غیرمنتظره متوقف شد.</string>
     <string name="err_proxy_ports">پورت‌های پراکسی محلی باز نشدند — احتمالاً برنامهٔ دیگری از آن‌ها استفاده می‌کند.</string>
+    <string name="err_lockdown_failed">کیل سوییچ نتوانست ترافیک را مسدود کند (رابط VPN رد شد) — اجازهٔ VPN را بررسی کنید.</string>
 
     <!-- Connection meta: IP + flag + timer -->
     <string name="ip_your_label">آی‌پی شما</string>
