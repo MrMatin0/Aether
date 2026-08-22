@@ -2,6 +2,8 @@ package studio.cluvex.aether.ui.components
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,11 +45,15 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -57,6 +64,8 @@ import studio.cluvex.aether.core.Diagnostics
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.LogLevel
 import studio.cluvex.aether.core.LogLine
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.Carbon00
@@ -97,13 +106,22 @@ fun DiagnosticsPanel(
     val context = LocalContext.current
 
     val overall = overallState(checks)
+    val chevron by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        label = "diagchev",
+    )
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
-                    if (alwaysExpanded) Modifier else Modifier.clickable { expanded = !expanded },
+                    if (alwaysExpanded) {
+                        Modifier
+                    } else {
+                        Modifier.clickable(role = Role.Button) { expanded = !expanded }
+                    },
                 )
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -115,11 +133,15 @@ fun DiagnosticsPanel(
                     text = stringResource(R.string.diag_title),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = stringResource(overall.captionRes),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             if (!alwaysExpanded) {
@@ -127,43 +149,68 @@ fun DiagnosticsPanel(
                     imageVector = Icons.Rounded.ExpandMore,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.rotate(if (expanded) 180f else 0f),
+                    modifier = Modifier.rotate(chevron),
                 )
             }
         }
 
         AnimatedVisibility(visible = expanded) {
             Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                /*
+                 * 1.4.3 OVERFLOW FIX. These three controls used to share one
+                 * Row where only "Run" carried weight(1f) and Copy and Clear
+                 * were free to take their intrinsic width. Their intrinsic
+                 * width is label + icon + 36dp of padding each, which on a
+                 * 320dp-wide screen (and on ANY screen in the Persian locale,
+                 * where the labels are longer) exceeded the row: the last pill
+                 * was pushed past the right margin and hard-clipped, so on a
+                 * small phone "Clear" was simply not reachable.
+                 *
+                 * Splitting them also fixes the hierarchy that caused it: Run
+                 * is the primary action of this screen and now owns a full-width
+                 * row, while the two destructive/secondary actions share the row
+                 * below at an equal 50%. Nothing can overflow at any width or
+                 * font scale, and the important button is unmistakable.
+                 */
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 22.dp),
                 ) {
                     ActionPill(
                         label = stringResource(R.string.diag_run),
                         onClick = { scope.launch { Diagnostics.run() } },
                         icon = Icons.Rounded.Refresh,
                         filled = true,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    ActionPill(
-                        label = stringResource(R.string.diag_copy),
-                        onClick = {
-                            clipboard.setText(AnnotatedString(DiagnosticsLog.exportText()))
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.diag_copied),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        },
-                        icon = Icons.Rounded.ContentCopy,
-                        tint = ChalkMuted,
-                    )
-                    ActionPill(
-                        label = stringResource(R.string.diag_clear),
-                        onClick = { DiagnosticsLog.clear() },
-                        icon = Icons.Rounded.Close,
-                        tint = ChalkMuted,
-                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        ActionPill(
+                            label = stringResource(R.string.diag_copy),
+                            onClick = {
+                                clipboard.setText(AnnotatedString(DiagnosticsLog.exportText()))
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.diag_copied),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                            icon = Icons.Rounded.ContentCopy,
+                            tint = ChalkMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionPill(
+                            label = stringResource(R.string.diag_clear),
+                            onClick = { DiagnosticsLog.clear() },
+                            icon = Icons.Rounded.Close,
+                            tint = ChalkMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
 
                 SectionRule(label = stringResource(R.string.diag_checks))
@@ -239,6 +286,7 @@ private fun CheckRow(index: Int, check: ComponentCheck) {
             style = AetherMetaLabel,
             fontWeight = FontWeight.Bold,
             color = color,
+            maxLines = 1,
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
                 .background(color.copy(alpha = 0.12f))
@@ -247,6 +295,21 @@ private fun CheckRow(index: Int, check: ComponentCheck) {
     }
 }
 
+/**
+ * The log console.
+ *
+ * 1.4.3 BiDi FIX. Every other technical readout in this app is pinned LTR — the
+ * ledger values, the endpoint fields, the uptime clock, the check numbers —
+ * because timestamps, IPs and ports are direction-NEUTRAL runs that the Unicode
+ * BiDi algorithm reorders around an RTL base direction. The console was the one
+ * place that was missed, and it is the worst place to miss: in the Persian
+ * locale a line like `12:04:11 hev: connect 162.159.192.1:443 failed` came out
+ * with its timestamp, address and port visually rearranged, and the gutter
+ * glyph jumped to the opposite edge. That makes the single screen people are
+ * asked to screenshot for a bug report actively misleading. The whole console
+ * now renders in an LTR layout scope, so log output is byte-order faithful in
+ * both languages while the rest of the UI stays RTL.
+ */
 @Composable
 private fun LogConsole(maxHeight: Dp) {
     val lines: List<LogLine> = DiagnosticsLog.lines.collectAsState().value
@@ -279,39 +342,41 @@ private fun LogConsole(maxHeight: Dp) {
 
     Spacer(Modifier.height(12.dp))
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 140.dp, max = maxHeight)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Carbon00)
-            .padding(horizontal = 14.dp, vertical = 12.dp)
-            .verticalScroll(scroll),
-    ) {
-        if (shown.isEmpty()) {
-            Text(
-                text = stringResource(R.string.diag_empty_logs),
-                style = MaterialTheme.typography.bodySmall,
-                color = ChalkFaint,
-            )
-        } else {
-            Column {
-                shown.forEach { line ->
-                    Row(verticalAlignment = Alignment.Top) {
-                        Text(
-                            text = glyph(line.level),
-                            fontFamily = AetherMono,
-                            fontSize = 11.sp,
-                            color = logColor(line.level),
-                            modifier = Modifier.width(14.dp),
-                        )
-                        Text(
-                            text = line.format(),
-                            fontFamily = AetherMono,
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = logColor(line.level),
-                        )
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 140.dp, max = maxHeight)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Carbon00)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .verticalScroll(scroll),
+        ) {
+            if (shown.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.diag_empty_logs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ChalkFaint,
+                )
+            } else {
+                Column {
+                    shown.forEach { line ->
+                        Row(verticalAlignment = Alignment.Top) {
+                            Text(
+                                text = glyph(line.level),
+                                fontFamily = AetherMono,
+                                fontSize = 11.sp,
+                                color = logColor(line.level),
+                                modifier = Modifier.width(14.dp),
+                            )
+                            Text(
+                                text = line.format(),
+                                fontFamily = AetherMono,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                color = logColor(line.level),
+                            )
+                        }
                     }
                 }
             }
