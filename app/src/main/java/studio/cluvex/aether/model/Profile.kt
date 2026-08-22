@@ -371,8 +371,14 @@ data class ConnectionProfile(
     }
 
     /** Accepts `500` or `16-32` style ranges; anything else is dropped. */
-    private fun sanitizedRange(raw: String): String? =
-        raw.trim().takeIf { it.matches(Regex("^\\d{1,5}(-\\d{1,5})?$")) }
+    private fun sanitizedRange(raw: String): String? {
+        val text = raw.trim().takeIf { it.matches(RANGE_ENTRY) } ?: return null
+        val numbers = text.split("-").map { it.toInt() }
+        // Out-of-bounds or reversed values are typos, not tuning data — the
+        // engine would receive garbage flags and fail late instead of never.
+        if (numbers.any { it < 1 || it > 65_535 }) return null
+        return if (numbers.size == 2 && numbers[0] > numbers[1]) null else text
+    }
 
     private fun sanitizedTlsGroups(): String? =
         tlsGroups.trim().takeIf { it.matches(Regex("^[A-Za-z0-9:_-]{1,64}$")) }
@@ -389,9 +395,18 @@ data class ConnectionProfile(
         const val MAX_DNS_SERVERS = 8
         const val MAX_ROUTE_RULES = 256
 
-        /** `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port). */
+        /**
+         * `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port).
+         * Octets and ports are numerically bounded — `\d{1,3}` alone would
+         * accept `999.999.999.999:99999` and defer the failure to the engine.
+         */
+        private val OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)"
+        private val PORT = "(?:6553[0-5]|655[0-2]\\d|65[0-4]\\d{2}|6[0-4]\\d{3}|[1-9]\\d{0,3})"
         private val DNS_ENTRY =
-            Regex("^(?:\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9A-Fa-f:]+])(?::\\d{1,5})?$")
+            Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+])(?::$PORT)?$")
+
+        /** `500` or `16-32`: digits only, bounds and ordering checked in [sanitizedRange]. */
+        private val RANGE_ENTRY = Regex("^\\d{1,5}(-\\d{1,5})?$")
 
         /** One routing-rule token: no comma, no whitespace, no shell metacharacters. */
         private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^\$+?()|{}\\\\]{1,200}$")

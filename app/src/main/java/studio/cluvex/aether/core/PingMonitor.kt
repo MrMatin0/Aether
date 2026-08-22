@@ -1,6 +1,7 @@
 package studio.cluvex.aether.core
 
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,7 +48,14 @@ object PingMonitor {
         if (!mutex.tryLock()) return
         try {
             _state.value = PingResult(running = true)
-            val ms = withContext(Dispatchers.IO) { measure(viaTunnel) }
+            val ms = try {
+                withContext(Dispatchers.IO) { measure(viaTunnel) }
+            } catch (e: CancellationException) {
+                // A cancelled probe must still clear the "running" flag, or
+                // the test button stays stuck for the rest of the session.
+                _state.value = PingResult(error = true)
+                throw e
+            }
             _state.value = if (ms >= 0) PingResult(ms = ms) else PingResult(error = true)
         } finally {
             mutex.unlock()

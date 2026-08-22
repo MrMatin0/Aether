@@ -70,17 +70,32 @@ object NetProbe {
 
     // ---- Public: geolocation --------------------------------------------
 
+    /**
+     * One geolocation-provider attempt: dial through [open], TLS-wrap when the
+     * provider asks for it, fetch and parse. Returns null on any failure.
+     * Shared by the direct, proxied and raced lookup paths.
+     */
+    private fun tryProvider(
+        provider: GeoProvider,
+        timeoutMs: Int,
+        tag: String,
+        open: (host: String, port: Int) -> Socket,
+    ): IpInfo? =
+        runCatching {
+            open(provider.host, provider.port).use { s ->
+                val io = if (provider.tls) tlsWrap(s, provider.host, provider.port, timeoutMs) else s
+                parseIpInfo(httpGet(io, provider.host, provider.path))
+            }
+        }.onFailure {
+            DiagnosticsLog.d("netprobe", "$tag geo ${provider.host} failed: ${it.message}")
+        }.getOrNull()
+
     /** Real/operator IP (direct, bypasses the tunnel). */
     fun fetchIpInfoDirect(timeoutMs: Int = 8000): IpInfo? {
         for (p in GEO_PROVIDERS) {
-            val info = runCatching {
-                openDirectIpv4(p.host, p.port, timeoutMs).use { s ->
-                    val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
-                    parseIpInfo(httpGet(io, p.host, p.path))
-                }
-            }.onFailure {
-                DiagnosticsLog.d("netprobe", "direct geo ${p.host} failed: ${it.message}")
-            }.getOrNull()
+            val info = tryProvider(p, timeoutMs, "direct") { host, port ->
+                openDirectIpv4(host, port, timeoutMs)
+            }
             if (info != null) {
                 return refineCountry(info, p) { host, port ->
                     openDirectIpv4(host, port, timeoutMs)
@@ -121,14 +136,9 @@ object NetProbe {
         timeoutMs: Int = 9000,
     ): IpInfo? {
         for (p in GEO_PROVIDERS) {
-            val info = runCatching {
-                socks5Connect(socksHost, socksPort, p.host, p.port, useDomain = p.hostIsDomain, timeoutMs).use { s ->
-                    val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
-                    parseIpInfo(httpGet(io, p.host, p.path))
-                }
-            }.onFailure {
-                DiagnosticsLog.d("netprobe", "proxied geo ${p.host} failed: ${it.message}")
-            }.getOrNull()
+            val info = tryProvider(p, timeoutMs, "proxied") { host, port ->
+                socks5Connect(socksHost, socksPort, host, port, useDomain = p.hostIsDomain, timeoutMs)
+            }
             if (info != null) {
                 return refineCountry(info, p) { host, port ->
                     socks5Connect(socksHost, socksPort, host, port, useDomain = true, timeoutMs)
@@ -137,7 +147,6 @@ object NetProbe {
         }
         return null
     }
-
 
     /**
      * SPEED FIX: races ALL geolocation providers through the proxy in
@@ -165,14 +174,9 @@ object NetProbe {
             // A cached pool reuses those workers, so repeated refreshes stop
             // churning thread stacks and the GC.
             geoPool.execute {
-                val info = runCatching {
-                    socks5Connect(socksHost, socksPort, p.host, p.port, useDomain = p.hostIsDomain, timeoutMs).use { s ->
-                        val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
-                        parseIpInfo(httpGet(io, p.host, p.path))
-                    }
-                }.onFailure {
-                    DiagnosticsLog.d("netprobe", "raced geo ${p.host} failed: ${it.message}")
-                }.getOrNull()
+                val info = tryProvider(p, timeoutMs, "raced") { host, port ->
+                    socks5Connect(socksHost, socksPort, host, port, useDomain = p.hostIsDomain, timeoutMs)
+                }
                 if (info != null) {
                     val refined = runCatching {
                         refineCountry(info, p) { host, port ->
@@ -310,10 +314,7 @@ object NetProbe {
             Socket().use { s ->
                 s.connect(InetSocketAddress(socksHost, socksPort), timeoutMs)
                 s.soTimeout = timeoutMs
-                s.getOutputStream().apply { write(byteArrayOf(0x05, 0x01, 0x00)); flush() }
-                val reply = ByteArray(2)
-                DataInputStream(s.getInputStream()).readFully(reply)
-                reply[0].toInt() == 0x05 && reply[1].toInt() == 0x00
+                socksGreet(s.getOutputStream(), DataInputStream(s.getInputStream()))
             }
         }.getOrDefault(false)
 
@@ -325,8 +326,31 @@ object NetProbe {
         destPort: Int,
         timeoutMs: Int = 6000,
     ): Boolean = runCatching {
+        validateIpv4Literal(destIp)
         socks5Connect(socksHost, socksPort, destIp, destPort, useDomain = false, timeoutMs).use { true }
     }.getOrDefault(false)
+
+    /**
+     * Validates an IPv4 literal for the SOCKS5 ATYP=0x01 address form. Every
+     * octet must be numeric and in range: a silent `and 0xFF` truncation would
+     * quietly redirect a probe meant for 1.1.1.999 at 1.1.1.231 and report a
+     * PASS against the wrong host.
+     */
+    private fun validateIpv4Literal(host: String) {
+        val octets = host.split(".")
+        if (octets.size != 4 || octets.any { it.toIntOrNull() !in 0..255 }) {
+            throw IOException("bad IPv4 literal: $host")
+        }
+    }
+
+    /** Sends the NO-AUTH greeting and verifies the chosen-method reply. */
+    private fun socksGreet(out: java.io.OutputStream, input: DataInputStream): Boolean {
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        val reply = ByteArray(2)
+        input.readFully(reply)
+        return reply[0].toInt() == 0x05 && reply[1].toInt() == 0x00
+    }
 
     // ---- SOCKS5 core ----------------------------------------------------
 
@@ -349,12 +373,7 @@ object NetProbe {
             val out = socket.getOutputStream()
             val input = DataInputStream(socket.getInputStream())
 
-            // Greeting: VER=5, 1 method, NO-AUTH.
-            out.write(byteArrayOf(0x05, 0x01, 0x00))
-            out.flush()
-            val greeting = ByteArray(2)
-            input.readFully(greeting)
-            if (greeting[0].toInt() != 0x05 || greeting[1].toInt() != 0x00) {
+            if (!socksGreet(out, input)) {
                 throw IOException("SOCKS5 auth negotiation failed")
             }
 
@@ -369,10 +388,9 @@ object NetProbe {
                 req.write(host.size)
                 req.write(host)
             } else {
-                val octets = destHost.split(".")
-                if (octets.size != 4) throw IOException("bad IPv4 literal: $destHost")
+                validateIpv4Literal(destHost)
                 req.write(0x01)
-                octets.forEach { req.write(it.toInt() and 0xFF) }
+                destHost.split(".").forEach { req.write(it.toInt()) }
             }
             req.write((destPort ushr 8) and 0xFF)
             req.write(destPort and 0xFF)

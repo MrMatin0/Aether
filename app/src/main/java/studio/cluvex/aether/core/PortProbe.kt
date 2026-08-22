@@ -1,5 +1,6 @@
 package studio.cluvex.aether.core
 
+import android.os.SystemClock
 import kotlinx.coroutines.delay
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -33,7 +34,10 @@ object PortProbe {
         intervalMs: Long = 300,
         isEngineAlive: () -> Boolean = { true },
     ): Boolean {
-        val deadline = System.currentTimeMillis() + totalTimeoutMs
+        // Monotonic clock: the wall clock can jump (NTP resync while offline
+        // is routine on this app's target networks) and would stretch or
+        // collapse every deadline here.
+        val deadline = SystemClock.elapsedRealtime() + totalTimeoutMs
         // 1.2.2 CPU FIX: the poll is now adaptive instead of a flat 300 ms for
         // the entire window. The engine either opens its port within the first
         // few seconds (fast path — keep the tight interval so we notice
@@ -45,12 +49,12 @@ object PortProbe {
         // order of magnitude while costing at most one extra second of
         // detection latency on a slow connect.
         var interval = intervalMs
-        val fastPhaseEnd = System.currentTimeMillis() + FAST_PHASE_MS
-        while (System.currentTimeMillis() < deadline) {
+        val fastPhaseEnd = SystemClock.elapsedRealtime() + FAST_PHASE_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
             if (isOpen(host, port)) return true
             if (!isEngineAlive()) return false
             delay(interval)
-            if (System.currentTimeMillis() > fastPhaseEnd && interval < MAX_INTERVAL_MS) {
+            if (SystemClock.elapsedRealtime() > fastPhaseEnd && interval < MAX_INTERVAL_MS) {
                 interval = (interval * 3 / 2).coerceAtMost(MAX_INTERVAL_MS)
             }
         }
@@ -72,8 +76,8 @@ object PortProbe {
         totalTimeoutMs: Long,
         intervalMs: Long = 100,
     ): Boolean {
-        val deadline = System.currentTimeMillis() + totalTimeoutMs
-        while (System.currentTimeMillis() < deadline) {
+        val deadline = SystemClock.elapsedRealtime() + totalTimeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
             if (!isOpen(host, port, timeoutMs = 250)) return true
             delay(intervalMs)
         }

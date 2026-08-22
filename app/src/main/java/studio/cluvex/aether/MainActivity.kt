@@ -55,10 +55,19 @@ class MainActivity : ComponentActivity() {
 
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                pendingProfile?.let { AetherController.connect(this, it) }
-            }
+            val requested = pendingProfile
             pendingProfile = null
+            if (result.resultCode != RESULT_OK) return@registerForActivityResult
+            // The process can be killed while the consent dialog is on screen;
+            // the registry redelivers RESULT_OK to the recreated activity, but
+            // its pendingProfile is null then. Fall back to the persisted
+            // profile so a granted consent never ends in "nothing happened".
+            lifecycleScope.launch {
+                val profile = requested
+                    ?: runCatching { profileStore.profile.first() }.getOrNull()
+                    ?: ConnectionProfile()
+                AetherController.connect(this@MainActivity, profile)
+            }
         }
 
     private val notificationPermissionLauncher =

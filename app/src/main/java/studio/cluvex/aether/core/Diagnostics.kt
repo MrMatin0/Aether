@@ -1,5 +1,6 @@
 package studio.cluvex.aether.core
 
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -105,12 +106,14 @@ object Diagnostics {
 
         // 3 + 4. TCP-via-proxy and DNS+HTTP end-to-end — CONCURRENT, each with
         // its own fast retry loop over the shared cold-start grace window.
-        val deadline = System.currentTimeMillis() + OUTBOUND_GRACE_MS
+        // Monotonic clock: a wall-clock jump must not cut the grace window
+        // short or stretch it on a device that resyncs NTP mid-connect.
+        val deadline = SystemClock.elapsedRealtime() + OUTBOUND_GRACE_MS
         val (tcp, info) = coroutineScope {
             val tcpJob = async {
                 DiagnosticsLog.updateCheck(C_TCP, CheckState.RUNNING)
                 var ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
-                while (!ok && System.currentTimeMillis() < deadline) {
+                while (!ok && SystemClock.elapsedRealtime() < deadline) {
                     delay(OUTBOUND_RETRY_DELAY_MS)
                     ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
                 }
@@ -121,7 +124,7 @@ object Diagnostics {
             val dnsJob = async {
                 DiagnosticsLog.updateCheck(C_DNS, CheckState.RUNNING)
                 var result = NetProbe.fetchIpInfoViaSocksRaced(host, port, GEO_PROBE_TIMEOUT_MS)
-                while (result == null && System.currentTimeMillis() < deadline) {
+                while (result == null && SystemClock.elapsedRealtime() < deadline) {
                     delay(OUTBOUND_RETRY_DELAY_MS)
                     result = NetProbe.fetchIpInfoViaSocksRaced(host, port, GEO_PROBE_TIMEOUT_MS)
                 }

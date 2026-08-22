@@ -70,8 +70,10 @@ class AetherTileService : TileService() {
         }
         val appContext = applicationContext
         CoroutineScope(Dispatchers.IO).launch {
-            val profile = ProfileStore(appContext).profile.first()
-            AetherController.connect(appContext, profile)
+            // Guarded: a transient DataStore/Keystore failure must not crash
+            // the whole process from a Quick Settings tap.
+            runCatching { ProfileStore(appContext).profile.first() }
+                .onSuccess { AetherController.connect(appContext, it) }
         }
     }
 

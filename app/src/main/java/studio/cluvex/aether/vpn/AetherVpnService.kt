@@ -85,11 +85,15 @@ class AetherVpnService : VpnService() {
                 // STRICT KILL SWITCH (1.2.4): a manual disconnect must not
                 // open a leak window. With strict mode on, the first
                 // disconnect engages lockdown instead; disconnecting FROM
-                // lockdown lifts it.
+                // lockdown lifts it. The lockdown branch requires a LIVE
+                // session: the error notification keeps its Disconnect action
+                // even after a failed connect, and engaging a device-wide
+                // blackhole from that dead end would strand the user offline.
                 val last = lastProfile
                 when {
                     lockdownTunActive -> stopEverything()
-                    last != null && last.strictKillSwitch -> enterLockdown(last)
+                    runJob?.isActive == true && last != null && last.strictKillSwitch ->
+                        enterLockdown(last)
                     else -> stopEverything()
                 }
                 return START_NOT_STICKY
@@ -428,9 +432,9 @@ class AetherVpnService : VpnService() {
     /** Keeps the engine alive; retries with backoff if it dies. */
     private suspend fun superviseEngine(profile: ConnectionProfile) {
         var attempt = 0
+        probeFailures = 0
         while (currentScopeActive()) {
             if (engine?.isAlive() == true) {
-                attempt = 0
                 // 1.2.2 CPU FIX: the supervisor used to wake up every 2 s for
                 // the ENTIRE lifetime of the tunnel just to ask "is the engine
                 // still alive?" — 1,800 wake-ups per hour of a healthy,
@@ -448,6 +452,7 @@ class AetherVpnService : VpnService() {
                 // probeTunnelCycle() for why the bar is deliberately high.
                 if (engine?.isAlive() == true) {
                     if (probeTunnelCycle()) {
+                        attempt = 0
                         probeFailures = 0
                     } else if (++probeFailures >= WATCHDOG_FAIL_CYCLES) {
                         DiagnosticsLog.w(
@@ -681,6 +686,9 @@ class AetherVpnService : VpnService() {
         updateNotification(getString(R.string.state_disconnecting))
         val job = runJob
         runJob = null
+        // The session is over: its kill-switch policy must not leak into a
+        // later ACTION_DISCONNECT that arrives with nothing running.
+        lastProfile = null
         // DISCONNECT MUST BE INSTANT. Order matters:
         //   1. cancel the session coroutine (does not wait for it),
         //   2. kill the natives right away — this is what actually makes the
@@ -701,6 +709,10 @@ class AetherVpnService : VpnService() {
             EngineMeta.reset()
             AetherController.setState(ConnectionState.Idle)
             AetherTileService.requestUpdate(this@AetherVpnService)
+            // The final Idle transition never goes through
+            // updateNotification(), which is what repaints the widget — so
+            // without this the widget stays on "Disconnecting…" forever.
+            AetherWidgetProvider.updateAllWidgets(this@AetherVpnService)
             stopForegroundCompat()
             stopSelf()
             job?.join()
@@ -766,20 +778,31 @@ class AetherVpnService : VpnService() {
         runJob = null
         job?.cancel()
         stopJob = scope.launch(Dispatchers.IO) {
-            cleanupForwardingOnly()
-            ensureLockdownTun(profile)
-            lockdownTunActive = true
+            stopForwardingNatives()
+            // If the blackhole interface cannot be established (consent
+            // revoked, another VPN took over) there is nothing to hold the
+            // traffic with — say so instead of pretending to be protected.
+            val lockedDown = ensureLockdownTun(profile)
+            lockdownTunActive = lockedDown
             Diagnostics.resetChecks()
             EngineMeta.reset()
-            AetherController.setState(ConnectionState.Error(getString(R.string.state_killswitch)))
-            updateNotification(getString(R.string.state_killswitch))
-            AetherTileService.requestUpdate(this@AetherVpnService)
+            if (lockedDown) {
+                AetherController.setState(ConnectionState.Error(getString(R.string.state_killswitch)))
+                updateNotification(getString(R.string.state_killswitch))
+            } else {
+                AetherController.setState(
+                    ConnectionState.Error(getString(R.string.err_lockdown_failed)),
+                )
+                updateNotification(getString(R.string.err_lockdown_failed))
+                stopForegroundCompat()
+                stopSelf()
+            }
             job?.join()
         }
     }
 
     /** Stops sharing, the forwarder and the engine but deliberately KEEPS [tun]. */
-    private fun cleanupForwardingOnly() {
+    private fun stopForwardingNatives() {
         try {
             ShareBridge.stop()
         } catch (_: Throwable) {
@@ -801,7 +824,7 @@ class AetherVpnService : VpnService() {
     }
 
     /** (Re)builds the TUN as a full-tunnel blackhole: routes everything, reads nothing. */
-    private fun ensureLockdownTun(profile: ConnectionProfile) {
+    private fun ensureLockdownTun(profile: ConnectionProfile): Boolean {
         runCatching { tun?.close() }
         tun = null
         val builder = Builder()
@@ -814,34 +837,21 @@ class AetherVpnService : VpnService() {
             builder.addAddress(TunnelConfig.TUN_IPV6, TunnelConfig.TUN_IPV6_PREFIX)
             builder.addRoute("::", 0)
         }
-        tun = runCatching { builder.establish() }.getOrNull()
+        // establish() returns NULL when consent was revoked or another VPN is
+        // active. Reporting lockdown anyway would leave all traffic flowing
+        // direct while the UI claims protection.
+        tun = runCatching { builder.establish() }.getOrNull() ?: return false
+        return true
     }
 
     private fun cleanupNativeOnly() {
-        // Stop sharing first: without the tunnel the bridge would leak direct.
-        try {
-            ShareBridge.stop()
-        } catch (_: Throwable) {
-        }
-        tunBridge?.let { runCatching { it.stop() } }
-        tunBridge = null
-        if (tunnelStarted) {
-            try {
-                HevTunnel.stop()
-            } catch (_: Throwable) {
-            }
-            tunnelStarted = false
-        }
-        try {
-            engine?.stop()
-        } catch (_: Throwable) {
-        }
-        engine = null
+        stopForwardingNatives()
         try {
             tun?.close()
         } catch (_: Throwable) {
         }
         tun = null
+        lockdownTunActive = false
     }
 
     private fun stopForegroundCompat() {

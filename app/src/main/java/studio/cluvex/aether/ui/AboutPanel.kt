@@ -83,10 +83,13 @@ private val PORT_IMPROVEMENTS = listOf(
 fun AboutPanel(modifier: Modifier = Modifier) {
     var showFeatures by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    // BuildConfig.VERSION_NAME is the honest fallback: a hardcoded release
+    // number here would end up verbatim in bug reports when getPackageInfo
+    // throws (disabled caller app, OEM quirks).
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "1.2.5"
+        }.getOrNull() ?: BuildConfig.VERSION_NAME
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -95,7 +98,7 @@ fun AboutPanel(modifier: Modifier = Modifier) {
         Hairline(alpha = 0.55f)
         VersionRow(
             label = stringResource(R.string.about_version, "").trim(),
-            value = versionName ?: "",
+            value = versionName,
         )
         Hairline(alpha = 0.55f)
         // BuildConfig.CORE_VERSION is stamped at build time from

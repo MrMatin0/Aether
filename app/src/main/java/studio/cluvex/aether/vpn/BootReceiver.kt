@@ -45,12 +45,14 @@ class BootReceiver : BroadcastReceiver() {
         if (current.isConnected || current.isBusy) return
 
         // The profile lives in DataStore, so the read suspends: keep the
-        // broadcast alive until the connect intent is actually out.
+        // broadcast alive until the connect intent is actually out. The read
+        // is guarded too — a corrupt or unreadable store must never turn the
+        // boot broadcast into an unhandled-exception process kill.
         val pending = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
             try {
-                val profile = ProfileStore(app).profile.first()
-                runCatching { AetherController.connect(app, profile) }
+                val profile = runCatching { ProfileStore(app).profile.first() }.getOrNull()
+                if (profile != null) runCatching { AetherController.connect(app, profile) }
             } finally {
                 pending.finish()
             }

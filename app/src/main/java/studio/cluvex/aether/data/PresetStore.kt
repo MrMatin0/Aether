@@ -36,12 +36,18 @@ class PresetStore(context: Context) {
         if (clean.isEmpty()) return false
         val others = _presets.value.filterNot { it.name.equals(clean, ignoreCase = true) }
         if (others.size >= MAX_PRESETS) return false
-        write(others + Preset(clean, ProfileCodec.encode(profile)))
+        // Strip the record/field framing characters from the payload too:
+        // route rules and free-text fields can carry anything pasted into
+        // them, and one stray control character would split records mid-
+        // payload on read, dropping neighbouring presets with it.
+        val payload = sanitizePayload(ProfileCodec.encode(profile))
+        write(others + Preset(clean, payload))
         return true
     }
 
     fun delete(name: String) {
-        write(_presets.value.filterNot { it.name == name })
+        // Same identity rule as save(): names are matched case-insensitively.
+        write(_presets.value.filterNot { it.name.equals(name, ignoreCase = true) })
     }
 
     private fun read(): List<Preset> = (prefs.getString(KEY, null) ?: "")
@@ -88,11 +94,19 @@ class PresetStore(context: Context) {
         /** Parses pasted text, or null when it clearly is not an Aether config. */
         fun importText(raw: String?): ConnectionProfile? {
             if (raw.isNullOrBlank()) return null
-            if (!raw.contains("protocol=")) return null
-            return ProfileCodec.decode(raw)
+            // The key=value form carries "protocol="; the 1.0/1.1 legacy pipe
+            // format does not — but [ProfileCodec.decode] still understands it,
+            // so rejecting it here would refuse configs the app can decode.
+            val looksCurrent = raw.contains("protocol=")
+            val looksLegacy = !raw.contains('=') && raw.contains('|')
+            if (!looksCurrent && !looksLegacy) return null
+            return ProfileCodec.decode(sanitizePayload(raw))
         }
 
         private fun sanitize(name: String): String =
             name.trim().replace(Regex("[\\r\\n\\u0001\\u0002]"), " ").take(40)
+
+        private fun sanitizePayload(payload: String): String =
+            payload.replace(Regex("[\\u0001\\u0002]"), " ")
     }
 }

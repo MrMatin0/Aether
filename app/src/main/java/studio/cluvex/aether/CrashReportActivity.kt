@@ -1,5 +1,6 @@
 package studio.cluvex.aether
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -39,9 +40,15 @@ import java.io.File
  */
 class CrashReportActivity : ComponentActivity() {
 
+    // Same layering as every other entry point: the crash screen must speak
+    // the language the user picked in-app, not the system locale.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val crashFile = File(filesDir, "last_crash.txt")
+        val crashFile = File(filesDir, AetherApp.CRASH_FILE)
         val details = runCatching { crashFile.readText() }.getOrDefault("")
 
         setContent {

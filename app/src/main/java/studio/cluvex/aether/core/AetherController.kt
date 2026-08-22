@@ -121,11 +121,8 @@ object ProfileCodec {
         add("share=${p.lanShare}")
         add("noize=${p.noize.name}")
         add("endpoint=${p.endpointMode.name}")
-        add("peer=${p.manualPeer}")
-        // The range field is multi-line in the UI. This codec is line-based, so
-        // an embedded newline would truncate the value (and turn the rest into a
-        // bogus key). Ranges are comma-separated for the engine anyway.
-        add("range=${p.manualRange.lineSequence().joinToString(",")}")
+        add("peer=${flatten(p.manualPeer)}")
+        add("range=${flatten(p.manualRange)}")
         add("keepalive=${p.keepalive}")
         add("fragment=${p.fragment}")
         add("ech=${p.ech}")
@@ -135,24 +132,24 @@ object ProfileCodec {
         add("splitApps=${p.splitApps.joinToString(",")}")
         // Added in 1.2.3 (engine v1.5.0) — these were missing from the codec,
         // so the engine never received them (see the class doc).
-        add("dns=${p.dnsServers}")
-        add("team=${p.team}")
+        add("dns=${flatten(p.dnsServers)}")
+        add("team=${flatten(p.team)}")
         add("teamAuth=${p.teamAuth.name}")
-        add("accessId=${p.accessClientId}")
-        add("accessEmail=${p.accessEmail}")
+        add("accessId=${flatten(p.accessClientId)}")
+        add("accessEmail=${flatten(p.accessEmail)}")
         add("gateway=${p.gateway}")
-        add("routeBlock=${p.routeBlock.lineSequence().joinToString(",")}")
-        add("routeDirect=${p.routeDirect.lineSequence().joinToString(",")}")
+        add("routeBlock=${flatten(p.routeBlock)}")
+        add("routeDirect=${flatten(p.routeDirect)}")
         // Added in 1.2.4 (feature parity)
         add("kill=${p.killSwitch}")
         add("strictKill=${p.strictKillSwitch}")
         add("v6leak=${p.ipv6LeakProtection}")
         add("smartRe=${p.smartReconnect}")
         add("reLimit=${p.reconnectRetryLimit}")
-        add("fSize=${p.fragmentSize}")
-        add("fDelay=${p.fragmentDelay}")
+        add("fSize=${flatten(p.fragmentSize)}")
+        add("fDelay=${flatten(p.fragmentDelay)}")
         add("noDataCheck=${p.noDataCheck}")
-        add("tlsGroups=${p.tlsGroups}")
+        add("tlsGroups=${flatten(p.tlsGroups)}")
         add("valSecs=${p.validateSecs}")
         add("recSecs=${p.reconnectSecs}")
         add("noProfRetry=${p.noProfileRetry}")
@@ -237,4 +234,12 @@ object ProfileCodec {
 
     private inline fun <reified T : Enum<T>> enumOr(name: String): T? =
         runCatching { enumValueOf<T>(name) }.getOrNull()
+
+    /**
+     * The payload is line-framed, so an embedded newline would truncate the
+     * value and turn the rest into a bogus key (one containing '=' could even
+     * shadow another field). Free-text fields are comma-separated for the
+     * engine anyway, so newlines fold into commas.
+     */
+    private fun flatten(value: String): String = value.lineSequence().joinToString(",")
 }
