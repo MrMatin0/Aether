@@ -22,11 +22,11 @@ data class PingResult(
  * On-demand TCP latency check, ported from the merged PingRepository and
  * adapted to Aether Mobile's tunnel plumbing ([TunnelConfig]).
  *
- * BATTERY DESIGN: there is deliberately NO periodic polling loop here. A
- * measurement only runs when the user taps the ping badge, or exactly once
- * after a new connection comes up. Each run is a single TCP handshake to
- * Cloudflare's anycast resolver (1.1.1.1:53) with a hard 5 s timeout, so one
- * measurement costs one packet round-trip and never keeps the CPU awake.
+ * BATTERY DESIGN: there is deliberately NO periodic polling loop anywhere. A
+ * measurement runs only when the user taps the test button next to the
+ * latency value. Each run is a single TCP handshake to Cloudflare's anycast
+ * resolver (1.1.1.1:53) with a hard 5 s timeout, so one measurement costs one
+ * packet round-trip and never keeps the CPU awake.
  */
 object PingMonitor {
     private val _state = MutableStateFlow(PingResult())
@@ -52,6 +52,11 @@ object PingMonitor {
         } finally {
             mutex.unlock()
         }
+    }
+
+    /** Clears the last reading so a stale number never outlives its session. */
+    fun reset() {
+        _state.value = PingResult()
     }
 
     private fun measure(viaTunnel: Boolean): Long {

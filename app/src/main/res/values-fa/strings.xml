@@ -247,4 +247,5 @@
     <string name="meta_protocol">پروتکل</string>
     <string name="meta_endpoint">اندپوینت</string>
     <string name="meta_latency">تأخیر</string>
+    <string name="meta_latency_test">تست</string>
 </resources>
