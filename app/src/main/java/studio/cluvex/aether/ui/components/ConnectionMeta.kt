@@ -50,6 +50,9 @@ private const val DASH = "\u2014"
 private const val ELLIPSIS = "\u2026"
 private const val LATENCY_REFRESH_MS = 4_000L
 
+/** Width of the label gutter. One number so every row lines up. */
+private val LABEL_WIDTH = 96.dp
+
 /**
  * The session ledger: everything factual about the current connection, in one
  * scannable column.
@@ -64,6 +67,13 @@ private const val LATENCY_REFRESH_MS = 4_000L
  *
  * Every technical value stays pinned LTR — that BiDi fix is load-bearing in
  * the Persian locale, where `104.28.197.15` otherwise renders reordered.
+ *
+ * 1.4.3: the label gutter is a fixed 96dp so the values align into a column,
+ * but the labels in it had `maxLines = 2` and NO overflow strategy, which means
+ * Compose falls back to hard clipping. At a large system font scale the Persian
+ * labels (آی‌پی سرور, مدت اتصال) were cut through the middle of a glyph, which
+ * in a joined script does not look truncated — it looks like a rendering bug.
+ * Every bounded line in the ledger now ellipsises instead.
  */
 @Composable
 fun ConnectionMeta(
@@ -182,7 +192,8 @@ private fun LedgerRow(
             style = AetherMetaLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
-            modifier = Modifier.width(96.dp),
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(LABEL_WIDTH),
         )
         Spacer(Modifier.width(12.dp))
         Box(modifier = Modifier.weight(1f)) { value() }
@@ -283,7 +294,8 @@ private fun UptimeRow(connectedSince: Long) {
             style = AetherMetaLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
-            modifier = Modifier.width(96.dp),
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(LABEL_WIDTH),
         )
         Spacer(Modifier.width(12.dp))
         Text(
@@ -295,6 +307,7 @@ private fun UptimeRow(connectedSince: Long) {
             color = MaterialTheme.colorScheme.onBackground,
             textAlign = TextAlign.End,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
     }

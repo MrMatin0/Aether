@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -62,6 +64,12 @@ private const val TICKS = 72
 /** Degrees -> radians. Plain val: a conversion call is not a const expression. */
 private val DEG = (PI / 180.0).toFloat()
 
+/** The design diameter. Never exceeded, and shrunk on narrow screens. */
+private val RING_MAX = 244.dp
+
+/** Glyph diameter as a fraction of the ring, so it scales with it. */
+private const val GLYPH_RATIO = 0.19f
+
 /**
  * The centrepiece: an aperture ring of 72 ticks around a power glyph.
  *
@@ -85,6 +93,18 @@ private val DEG = (PI / 180.0).toFloat()
  * 244dp box. [stateLabel] is published as the node's state and [actionLabel] as
  * the click label, both in the same words the header pill and the pinned button
  * use, so TalkBack announces "Protected, button, double tap to disconnect".
+ *
+ * 1.4.3 RESPONSIVENESS FIX. The diameter was hardcoded 244dp — twice, once on
+ * the Box and again on the Canvas, so the two could drift apart — and the glyph
+ * was a third fixed number. 244dp plus the screen's 22dp side gutters needs a
+ * 288dp-wide viewport; below that (a 320dp small phone in portrait is already
+ * marginal, and any device in landscape or with display size set to "larger" is
+ * not) the ring was measured wider than the column it sits in, so the outermost
+ * ticks were clipped by the scroll container and the whole control looked
+ * off-centre. The size is now derived from the real constraints — capped at the
+ * design 244dp, otherwise 86% of the available width — and the Canvas and the
+ * glyph are both expressed relative to it, so there is one number to change and
+ * nothing can be clipped.
  */
 @Composable
 fun ConnectButton(
@@ -129,90 +149,96 @@ fun ConnectButton(
         }
     }
 
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(244.dp)
-            .scale(press)
-            .clip(CircleShape)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                onClickLabel = actionLabel,
-                role = Role.Button,
-                onClick = onClick,
-            )
-            .semantics { stateDescription = stateLabel },
-    ) {
-        Canvas(modifier = Modifier.size(244.dp)) {
-            val radius = size.minDimension / 2f
-            val cx = size.width / 2f
-            val cy = size.height / 2f
-            val head = sweep.value
-            val outer = radius - 1.dp.toPx()
-            val inner = outer - 15.dp.toPx()
-            val stroke = 2.dp.toPx()
+    BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.Center) {
+        // One source of truth for the diameter: the design size, or as much of
+        // the available width as we can take without touching the gutters.
+        val diameter = minOf(RING_MAX, maxWidth * 0.86f)
 
-            for (i in 0 until TICKS) {
-                val t = i / TICKS.toFloat()
-                val rad = (t * 360f - 90f) * DEG
-                val dx = cos(rad)
-                val dy = sin(rad)
-                val alpha = when (mode) {
-                    ButtonMode.IDLE -> 0.15f
-                    ButtonMode.ERROR -> if (i % 3 == 0) 0.42f else 0.12f
-                    ButtonMode.BUSY -> {
-                        val d = ((t - head) + 1f) % 1f
-                        if (d < 0.26f) 0.14f + 0.86f * (1f - d / 0.26f) else 0.11f
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(diameter)
+                .scale(press)
+                .clip(CircleShape)
+                .clickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    onClickLabel = actionLabel,
+                    role = Role.Button,
+                    onClick = onClick,
+                )
+                .semantics { stateDescription = stateLabel },
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val radius = size.minDimension / 2f
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val head = sweep.value
+                val outer = radius - 1.dp.toPx()
+                val inner = outer - 15.dp.toPx()
+                val stroke = 2.dp.toPx()
+
+                for (i in 0 until TICKS) {
+                    val t = i / TICKS.toFloat()
+                    val rad = (t * 360f - 90f) * DEG
+                    val dx = cos(rad)
+                    val dy = sin(rad)
+                    val alpha = when (mode) {
+                        ButtonMode.IDLE -> 0.15f
+                        ButtonMode.ERROR -> if (i % 3 == 0) 0.42f else 0.12f
+                        ButtonMode.BUSY -> {
+                            val d = ((t - head) + 1f) % 1f
+                            if (d < 0.26f) 0.14f + 0.86f * (1f - d / 0.26f) else 0.11f
+                        }
+                        ButtonMode.CONNECTED -> {
+                            val d = ((t - head) + 1f) % 1f
+                            val boost = if (d < 0.32f) 0.45f * (1f - d / 0.32f) else 0f
+                            0.36f + boost
+                        }
                     }
-                    ButtonMode.CONNECTED -> {
-                        val d = ((t - head) + 1f) % 1f
-                        val boost = if (d < 0.32f) 0.45f * (1f - d / 0.32f) else 0f
-                        0.36f + boost
-                    }
+                    drawLine(
+                        color = animatedAccent.copy(alpha = alpha),
+                        start = Offset(cx + dx * inner, cy + dy * inner),
+                        end = Offset(cx + dx * outer, cy + dy * outer),
+                        strokeWidth = stroke,
+                        cap = StrokeCap.Round,
+                    )
                 }
-                drawLine(
-                    color = animatedAccent.copy(alpha = alpha),
-                    start = Offset(cx + dx * inner, cy + dy * inner),
-                    end = Offset(cx + dx * outer, cy + dy * outer),
-                    strokeWidth = stroke,
-                    cap = StrokeCap.Round,
-                )
-            }
 
-            // Hairline that separates the ring from the core.
-            drawCircle(
-                color = animatedAccent.copy(alpha = 0.20f),
-                radius = radius * 0.60f,
-                style = Stroke(width = 1.dp.toPx()),
-            )
-
-            // The core. Quiet carbon disc by default; a solid Signal fill (plus
-            // a soft bloom) is earned only by a verified tunnel.
-            drawCircle(color = Carbon15, radius = radius * 0.46f)
-            if (core > 0.01f) {
+                // Hairline that separates the ring from the core.
                 drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(animatedAccent.copy(alpha = 0.26f * core), Color.Transparent),
-                        center = Offset(cx, cy),
-                        radius = radius * 0.95f,
-                    ),
-                    radius = radius * 0.95f,
+                    color = animatedAccent.copy(alpha = 0.20f),
+                    radius = radius * 0.60f,
+                    style = Stroke(width = 1.dp.toPx()),
                 )
-                drawCircle(color = animatedAccent.copy(alpha = core), radius = radius * 0.46f)
-            }
-        }
 
-        val icon = when (mode) {
-            ButtonMode.CONNECTED -> Icons.Rounded.Bolt
-            ButtonMode.ERROR -> Icons.Rounded.Warning
-            else -> Icons.Rounded.PowerSettingsNew
+                // The core. Quiet carbon disc by default; a solid Signal fill (plus
+                // a soft bloom) is earned only by a verified tunnel.
+                drawCircle(color = Carbon15, radius = radius * 0.46f)
+                if (core > 0.01f) {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(animatedAccent.copy(alpha = 0.26f * core), Color.Transparent),
+                            center = Offset(cx, cy),
+                            radius = radius * 0.95f,
+                        ),
+                        radius = radius * 0.95f,
+                    )
+                    drawCircle(color = animatedAccent.copy(alpha = core), radius = radius * 0.46f)
+                }
+            }
+
+            val icon = when (mode) {
+                ButtonMode.CONNECTED -> Icons.Rounded.Bolt
+                ButtonMode.ERROR -> Icons.Rounded.Warning
+                else -> Icons.Rounded.PowerSettingsNew
+            }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (mode == ButtonMode.CONNECTED) OnSignal else animatedAccent,
+                modifier = Modifier.size(diameter * GLYPH_RATIO),
+            )
         }
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = if (mode == ButtonMode.CONNECTED) OnSignal else animatedAccent,
-            modifier = Modifier.size(46.dp),
-        )
     }
 }
