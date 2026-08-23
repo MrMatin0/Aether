@@ -29,6 +29,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.core.AppLocale
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
 
