@@ -1,7 +1,9 @@
 package studio.cluvex.aether.ui.components
 
-import android.os.SystemClock
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -17,141 +21,157 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
-import java.util.Locale
-import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
-import studio.cluvex.aether.core.HevTunnel
-import studio.cluvex.aether.core.ShareBridge
-import studio.cluvex.aether.core.SocksTunBridge
+import studio.cluvex.aether.core.TrafficMonitor
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
 
-private const val HISTORY = 48
-
 /**
- * Live traffic meter.
+ * Live DATA USAGE.
  *
- * The counter logic below is UNCHANGED from 1.2.4 and deliberately so: the sum
- * of hev's direction-corrected totals + the userspace filter bridge (the only
- * source when per-app blocking is on) + the share bridge (the only source in
- * proxy mode), polled once a second, with rates derived from deltas against a
- * monotonic clock and negative deltas clamped so a core restart rebases
- * instead of printing garbage.
+ * WHAT CHANGED AND WHY
  *
- * What is new is the reading of it. Two numbers that change every second tell
- * you the rate right now but nothing about the last minute, so a tunnel that
- * has quietly stalled looks identical to an idle one. The 48-sample sparkline
- * makes that difference obvious at a glance. History is read inside the Canvas
- * draw lambda, so plotting costs a redraw, not a recomposition.
+ * This panel used to be a speedometer: two per-second rates plus a 48-sample
+ * sparkline of those rates. Both are gone.
+ *
+ * The rate belongs in the notification, and that is where it now lives — it is
+ * a "is anything moving right now" signal, and the moment you need it is the
+ * moment you are NOT looking at this screen. Keeping a second copy here meant
+ * the most prominent number in the app answered a question the user had
+ * already answered by pulling down the shade, and the sparkline spent 52dp
+ * plotting a history nobody acts on: knowing the shape of the last 48 seconds
+ * of throughput changes no decision inside a VPN client.
+ *
+ * What the same screen real estate answers instead is the question people
+ * actually open this app with on a metered Iranian mobile plan: HOW MUCH have
+ * I burned this session. So the cells now show cumulative download and upload
+ * VOLUME, still refreshed once a second, with the session total and the split
+ * between the two directions.
+ *
+ * The counters come from [TrafficMonitor], which the VPN service runs for the
+ * lifetime of the session — so unlike the old in-composable polling loop, the
+ * numbers keep accruing while this screen is closed.
  */
 @Composable
 fun TrafficPanel(
     connectedSince: Long?,
     modifier: Modifier = Modifier,
 ) {
-    var downTotal by remember(connectedSince) { mutableLongStateOf(0L) }
-    var upTotal by remember(connectedSince) { mutableLongStateOf(0L) }
-    var downRate by remember(connectedSince) { mutableLongStateOf(0L) }
-    var upRate by remember(connectedSince) { mutableLongStateOf(0L) }
-    val downHistory = remember(connectedSince) { mutableStateListOf<Long>() }
-    val upHistory = remember(connectedSince) { mutableStateListOf<Long>() }
+    val latest by TrafficMonitor.sample.collectAsState()
 
-    LaunchedEffect(connectedSince) {
-        var lastDown = -1L
-        var lastUp = -1L
-        var lastAt = 0L
-        while (true) {
-            val hev = HevTunnel.traffic()
-            val bridge = SocksTunBridge.active?.getStats()
-            val share = ShareBridge.traffic()
-            val hasSource = hev != null || bridge != null || ShareBridge.active.value
-            if (hasSource) {
-                val down = (hev?.downloadBytes ?: 0L) + (bridge?.rxBytes ?: 0L) + share.downloadBytes
-                val up = (hev?.uploadBytes ?: 0L) + (bridge?.txBytes ?: 0L) + share.uploadBytes
-                val now = SystemClock.elapsedRealtime()
-                if (lastAt > 0L && now > lastAt) {
-                    val dtMs = now - lastAt
-                    downRate = ((down - lastDown).coerceAtLeast(0L) * 1000L) / dtMs
-                    upRate = ((up - lastUp).coerceAtLeast(0L) * 1000L) / dtMs
-                    if (downHistory.size >= HISTORY) downHistory.removeAt(0)
-                    if (upHistory.size >= HISTORY) upHistory.removeAt(0)
-                    downHistory.add(downRate)
-                    upHistory.add(upRate)
-                }
-                downTotal = down
-                upTotal = up
-                lastDown = down
-                lastUp = up
-                lastAt = now
-            }
-            delay(1000L)
-        }
-    }
+    // A fresh session must never show the previous one's last reading, not even
+    // for the one frame between "Connected" and the monitor's first tick.
+    val zero = remember(connectedSince) { TrafficMonitor.Sample() }
+    val sample = if (latest.live) latest else zero
+
+    val total = sample.totalBytes
+    val downShare by animateFloatAsState(
+        targetValue = if (total > 0L) sample.downloadBytes.toFloat() / total.toFloat() else 0.5f,
+        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        label = "share",
+    )
+    // A one-second heartbeat, driven by the sample's own timestamp: proof that
+    // the readout is live and not a frozen leftover.
+    val pulse by animateFloatAsState(
+        targetValue = if (sample.live && (sample.at / 1000L) % 2L == 0L) 1f else 0.3f,
+        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        label = "pulse",
+    )
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            text = stringResource(R.string.traffic_title),
-            style = AetherMetaLabel,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.traffic_usage_title),
+                style = AetherMetaLabel,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = pulse),
+                        CircleShape,
+                    ),
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = stringResource(R.string.traffic_usage_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
-            RateCell(
+            UsageCell(
                 icon = Icons.Rounded.ArrowDownward,
                 tint = MaterialTheme.colorScheme.primary,
                 label = stringResource(R.string.traffic_download),
-                rate = downRate,
-                total = downTotal,
+                bytes = sample.downloadBytes,
+                share = if (total > 0L) sample.downloadBytes else 0L,
+                total = total,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(20.dp))
-            RateCell(
+            UsageCell(
                 icon = Icons.Rounded.ArrowUpward,
-                tint = MaterialTheme.colorScheme.secondary,
+                tint = MaterialTheme.colorScheme.onBackground,
                 label = stringResource(R.string.traffic_upload),
-                rate = upRate,
-                total = upTotal,
+                bytes = sample.uploadBytes,
+                share = if (total > 0L) sample.uploadBytes else 0L,
+                total = total,
                 modifier = Modifier.weight(1f),
             )
         }
         Spacer(Modifier.height(14.dp))
-        Sparkline(
-            down = downHistory,
-            up = upHistory,
+        SplitBar(
+            downShare = downShare,
             downTint = MaterialTheme.colorScheme.primary,
-            upTint = MaterialTheme.colorScheme.secondary,
-            baseline = MaterialTheme.colorScheme.outlineVariant,
+            upTint = MaterialTheme.colorScheme.onBackground,
+            track = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = stringResource(
+                R.string.traffic_usage_total,
+                TrafficMonitor.formatBytes(total),
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
         )
     }
 }
 
+/** One direction: cumulative volume large, its share of the session small. */
 @Composable
-private fun RateCell(
+private fun UsageCell(
     icon: ImageVector,
     tint: Color,
     label: String,
-    rate: Long,
+    bytes: Long,
+    share: Long,
     total: Long,
     modifier: Modifier = Modifier,
 ) {
+    val percent = if (total > 0L) ((share * 100L) / total).toInt() else 0
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -169,7 +189,7 @@ private fun RateCell(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = formatRate(rate),
+            text = TrafficMonitor.formatBytes(bytes),
             style = MaterialTheme.typography.headlineSmall.copy(
                 fontFamily = AetherMono,
                 textDirection = TextDirection.Ltr,
@@ -178,7 +198,7 @@ private fun RateCell(
             maxLines = 1,
         )
         Text(
-            text = stringResource(R.string.traffic_total, formatBytes(total)),
+            text = stringResource(R.string.traffic_usage_share, percent),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -186,77 +206,47 @@ private fun RateCell(
     }
 }
 
+/**
+ * Download vs upload, as one 6dp bar.
+ *
+ * Not a chart: it plots no time axis and carries a single fact — which
+ * direction this session actually spent its bytes on. Built from two weighted
+ * boxes rather than a Canvas, so it costs a layout pass and no draw code.
+ */
 @Composable
-private fun Sparkline(
-    down: List<Long>,
-    up: List<Long>,
+private fun SplitBar(
+    downShare: Float,
     downTint: Color,
     upTint: Color,
-    baseline: Color,
+    track: Color,
 ) {
-    Canvas(
+    val down = downShare.coerceIn(0.02f, 0.98f)
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
-            .padding(top = 2.dp),
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(track.copy(alpha = 0.4f)),
     ) {
-        val peak = maxOf(down.maxOrNull() ?: 0L, up.maxOrNull() ?: 0L, 1L).toFloat()
-        val step = if (HISTORY > 1) size.width / (HISTORY - 1).toFloat() else size.width
-        val floorY = size.height - 1f
-
-        drawLine(
-            color = baseline,
-            start = Offset(0f, floorY),
-            end = Offset(size.width, floorY),
-            strokeWidth = 1f,
+        Box(
+            modifier = Modifier
+                .weight(down)
+                .fillMaxWidth()
+                .height(6.dp)
+                .background(downTint),
         )
-
-        fun buildPath(values: List<Long>): Path? {
-            if (values.size < 2) return null
-            val path = Path()
-            values.forEachIndexed { index, value ->
-                val x = index * step
-                val y = floorY - (value / peak) * (size.height - 6f)
-                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-            }
-            return path
-        }
-
-        buildPath(down)?.let { line ->
-            val filled = Path()
-            filled.addPath(line)
-            filled.lineTo((down.size - 1) * step, floorY)
-            filled.lineTo(0f, floorY)
-            filled.close()
-            drawPath(
-                path = filled,
-                brush = Brush.verticalGradient(
-                    listOf(downTint.copy(alpha = 0.20f), Color.Transparent),
-                ),
-            )
-            drawPath(
-                path = line,
-                color = downTint,
-                style = Stroke(width = 2f, cap = StrokeCap.Round),
-            )
-        }
-        buildPath(up)?.let { line ->
-            drawPath(
-                path = line,
-                color = upTint.copy(alpha = 0.9f),
-                style = Stroke(width = 2f, cap = StrokeCap.Round),
-            )
-        }
+        Spacer(
+            modifier = Modifier
+                .width(2.dp)
+                .height(6.dp),
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f - down)
+                .fillMaxWidth()
+                .height(6.dp)
+                .background(upTint.copy(alpha = 0.75f))
+                .padding(0.dp),
+        )
     }
 }
-
-private fun formatBytes(v: Long): String {
-    if (v < 1024L) return "$v B"
-    val kb = v / 1024.0
-    if (kb < 1024.0) return String.format(Locale.US, "%.1f KB", kb)
-    val mb = kb / 1024.0
-    if (mb < 1024.0) return String.format(Locale.US, "%.1f MB", mb)
-    return String.format(Locale.US, "%.2f GB", mb / 1024.0)
-}
-
-private fun formatRate(v: Long): String = formatBytes(v) + "/s"

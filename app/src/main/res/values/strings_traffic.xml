@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the live-speed notification and the in-app data-usage meter.
+     Kept in its own file so strings.xml stays a stable diff. -->
+<resources>
+    <!-- In-app usage meter -->
+    <string name="traffic_usage_title">Data usage</string>
+    <string name="traffic_usage_note">Live · every second</string>
+    <string name="traffic_usage_total">Session total %1$s</string>
+    <string name="traffic_usage_share">%1$d%% of this session</string>
+
+    <!-- Notification fallback line, for anything that ignores custom views -->
+    <string name="notif_speed_summary">↓ %1$s · ↑ %2$s</string>
+</resources>
