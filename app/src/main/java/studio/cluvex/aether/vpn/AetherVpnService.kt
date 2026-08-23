@@ -30,6 +30,7 @@ import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
 import studio.cluvex.aether.core.SocksTunBridge
+import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.data.SecretStore
@@ -39,6 +40,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
+import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.widget.AetherWidgetProvider
 import java.io.File
 
@@ -65,6 +67,14 @@ class AetherVpnService : VpnService() {
      * protocol-switch fix).
      */
     private var stopJob: Job? = null
+
+    /**
+     * Repaints the ongoing notification with the live download/upload speed,
+     * once a second, for as long as the tunnel is up. Owned by the SESSION and
+     * not by the UI: the shade is exactly where the speed is needed while the
+     * app is closed.
+     */
+    private var trafficJob: Job? = null
 
     /** Active userspace filter bridge (only when per-app blocking is on). */
     private var tunBridge: SocksTunBridge? = null
@@ -208,6 +218,10 @@ class AetherVpnService : VpnService() {
         EngineMeta.setProtocol(resolved.protocol.name)
         if (resolved.manualPeer.isNotBlank()) EngineMeta.setEndpoint(resolved.manualPeer)
 
+        // LIVE SPEED IN THE SHADE: the meter starts BEFORE the Connected
+        // transition, so the first notification the user pulls down already
+        // carries a reading instead of a bare "Connected".
+        startTrafficMeter()
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
         updateNotification(getString(R.string.state_connected))
         DiagnosticsLog.i(TAG, "All checks passed — tunnel is ready.")
@@ -489,6 +503,9 @@ class AetherVpnService : VpnService() {
                 updateNotification(getString(R.string.state_verifying))
                 if (runCatching { Diagnostics.run() }.getOrDefault(false)) {
                     attempt = 0
+                    // The engine was replaced, so the counters the meter polls
+                    // were rebased: restart it with the new session.
+                    startTrafficMeter()
                     AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
                     updateNotification(getString(R.string.state_connected))
                 } else {
@@ -803,6 +820,9 @@ class AetherVpnService : VpnService() {
 
     /** Stops sharing, the forwarder and the engine but deliberately KEEPS [tun]. */
     private fun stopForwardingNatives() {
+        // The speed meter polls hev's and the bridge's counters, so it has to
+        // stop BEFORE the natives it reads are torn down.
+        stopTrafficMeter()
         try {
             ShareBridge.stop()
         } catch (_: Throwable) {
@@ -895,14 +915,58 @@ class AetherVpnService : VpnService() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent)
-            .addAction(0, getString(R.string.state_disconnecting), disconnectIntent)
+            // The action LABEL is what the button says, so it has to be the
+            // verb ("Disconnect"), not the state it leads to ("Disconnecting…").
+            .addAction(0, getString(R.string.action_disconnect), disconnectIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
+    /**
+     * Starts the 1-second speed meter and pipes every sample into the ongoing
+     * notification. Idempotent, so a reconnect cannot end up with two writers.
+     *
+     * Deliberately NOT routed through [updateNotification]: that also repaints
+     * the Quick Settings tile and every placed home-screen widget, and doing
+     * that once a second for the entire session would burn battery to redraw
+     * two things whose content did not change.
+     */
+    private fun startTrafficMeter() {
+        trafficJob?.cancel()
+        TrafficMonitor.start()
+        trafficJob = scope.launch {
+            TrafficMonitor.sample.collect { sample ->
+                if (!sample.live) return@collect
+                // A state transition owns the notification while it is busy:
+                // "Connecting…" must never be replaced by a speed card.
+                if (!AetherController.state.value.isConnected) return@collect
+                runCatching {
+                    getSystemService(android.app.NotificationManager::class.java)
+                        .notify(NOTIF_ID, TrafficNotification.build(this@AetherVpnService, sample))
+                }
+            }
+        }
+    }
+
+    private fun stopTrafficMeter() {
+        trafficJob?.cancel()
+        trafficJob = null
+        TrafficMonitor.stop()
+    }
+
     private fun updateNotification(text: String) {
         val manager = getSystemService(android.app.NotificationManager::class.java)
-        manager.notify(NOTIF_ID, buildNotification(text))
+        // While the tunnel is up and the meter has a reading, the speed card IS
+        // the status — rebuilding the plain text notification here would blank
+        // the numbers for a second on every state-change repaint.
+        val sample = TrafficMonitor.sample.value
+        val notification =
+            if (sample.live && AetherController.state.value.isConnected) {
+                TrafficNotification.build(this, sample)
+            } else {
+                buildNotification(text)
+            }
+        manager.notify(NOTIF_ID, notification)
         // Keep the Quick Settings tile in sync with every state transition.
         AetherTileService.requestUpdate(this)
         // Keep the home-screen widget (feature merge) in sync too.
