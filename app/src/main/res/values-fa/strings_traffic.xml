@@ -2,7 +2,7 @@
 <resources>
     <!-- سنجه مصرف داده در برنامه -->
     <string name="traffic_usage_title">مصرف داده</string>
-    <string name="traffic_usage_note">لحطه‌ای · هر ۱ ثانیه</string>
+    <string name="traffic_usage_note">لحظه‌ای · هر ۱ ثانیه</string>
     <string name="traffic_usage_total">مجموع این نشست %1$s</string>
     <string name="traffic_usage_share">%1$d%% از این نشست</string>
 

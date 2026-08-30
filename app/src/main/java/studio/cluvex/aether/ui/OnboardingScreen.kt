@@ -1,7 +1,6 @@
 package studio.cluvex.aether.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +19,6 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -37,42 +36,48 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.ui.components.ActionPill
+import studio.cluvex.aether.ui.components.AmbientBackground
 import studio.cluvex.aether.ui.components.LanguageToggle
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 private const val PAGES = 3
 
 /**
  * First-run onboarding.
  *
- * The old version used three emoji as its artwork (shield, rocket, padlock),
- * which renders differently on every OEM font, cannot be tinted, and reads as a
- * placeholder. Each page now draws its own figure in the same visual language
- * as the connect ring, so onboarding and the app look like the same product.
- * A step counter and a segmented track replace the three identical dots.
+ * The artwork is drawn, not typed. It used to be three emoji (shield, rocket,
+ * padlock), which render differently on every OEM font, cannot be tinted, and
+ * read as a placeholder. Each page now draws a figure in the same visual
+ * language as the connect orb, so onboarding and the app look like one product,
+ * and page one is deliberately a smaller echo of the orb the user is about to
+ * meet.
  *
- * 1.3.0: the language pill is in the header here too. This is the ONE screen a
- * new user cannot navigate away from, and it used to be locked to the phone's
+ * The language switch is in the header here too. This is the ONE screen a new
+ * user cannot navigate away from, and it used to be locked to the phone's
  * language — so the person most likely to need Persian copy had to read three
  * English pages before reaching anything that could switch it.
+ *
+ * The backdrop is the same [AmbientBackground] as the app, in the brand colour:
+ * onboarding is the first impression of the product's room, and it used to be a
+ * flat slab.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun OnboardingScreen(onFinished: () -> Unit) {
     val pagerState = rememberPagerState(pageCount = { PAGES })
     val scope = rememberCoroutineScope()
-    val accent = MaterialTheme.colorScheme.primary
+    val accents = LocalAetherAccents.current
+    val brand = accents.brand
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        AmbientBackground(accent = brand, active = false)
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -89,7 +94,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
-                LanguageToggle(accent = accent)
+                LanguageToggle(accent = brand)
                 Spacer(Modifier.width(4.dp))
                 TextButton(onClick = onFinished) {
                     Text(
@@ -113,7 +118,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        PageArt(page = page, accent = accent)
+                        PageArt(page = page, accent = brand, highlight = accents.protected)
                     }
                     Spacer(Modifier.height(40.dp))
                     Text(
@@ -124,7 +129,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                 else -> R.string.onboarding_title_3
                             },
                         ),
-                        style = MaterialTheme.typography.headlineLarge,
+                        style = MaterialTheme.typography.displaySmall,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                     Spacer(Modifier.height(12.dp))
@@ -151,16 +156,16 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(3.dp)
+                            .height(4.dp)
                             .clip(RoundedCornerShape(2.dp))
                             .background(
-                                if (active) accent else MaterialTheme.colorScheme.outlineVariant,
+                                if (active) brand else MaterialTheme.colorScheme.outlineVariant,
                             ),
                     )
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
 
             ActionPill(
                 label = stringResource(
@@ -183,32 +188,44 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     .height(56.dp),
             )
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
 /**
- * Page artwork. Drawn, not typed: an aperture (the app's own motif), a signal
- * profile, and a field of dots with a single one lit.
+ * Page artwork: an aperture (the app's own motif), a signal profile with one
+ * chosen peak, and a field of nodes with a single one lit.
  */
 @Composable
-private fun PageArt(page: Int, accent: Color) {
+private fun PageArt(page: Int, accent: Color, highlight: Color) {
     val muted = MaterialTheme.colorScheme.outlineVariant
-    Canvas(modifier = Modifier.size(190.dp)) {
+    Canvas(modifier = Modifier.size(196.dp)) {
         val radius = size.minDimension / 2f
         val cx = size.width / 2f
         val cy = size.height / 2f
         when (page) {
             0 -> {
+                // A quieter echo of the connect orb: concentric rings plus one
+                // arc that has already been "earned".
                 repeat(4) { ring ->
                     drawCircle(
-                        color = accent.copy(alpha = 0.10f + ring * 0.07f),
+                        color = accent.copy(alpha = 0.10f + ring * 0.06f),
                         radius = radius * (0.34f + ring * 0.22f),
                         style = Stroke(width = 1.5.dp.toPx()),
                     )
                 }
-                drawCircle(color = accent, radius = radius * 0.13f)
+                val r = radius * 0.9f
+                drawArc(
+                    color = highlight,
+                    startAngle = -90f,
+                    sweepAngle = 250f,
+                    useCenter = false,
+                    topLeft = Offset(cx - r, cy - r),
+                    size = Size(r * 2f, r * 2f),
+                    style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round),
+                )
+                drawCircle(color = highlight, radius = radius * 0.13f)
             }
             1 -> {
                 val heights = listOf(0.30f, 0.55f, 0.95f, 0.45f, 0.68f)
@@ -217,10 +234,10 @@ private fun PageArt(page: Int, accent: Color) {
                     val x = gap * (index + 1)
                     val isPick = index == 2
                     drawLine(
-                        color = if (isPick) accent else muted,
+                        color = if (isPick) highlight else muted,
                         start = Offset(x, size.height * 0.9f),
                         end = Offset(x, size.height * (0.9f - 0.75f * factor)),
-                        strokeWidth = if (isPick) 10.dp.toPx() else 6.dp.toPx(),
+                        strokeWidth = if (isPick) 11.dp.toPx() else 6.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                 }
@@ -232,22 +249,18 @@ private fun PageArt(page: Int, accent: Color) {
                     for (col in 1..cols) {
                         val lit = row == 3 && col == 4
                         drawCircle(
-                            color = if (lit) accent else muted,
+                            color = if (lit) highlight else muted,
                             radius = if (lit) 6.dp.toPx() else 2.5.dp.toPx(),
                             center = Offset(spacing * col, spacing * row),
                         )
                     }
                 }
                 drawCircle(
-                    color = accent.copy(alpha = 0.18f),
-                    radius = 18.dp.toPx(),
+                    color = highlight.copy(alpha = 0.18f),
+                    radius = 20.dp.toPx(),
                     center = Offset(spacing * 4, spacing * 3),
                 )
             }
-        }
-        // Keep the centre reference used by page 0 meaningful for all pages.
-        if (page == 0) {
-            drawCircle(color = accent.copy(alpha = 0.06f), radius = radius * 0.13f, center = Offset(cx, cy))
         }
     }
 }

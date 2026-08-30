@@ -8,8 +8,8 @@ import androidx.compose.animation.core.Easing
  *
  * One family of curves for the whole app: exponential ease-out. Things arrive
  * fast and settle, which reads as "responsive". No bounce, no overshoot, no
- * elastic — a VPN client is an instrument, not a toy, and springy motion makes
- * a security state look uncertain.
+ * elastic — a VPN client is an instrument, not a toy, and springy motion makes a
+ * security state look uncertain.
  *
  * Names are prefixed so they can never be confused with (or shadow) the
  * built-in androidx easing constants.
@@ -18,7 +18,7 @@ import androidx.compose.animation.core.Easing
 /** Default: quick departure, long soft landing. */
 val AetherEaseOut: Easing = CubicBezierEasing(0.165f, 0.84f, 0.44f, 1f)
 
-/** For large travel (sheets, tab swaps). */
+/** For large travel (sheets, destination swaps). */
 val AetherEaseOutExpo: Easing = CubicBezierEasing(0.19f, 1f, 0.22f, 1f)
 
 /** For state that leaves and comes back (cross-fades of the same element). */
@@ -26,6 +26,9 @@ val AetherEaseInOut: Easing = CubicBezierEasing(0.77f, 0f, 0.175f, 1f)
 
 /** Durations, in milliseconds. */
 object AetherDur {
+    /** Below the threshold where motion is read as motion. Press states. */
+    const val Micro = 90
+
     /** Hover/press feedback. */
     const val Snap = 120
 
@@ -40,4 +43,8 @@ object AetherDur {
 
     /** One turn of an ambient, looping indicator. */
     const val Loop = 2400
+
+    /** One turn of the connected orb's highlight. Deliberately slow: a live
+     *  tunnel should feel calm, not busy. */
+    const val Halo = 5600
 }

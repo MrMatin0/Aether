@@ -4,70 +4,48 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import studio.cluvex.aether.ui.theme.AetherDur
-import studio.cluvex.aether.ui.theme.AetherEaseOut
 
 /**
- * The state headline.
+ * The one line that explains the state.
  *
- * Left-aligned and set in the display scale on purpose. The old version was a
- * centred 19sp line that carried the single most important fact in the app
- * ("am I protected?") at the same visual weight as the helper text under it.
- * Now the state word is the loudest thing on the screen after the ring, and
- * the explanation sits under it in body copy where it belongs.
+ * WHAT CHANGED: this used to be StatusLine — a display-size state word plus a
+ * subtitle. The word now lives inside the connect orb, at the optical centre of
+ * the screen, so keeping a second copy of it 20dp underneath was pure
+ * duplication: two elements, same fact, competing for the same glance.
+ *
+ * What is left is the part the orb cannot say: WHY, and WHAT NEXT. Centred under
+ * the orb, in body copy, cross-faded so a changing explanation does not make the
+ * layout jump.
  */
 @Composable
-fun StatusLine(
-    title: String,
-    subtitle: String,
+fun StatusHint(
+    text: String,
     modifier: Modifier = Modifier,
-    accent: Color = MaterialTheme.colorScheme.onBackground,
+    align: TextAlign = TextAlign.Center,
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        AnimatedContent(
-            targetState = title,
-            transitionSpec = {
-                (
-                    slideInVertically(tween(AetherDur.Base, easing = AetherEaseOut)) { it / 3 } +
-                        fadeIn(tween(AetherDur.Base))
-                    ) togetherWith (
-                    slideOutVertically(tween(AetherDur.Quick, easing = AetherEaseOut)) { -it / 3 } +
-                        fadeOut(tween(AetherDur.Quick))
-                    )
-            },
-            label = "title",
-        ) { value ->
-            Text(
-                text = value,
-                style = MaterialTheme.typography.displaySmall,
-                color = accent,
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        AnimatedContent(
-            targetState = subtitle,
-            transitionSpec = { fadeIn(tween(AetherDur.Base)) togetherWith fadeOut(tween(AetherDur.Quick)) },
-            label = "subtitle",
-        ) { value ->
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-            )
-        }
+    AnimatedContent(
+        targetState = text,
+        transitionSpec = {
+            fadeIn(tween(AetherDur.Base)) togetherWith fadeOut(tween(AetherDur.Quick))
+        },
+        label = "hint",
+        modifier = modifier.fillMaxWidth(),
+    ) { value ->
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = align,
+            maxLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }

@@ -2,10 +2,12 @@
 <!-- Copy for the redesigned UI. Kept in its own file so the existing
      strings.xml stays a stable diff. -->
 <resources>
-    <!-- Bottom navigation -->
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
     <string name="nav_connection">Connection</string>
     <string name="nav_settings">Settings</string>
     <string name="nav_diagnostics">Diagnostics</string>
+    <string name="nav_back">Back</string>
 
     <!-- Primary action -->
     <string name="action_connect">Connect</string>
@@ -13,7 +15,7 @@
     <string name="action_disconnect">Disconnect</string>
     <string name="action_retry">Try again</string>
 
-    <!-- Header state pill -->
+    <!-- Header state chip -->
     <string name="pill_off">Unprotected</string>
     <string name="pill_working">Working</string>
     <string name="pill_secure">Protected</string>
@@ -28,19 +30,81 @@
     <string name="busy_hint">%1$s scan. On a heavily filtered network this can take a few minutes — you can leave this screen, it keeps going.</string>
     <string name="state_verify_hint">Checking that traffic really flows end to end before calling this connected.</string>
 
-    <!-- Settings -->
+    <!-- Session card -->
+    <string name="meta_location">Location</string>
+    <string name="meta_latency_hint">Tap to measure</string>
+    <string name="meta_exit_note">Where the internet sees you coming from</string>
+    <string name="meta_origin_note">Your real address, before any tunnel</string>
+
+    <!-- Settings hub -->
+    <string name="hub_group_essentials">Essentials</string>
+    <string name="hub_group_more">More</string>
+    <string name="page_appearance_title">Appearance &amp; language</string>
+    <string name="page_appearance_sub">Theme and the language of the app</string>
+    <string name="page_engine_title">Connection engine</string>
+    <string name="page_engine_sub">Protocol, scanning, routing and anti-DPI</string>
+    <string name="page_setups_title">Saved setups</string>
+    <string name="page_setups_sub">Keep what works, and move it between phones</string>
+    <string name="page_automation_title">Automation &amp; history</string>
+    <string name="page_automation_sub">Connecting by itself, and what is recorded</string>
+    <string name="page_sharing_title">Share VPN</string>
+    <string name="page_sharing_sub">Use this phone as a gateway for other devices</string>
+    <string name="page_about_title">About</string>
+    <string name="page_about_sub">Versions, credits and links</string>
+
+    <!-- Appearance -->
+    <string name="theme_title">Theme</string>
+    <string name="theme_subtitle">How the app is painted</string>
+    <string name="theme_system">System</string>
+    <string name="theme_dark">Dark</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_hint">System follows your phone. Pin it if your phone is set to something you did not choose, or if a bright screen is not welcome where you are.</string>
+    <string name="language_subtitle">Applies immediately, on every screen</string>
+
+    <!-- Engine settings -->
     <string name="section_connection">Connection</string>
+    <string name="section_connection_note">These decide whether you connect at all</string>
+    <string name="section_safety">Safety net</string>
+    <string name="section_safety_note">What happens when the tunnel drops</string>
+    <string name="section_routing_note">What goes through the tunnel, and what does not</string>
+    <string name="section_transport_note">Only touch these when a connection keeps failing</string>
+    <string name="section_routes_note">Per-destination rules. Block is checked first</string>
+    <string name="section_zerotrust_note">For organization WARP. Leave off for normal use</string>
+    <string name="section_security_note">Leak protection and restart limits</string>
+    <string name="section_engine_tuning_note">Raw engine arguments. Defaults are usually right</string>
+    <string name="section_reset_note">The way back to a configuration that works</string>
     <string name="settings_mode_basic">Essentials</string>
     <string name="settings_mode_full">Everything</string>
     <string name="settings_locked">Disconnect first to change these settings.</string>
     <string name="settings_expert_note">Defaults work for most networks. Change these only when a connection keeps failing.</string>
 
+    <!-- Saved setups -->
+    <string name="presets_transfer_title">Move to another phone</string>
+    <string name="presets_transfer_sub">One block of text, with no passwords or tokens in it</string>
+
+    <!-- Automation -->
+    <string name="automation_system_title">System settings</string>
+    <string name="automation_system_sub">Two switches Android will not let an app touch</string>
+    <string name="history_count">%1$d recorded sessions</string>
+
+    <!-- About -->
+    <string name="about_build_title">This build</string>
+    <string name="about_build_sub">Quote both numbers in any bug report</string>
+    <string name="about_links_title">Project &amp; credits</string>
+
     <!-- Diagnostics -->
     <string name="diag_checks">Component checks</string>
+    <string name="diag_checks_note">Run the test, then read the first failing step</string>
     <string name="diag_console">Engine log</string>
+    <string name="diag_console_note">Live output from the core</string>
     <string name="log_all">All</string>
     <string name="log_warn">Warnings</string>
     <string name="log_err">Errors</string>
+
+    <!-- App picker -->
+    <string name="apps_selected">%1$d selected</string>
+    <string name="apps_select_all">Select all</string>
+    <string name="apps_select_none">Clear</string>
 
     <!-- Traffic -->
     <string name="traffic_title">Live traffic</string>

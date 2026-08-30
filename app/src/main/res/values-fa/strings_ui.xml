@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ناوبری پایین -->
+    <!-- ناوبری -->
+    <string name="nav_home">خانه</string>
     <string name="nav_connection">اتصال</string>
     <string name="nav_settings">تنظیمات</string>
     <string name="nav_diagnostics">عیب‌یابی</string>
+    <string name="nav_back">بازگشت</string>
 
     <!-- کنش اصلی -->
     <string name="action_connect">اتصال</string>
@@ -26,19 +28,81 @@
     <string name="busy_hint">اسکن %1$s. روی شبکه‌های به‌شدت فیلترشده ممکن است چند دقیقه طول بکشد — می‌توانید این صفحه را ترک کنید، کار ادامه دارد.</string>
     <string name="state_verify_hint">پیش از اعلام اتصال، بررسی می‌شود که ترافیک واقعاً انتهابه‌انتها عبور می‌کند.</string>
 
-    <!-- تنظیمات -->
+    <!-- کارت نشست -->
+    <string name="meta_location">موقعیت</string>
+    <string name="meta_latency_hint">برای اندازه‌گیری بزنید</string>
+    <string name="meta_exit_note">اینترنت شما را از این نشانی می‌بیند</string>
+    <string name="meta_origin_note">نشانی واقعی شما، پیش از هر تونل</string>
+
+    <!-- مرکز تنظیمات -->
+    <string name="hub_group_essentials">ضروری‌ها</string>
+    <string name="hub_group_more">بیشتر</string>
+    <string name="page_appearance_title">ظاهر و زبان</string>
+    <string name="page_appearance_sub">پوسته و زبان برنامه</string>
+    <string name="page_engine_title">هستهٔ اتصال</string>
+    <string name="page_engine_sub">پروتکل، اسکن، مسیریابی و ضدDPI</string>
+    <string name="page_setups_title">تنظیمات ذخیره‌شده</string>
+    <string name="page_setups_sub">آنچه کار می‌کند را نگه دارید و بین گوشی‌ها جابه‌جا کنید</string>
+    <string name="page_automation_title">خودکارسازی و تاریخچه</string>
+    <string name="page_automation_sub">اتصال خودکار، و آنچه ثبت می‌شود</string>
+    <string name="page_sharing_title">اشتراک VPN</string>
+    <string name="page_sharing_sub">این گوشی را دروازهٔ دستگاه‌های دیگر کنید</string>
+    <string name="page_about_title">درباره</string>
+    <string name="page_about_sub">نسخه‌ها، اعتبارها و پیوندها</string>
+
+    <!-- ظاهر -->
+    <string name="theme_title">پوسته</string>
+    <string name="theme_subtitle">برنامه با چه رنگی ترسیم شود</string>
+    <string name="theme_system">سیستم</string>
+    <string name="theme_dark">تاریک</string>
+    <string name="theme_light">روشن</string>
+    <string name="theme_hint">حالت سیستم از گوشی پیروی می‌کند. اگر تنظیم گوشی انتخاب شما نیست، یا صفحهٔ روشن در جایی که هستید مناسب نیست، آن را ثابت کنید.</string>
+    <string name="language_subtitle">بی‌درنگ روی همهٔ صفحه‌ها اعمال می‌شود</string>
+
+    <!-- تنظیمات هسته -->
     <string name="section_connection">اتصال</string>
+    <string name="section_connection_note">این‌ها تعیین می‌کنند که اصلاً وصل می‌شوید یا نه</string>
+    <string name="section_safety">تور ایمنی</string>
+    <string name="section_safety_note">وقتی تونل قطع می‌شود چه اتفاقی بیفتد</string>
+    <string name="section_routing_note">چه چیزی از تونل عبور کند و چه چیزی نه</string>
+    <string name="section_transport_note">فقط وقتی اتصال مکرراً ناموفق است این‌ها را تغییر دهید</string>
+    <string name="section_routes_note">قواعد بر پایهٔ مقصد. ابتدا «مسدود» بررسی می‌شود</string>
+    <string name="section_zerotrust_note">برای WARP سازمانی. برای استفادهٔ معمول خاموش بماند</string>
+    <string name="section_security_note">محافظت از نشتی و محدودیت راه‌اندازی مجدد</string>
+    <string name="section_engine_tuning_note">آرگومان‌های خام هسته. پیش‌فرض‌ها معمولاً درست‌اند</string>
+    <string name="section_reset_note">راه بازگشت به تنظیماتی که کار می‌کرد</string>
     <string name="settings_mode_basic">ضروری‌ها</string>
     <string name="settings_mode_full">همه</string>
     <string name="settings_locked">برای تغییر این تنظیمات ابتدا اتصال را قطع کنید.</string>
     <string name="settings_expert_note">مقادیر پیش‌فرض برای بیشتر شبکه‌ها کار می‌کند. این‌ها را فقط وقتی اتصال مکرراً ناموفق است تغییر دهید.</string>
 
+    <!-- تنظیمات ذخیره‌شده -->
+    <string name="presets_transfer_title">انتقال به گوشی دیگر</string>
+    <string name="presets_transfer_sub">یک قطعه متن، بدون هیچ گذرواژه یا توکنی</string>
+
+    <!-- خودکارسازی -->
+    <string name="automation_system_title">تنظیمات سیستم</string>
+    <string name="automation_system_sub">دو کلید که اندروید اجازهٔ تغییرشان را به برنامه نمی‌دهد</string>
+    <string name="history_count">%1$d نشست ثبت‌شده</string>
+
+    <!-- درباره -->
+    <string name="about_build_title">این نسخه</string>
+    <string name="about_build_sub">هر دو عدد را در گزارش اشکال بنویسید</string>
+    <string name="about_links_title">پروژه و اعتبارها</string>
+
     <!-- عیب‌یابی -->
     <string name="diag_checks">بررسی اجزا</string>
+    <string name="diag_checks_note">آزمون را اجرا کنید و نخستین مرحلهٔ ناموفق را بخوانید</string>
     <string name="diag_console">لاگ هسته</string>
+    <string name="diag_console_note">خروجی زندهٔ هسته</string>
     <string name="log_all">همه</string>
     <string name="log_warn">هشدارها</string>
     <string name="log_err">خطاها</string>
+
+    <!-- انتخاب برنامه -->
+    <string name="apps_selected">%1$d انتخاب‌شده</string>
+    <string name="apps_select_all">انتخاب همه</string>
+    <string name="apps_select_none">پاک کردن</string>
 
     <!-- ترافیک -->
     <string name="traffic_title">ترافیک زنده</string>

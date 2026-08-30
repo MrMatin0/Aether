@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Kept in sync with ui/theme/Color.kt ("Carbon & Signal"). These feed the
-         window background, the notification and the home-screen widget, so they
-         must match what Compose draws or the app flashes a different colour on
-         cold start. -->
-    <color name="aether_background">#090B08</color>
-    <color name="aether_surface">#12160F</color>
-    <color name="aether_primary">#A9E34B</color>
-    <color name="aether_on_primary">#0B1204</color>
-    <color name="aether_text">#EDF2E6</color>
-    <color name="aether_text_muted">#A6B09B</color>
+    <!-- Kept in sync with ui/theme/Color.kt ("Halo"). These feed the window
+         background, the notification and the home-screen widget, so they must
+         match what Compose draws or the app flashes a different colour on cold
+         start.
+
+         They track the DARK scheme on purpose: windowBackground is painted
+         before Compose (and before the theme preference is read), and a dark
+         flash into a light UI is far less jarring than a white flash into a
+         dark one. The notification and widget are chrome on someone else's
+         surface, so they stay on the dark, high-contrast pairing too. -->
+    <color name="aether_background">#05080F</color>
+    <color name="aether_surface">#0D1320</color>
+    <color name="aether_primary">#3FE0A6</color>
+    <color name="aether_on_primary">#002215</color>
+    <color name="aether_text">#E9EDF8</color>
+    <color name="aether_text_muted">#9CA8C3</color>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
 </resources>

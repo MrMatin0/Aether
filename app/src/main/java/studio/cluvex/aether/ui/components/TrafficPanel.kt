@@ -4,12 +4,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -17,7 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,49 +25,44 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
-import studio.cluvex.aether.ui.theme.AetherMetaLabel
-import studio.cluvex.aether.ui.theme.AetherMono
+import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 /**
  * Live DATA USAGE.
  *
- * WHAT CHANGED AND WHY
+ * THE 1.3 DECISION STANDS: this is not a speedometer. It used to plot two
+ * per-second rates plus a 48-sample sparkline of those rates. The rate belongs
+ * in the notification, and that is where it lives — it answers "is anything
+ * moving right now", and the moment you need that answer is the moment you are
+ * NOT looking at this screen. The sparkline spent 52dp plotting a history nobody
+ * acts on: knowing the shape of the last 48 seconds of throughput changes no
+ * decision inside a VPN client.
  *
- * This panel used to be a speedometer: two per-second rates plus a 48-sample
- * sparkline of those rates. Both are gone.
+ * What the same space answers instead is the question people open this app with
+ * on a metered plan: HOW MUCH have I burned this session. Cumulative volume per
+ * direction, the split between them, and the total.
  *
- * The rate belongs in the notification, and that is where it now lives — it is
- * a "is anything moving right now" signal, and the moment you need it is the
- * moment you are NOT looking at this screen. Keeping a second copy here meant
- * the most prominent number in the app answered a question the user had
- * already answered by pulling down the shade, and the sparkline spent 52dp
- * plotting a history nobody acts on: knowing the shape of the last 48 seconds
- * of throughput changes no decision inside a VPN client.
- *
- * What the same screen real estate answers instead is the question people
- * actually open this app with on a metered Iranian mobile plan: HOW MUCH have
- * I burned this session. So the cells now show cumulative download and upload
- * VOLUME, still refreshed once a second, with the session total and the split
- * between the two directions.
+ * WHAT CHANGED IN THIS PASS: it is a card with two tiles instead of two bare
+ * columns floating between hairlines, the direction arrows are badges rather than
+ * 14dp glyphs, and the split bar has real end caps so a 2%-upload session does
+ * not render as a hairline crumb.
  *
  * The counters come from [TrafficMonitor], which the VPN service runs for the
- * lifetime of the session — so unlike the old in-composable polling loop, the
- * numbers keep accruing while this screen is closed.
+ * lifetime of the session — so unlike an in-composable polling loop, the numbers
+ * keep accruing while this screen is closed.
  */
 @Composable
 fun TrafficPanel(
     connectedSince: Long?,
     modifier: Modifier = Modifier,
 ) {
+    val accents = LocalAetherAccents.current
     val latest by TrafficMonitor.sample.collectAsState()
 
     // A fresh session must never show the previous one's last reading, not even
@@ -86,167 +79,112 @@ fun TrafficPanel(
     // A one-second heartbeat, driven by the sample's own timestamp: proof that
     // the readout is live and not a frozen leftover.
     val pulse by animateFloatAsState(
-        targetValue = if (sample.live && (sample.at / 1000L) % 2L == 0L) 1f else 0.3f,
+        targetValue = if (sample.live && (sample.at / 1000L) % 2L == 0L) 1f else 0.25f,
         animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
         label = "pulse",
     )
 
-    Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.traffic_usage_title),
-                style = AetherMetaLabel,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(
-                        MaterialTheme.colorScheme.primary.copy(alpha = pulse),
-                        CircleShape,
-                    ),
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = stringResource(R.string.traffic_usage_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
+    val downTone = accents.protected
+    val upTone = accents.brand
+    val downPercent = if (total > 0L) ((sample.downloadBytes * 100L) / total).toInt() else 0
+    val upPercent = if (total > 0L) 100 - downPercent else 0
+
+    AetherCard(modifier = modifier) {
+        CardHeader(
+            title = stringResource(R.string.traffic_usage_title),
+            subtitle = stringResource(
+                R.string.traffic_usage_total,
+                TrafficMonitor.formatBytes(total),
+            ),
+            icon = Icons.Rounded.SwapVert,
+            tint = downTone,
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(downTone.copy(alpha = pulse), CircleShape),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = stringResource(R.string.traffic_usage_note),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            },
+        )
+        Spacer(Modifier.height(16.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
-            UsageCell(
-                icon = Icons.Rounded.ArrowDownward,
-                tint = MaterialTheme.colorScheme.primary,
+            StatTile(
                 label = stringResource(R.string.traffic_download),
-                bytes = sample.downloadBytes,
-                share = if (total > 0L) sample.downloadBytes else 0L,
-                total = total,
+                value = TrafficMonitor.formatBytes(sample.downloadBytes),
+                icon = Icons.Rounded.ArrowDownward,
+                tint = downTone,
+                footnote = stringResource(R.string.traffic_usage_share, downPercent),
                 modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(20.dp))
-            UsageCell(
-                icon = Icons.Rounded.ArrowUpward,
-                tint = MaterialTheme.colorScheme.onBackground,
+            Spacer(Modifier.width(10.dp))
+            StatTile(
                 label = stringResource(R.string.traffic_upload),
-                bytes = sample.uploadBytes,
-                share = if (total > 0L) sample.uploadBytes else 0L,
-                total = total,
+                value = TrafficMonitor.formatBytes(sample.uploadBytes),
+                icon = Icons.Rounded.ArrowUpward,
+                tint = upTone,
+                footnote = stringResource(R.string.traffic_usage_share, upPercent),
                 modifier = Modifier.weight(1f),
             )
         }
         Spacer(Modifier.height(14.dp))
         SplitBar(
             downShare = downShare,
-            downTint = MaterialTheme.colorScheme.primary,
-            upTint = MaterialTheme.colorScheme.onBackground,
+            downTint = downTone,
+            upTint = upTone,
             track = MaterialTheme.colorScheme.outlineVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = stringResource(
-                R.string.traffic_usage_total,
-                TrafficMonitor.formatBytes(total),
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-    }
-}
-
-/** One direction: cumulative volume large, its share of the session small. */
-@Composable
-private fun UsageCell(
-    icon: ImageVector,
-    tint: Color,
-    label: String,
-    bytes: Long,
-    share: Long,
-    total: Long,
-    modifier: Modifier = Modifier,
-) {
-    val percent = if (total > 0L) ((share * 100L) / total).toInt() else 0
-    Column(modifier = modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = tint,
-                modifier = Modifier.size(14.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = label,
-                style = AetherMetaLabel,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = TrafficMonitor.formatBytes(bytes),
-            style = MaterialTheme.typography.headlineSmall.copy(
-                fontFamily = AetherMono,
-                textDirection = TextDirection.Ltr,
-            ),
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-        )
-        Text(
-            text = stringResource(R.string.traffic_usage_share, percent),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
         )
     }
 }
 
 /**
- * Download vs upload, as one 6dp bar.
+ * Download vs upload, as one 8dp bar.
  *
- * Not a chart: it plots no time axis and carries a single fact — which
- * direction this session actually spent its bytes on. Built from two weighted
- * boxes rather than a Canvas, so it costs a layout pass and no draw code.
+ * Not a chart: it plots no time axis and carries a single fact — which direction
+ * this session actually spent its bytes on. Built from two weighted boxes rather
+ * than a Canvas, so it costs a layout pass and no draw code. Both halves are
+ * clamped away from zero and independently rounded, so a lopsided session still
+ * shows two segments instead of one bar and a rendering artefact.
  */
 @Composable
 private fun SplitBar(
     downShare: Float,
-    downTint: Color,
-    upTint: Color,
-    track: Color,
+    downTint: androidx.compose.ui.graphics.Color,
+    upTint: androidx.compose.ui.graphics.Color,
+    track: androidx.compose.ui.graphics.Color,
 ) {
-    val down = downShare.coerceIn(0.02f, 0.98f)
+    val down = downShare.coerceIn(0.04f, 0.96f)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(6.dp)
-            .clip(RoundedCornerShape(3.dp))
+            .height(8.dp)
+            .clip(RoundedCornerShape(4.dp))
             .background(track.copy(alpha = 0.4f)),
     ) {
         Box(
             modifier = Modifier
                 .weight(down)
                 .fillMaxWidth()
-                .height(6.dp)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
                 .background(downTint),
         )
-        Spacer(
-            modifier = Modifier
-                .width(2.dp)
-                .height(6.dp),
-        )
+        Spacer(Modifier.width(3.dp))
         Box(
             modifier = Modifier
                 .weight(1f - down)
                 .fillMaxWidth()
-                .height(6.dp)
-                .background(upTint.copy(alpha = 0.75f))
-                .padding(0.dp),
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(upTint.copy(alpha = 0.85f)),
         )
     }
 }

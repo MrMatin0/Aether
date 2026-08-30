@@ -1,5 +1,8 @@
 package studio.cluvex.aether.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,16 +27,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherEaseOut
+import studio.cluvex.aether.ui.theme.AetherRadius
 
 /**
  * Dropdown single-select for option sets too long for a segmented row.
  *
- * Restyled as a hairline field so it reads as an input rather than a filled
- * chip, and the open menu now marks the current value with a check — the old
- * menu gave no indication of what was already selected once it was open.
+ * Styled as a filled field, matching every other input, so a form does not
+ * alternate between bordered and unbordered controls. The chevron rotation is
+ * animated rather than snapping, which is the only cue that the same element
+ * both opened and will close the menu, and the open menu marks the current value
+ * with a check — the older menu gave no indication of what was already selected
+ * once it was open.
  */
 @Composable
 fun <T> DropdownSelector(
@@ -45,18 +57,28 @@ fun <T> DropdownSelector(
     enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        label = "chevron",
+    )
+    val shape = RoundedCornerShape(AetherRadius.Field)
 
     Box(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    shape = RoundedCornerShape(14.dp),
+                .clip(shape)
+                .background(
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                        .copy(alpha = if (enabled) 0.55f else 0.3f),
                 )
-                .clickable(enabled = enabled) { expanded = true }
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                .clickable(
+                    enabled = enabled,
+                    role = Role.DropdownList,
+                ) { expanded = true }
+                .padding(horizontal = 16.dp, vertical = 15.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -65,6 +87,9 @@ fun <T> DropdownSelector(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
             Icon(
                 imageVector = Icons.Rounded.ExpandMore,
@@ -72,10 +97,15 @@ fun <T> DropdownSelector(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .size(20.dp)
-                    .rotate(if (expanded) 180f else 0f),
+                    .rotate(rotation),
             )
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(AetherRadius.Field),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
             options.forEach { option ->
                 val isSelected = option == selected
                 DropdownMenuItem(

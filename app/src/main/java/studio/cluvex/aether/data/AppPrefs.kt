@@ -7,13 +7,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
+ * How the app is painted.
+ *
+ * SYSTEM is the default because it is what people expect, but the override is
+ * not decoration: this app is often run on a borrowed, second-hand or oddly
+ * configured phone where the system setting is not what the person holding it
+ * wants, and forcing dark also matters for anyone using it somewhere they would
+ * rather a bright screen did not announce them.
+ */
+enum class ThemeMode { SYSTEM, DARK, LIGHT }
+
+/**
  * App behaviour that is NOT part of the engine profile.
  *
- * These deliberately do NOT live in [ConnectionProfile]: that model is a
- * description of one tunnel, it travels to the VPN service through ProfileCodec
- * and it gets exported/imported as a config. "Connect when the app opens" is a
- * property of this installation, not of a tunnel, and it must be readable
- * SYNCHRONOUSLY from a boot broadcast.
+ * These deliberately do NOT live in [studio.cluvex.aether.model.ConnectionProfile]:
+ * that model is a description of one tunnel, it travels to the VPN service
+ * through ProfileCodec and it gets exported/imported as a config. "Connect when
+ * the app opens" is a property of this installation, not of a tunnel, and it
+ * must be readable SYNCHRONOUSLY from a boot broadcast.
  */
 data class AppBehaviour(
     /** Start connecting as soon as the app is opened cold. */
@@ -22,18 +33,25 @@ data class AppBehaviour(
     val autoConnectOnBoot: Boolean = false,
     /** Record finished sessions (start, duration, bytes) on this device. */
     val keepHistory: Boolean = true,
+    /** Light / dark / follow the system. Read by the Compose theme. */
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
 )
 
 /**
  * Process-wide store for [AppBehaviour]. Backed by a tiny SharedPreferences
  * file so the boot receiver can read it without a coroutine, and published as a
  * StateFlow so Compose reacts to changes with no plumbing.
+ *
+ * The theme lives here rather than in DataStore for the same reason: the very
+ * first frame of the very first Activity needs it, and an async read means a
+ * guaranteed flash of the wrong scheme on every cold start.
  */
 object AppPrefs {
     private const val FILE = "aether_behaviour"
     private const val KEY_LAUNCH = "auto_connect_launch"
     private const val KEY_BOOT = "auto_connect_boot"
     private const val KEY_HISTORY = "keep_history"
+    private const val KEY_THEME = "theme_mode"
 
     private var prefs: SharedPreferences? = null
 
@@ -50,6 +68,7 @@ object AppPrefs {
             autoConnectOnLaunch = store.getBoolean(KEY_LAUNCH, false),
             autoConnectOnBoot = store.getBoolean(KEY_BOOT, false),
             keepHistory = store.getBoolean(KEY_HISTORY, true),
+            themeMode = readTheme(store),
         )
     }
 
@@ -60,7 +79,17 @@ object AppPrefs {
             ?.putBoolean(KEY_LAUNCH, behaviour.autoConnectOnLaunch)
             ?.putBoolean(KEY_BOOT, behaviour.autoConnectOnBoot)
             ?.putBoolean(KEY_HISTORY, behaviour.keepHistory)
+            ?.putString(KEY_THEME, behaviour.themeMode.name)
             ?.apply()
         _state.value = behaviour
+    }
+
+    /**
+     * Stored as the enum NAME, not its ordinal: an ordinal silently remaps every
+     * saved preference the moment a value is inserted into the enum.
+     */
+    private fun readTheme(store: SharedPreferences): ThemeMode {
+        val raw = store.getString(KEY_THEME, null) ?: return ThemeMode.SYSTEM
+        return runCatching { ThemeMode.valueOf(raw) }.getOrDefault(ThemeMode.SYSTEM)
     }
 }
