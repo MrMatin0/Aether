@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,28 +30,44 @@ import studio.cluvex.aether.core.SessionRecord
 import studio.cluvex.aether.core.SessionTracker
 import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.ui.components.ActionPill
+import studio.cluvex.aether.ui.components.AetherCard
+import studio.cluvex.aether.ui.components.CardHeader
 import studio.cluvex.aether.ui.components.Hairline
 import studio.cluvex.aether.ui.components.Hint
-import studio.cluvex.aether.ui.components.SectionRule
-import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.components.StatTile
 import studio.cluvex.aether.ui.theme.AetherMono
+import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 /**
- * What the tunnel actually did, session by session (1.3.0).
+ * What the tunnel actually did, session by session.
  *
  * The live meter dies with the session, so "did it hold for four hours or four
  * minutes" and "what did that evening cost me in data" were unanswerable. Ten
- * rows of duration + bytes answer both, and the totals line answers the only
- * question people ask about a metered SIM.
+ * rows of duration + bytes answer both.
+ *
+ * WHAT CHANGED: the totals used to be one accent-coloured caption above the
+ * list. They are now two tiles, because on a metered SIM the totals ARE the
+ * feature and the ten rows are the supporting detail — and this panel now sits
+ * directly under the switch that controls whether any of it is recorded, which is
+ * where it always belonged.
  */
 @Composable
 fun HistoryPanel(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val accents = LocalAetherAccents.current
     val sessions by SessionTracker.sessions.collectAsState()
     val behaviour by AppPrefs.state.collectAsState()
 
-    Column(modifier = modifier.fillMaxWidth()) {
-        SectionRule(label = stringResource(R.string.history_title))
+    AetherCard(modifier = modifier) {
+        CardHeader(
+            title = stringResource(R.string.history_title),
+            subtitle = stringResource(
+                R.string.history_count,
+                sessions.size,
+            ),
+            icon = Icons.Rounded.History,
+            tint = accents.brand,
+        )
 
         if (sessions.isEmpty()) {
             Hint(
@@ -57,26 +75,31 @@ fun HistoryPanel(modifier: Modifier = Modifier) {
                     if (behaviour.keepHistory) R.string.history_empty else R.string.history_off,
                 ),
             )
-            return@Column
+            return@AetherCard
         }
 
-        Text(
-            text = stringResource(
-                R.string.history_summary,
-                sessions.size,
-                formatBytes(sessions.sumOf { it.downloaded }),
-                formatBytes(sessions.sumOf { it.uploaded }),
-            ),
-            style = AetherMetaLabel,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            StatTile(
+                label = stringResource(R.string.traffic_download),
+                value = formatBytes(sessions.sumOf { it.downloaded }),
+                tint = accents.protected,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            StatTile(
+                label = stringResource(R.string.traffic_upload),
+                value = formatBytes(sessions.sumOf { it.uploaded }),
+                tint = accents.brand,
+                modifier = Modifier.weight(1f),
+            )
+        }
 
-        sessions.take(10).forEach { record ->
-            Hairline(alpha = 0.55f)
+        Spacer(Modifier.height(14.dp))
+        sessions.take(10).forEachIndexed { index, record ->
+            if (index > 0) Hairline(alpha = 0.5f)
             SessionRow(record)
         }
-        Hairline(alpha = 0.55f)
 
         Spacer(Modifier.height(14.dp))
         ActionPill(
@@ -94,7 +117,9 @@ fun HistoryPanel(modifier: Modifier = Modifier) {
 @Composable
 private fun SessionRow(record: SessionRecord) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
