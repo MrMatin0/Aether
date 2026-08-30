@@ -2,14 +2,19 @@ package studio.cluvex.aether.ui.components
 
 import android.content.Context
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -34,13 +39,21 @@ import studio.cluvex.aether.core.AppLocale
 import studio.cluvex.aether.core.findActivity
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
+import studio.cluvex.aether.ui.theme.AetherRadius
+
+private val CHIP_WIDTH = 42.dp
 
 /**
- * The EN / fa pill in the header.
+ * The EN / fa switch in the header.
  *
- * It sits on the home screen on purpose. A language switch buried three
- * scrolls into Settings is useless to the exact person who needs it: someone
- * who cannot read the label on the section that contains it.
+ * It sits on the home screen on purpose. A language switch buried three scrolls
+ * into Settings is useless to the exact person who needs it: someone who cannot
+ * read the label on the section that contains it.
+ *
+ * Restyled to match the segmented control (a sliding indicator, not two
+ * independently tinted chips) so the two-option nature of it is obvious, and the
+ * whole thing is now a fixed 2 x 42dp grid, which keeps the header from
+ * reflowing when the label changes width between scripts.
  */
 @Composable
 fun LanguageToggle(accent: Color, modifier: Modifier = Modifier) {
@@ -48,38 +61,63 @@ fun LanguageToggle(accent: Color, modifier: Modifier = Modifier) {
     // Read straight from the source of truth: switching recreates the activity
     // (or the platform does it for us), so this recomposes with the new value.
     val current = AppLocale.effective(context)
+    val index = if (current == AppLanguage.PERSIAN) 1 else 0
+    val shape = RoundedCornerShape(AetherRadius.Chip)
 
-    Row(
+    val slide by animateDpAsState(
+        targetValue = CHIP_WIDTH * index,
+        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        label = "langslide",
+    )
+    val indicator by animateColorAsState(
+        targetValue = accent.copy(alpha = 0.18f),
+        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        label = "langind",
+    )
+
+    Box(
         modifier = modifier
-            .clip(RoundedCornerShape(13.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(13.dp))
-            .padding(3.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .height(40.dp)
+            .width(CHIP_WIDTH * 2 + 8.dp)
+            .clip(shape)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            .padding(4.dp),
     ) {
-        LanguageChip(
-            text = "EN",
-            description = stringResource(R.string.language_pick_en),
-            selected = current == AppLanguage.ENGLISH,
-            accent = accent,
-            onClick = { switchLanguage(context, AppLanguage.ENGLISH) },
+        Box(
+            modifier = Modifier
+                .offset(x = slide)
+                .width(CHIP_WIDTH)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(9.dp))
+                .background(indicator),
         )
-        LanguageChip(
-            text = "\u0641\u0627",
-            description = stringResource(R.string.language_pick_fa),
-            selected = current == AppLanguage.PERSIAN,
-            accent = accent,
-            onClick = { switchLanguage(context, AppLanguage.PERSIAN) },
-        )
+        Row(modifier = Modifier.fillMaxSize()) {
+            LanguageChip(
+                text = "EN",
+                description = stringResource(R.string.language_pick_en),
+                selected = index == 0,
+                accent = accent,
+                onClick = { switchLanguage(context, AppLanguage.ENGLISH) },
+            )
+            LanguageChip(
+                text = "\u0641\u0627",
+                description = stringResource(R.string.language_pick_fa),
+                selected = index == 1,
+                accent = accent,
+                onClick = { switchLanguage(context, AppLanguage.PERSIAN) },
+            )
+        }
     }
 }
 
 /**
  * One chip.
  *
- * The tap target is 44x40dp rather than the text's own ~30x26dp. Two characters
- * make a beautiful chip and a miserable button, and this particular button is
- * the one someone reaches for precisely because they cannot read the rest of
- * the screen — missing it twice is the worst possible first experience.
+ * The tap target is the full 42x32dp cell rather than the text's own ~20x16dp.
+ * Two characters make a beautiful chip and a miserable button, and this
+ * particular button is the one someone reaches for precisely because they cannot
+ * read the rest of the screen — missing it twice is the worst possible first
+ * experience.
  *
  * selectable() with Role.RadioButton also fixes the announcement: the two chips
  * are one either/or choice, and the accent tint that says which one is live is
@@ -93,11 +131,6 @@ private fun LanguageChip(
     accent: Color,
     onClick: () -> Unit,
 ) {
-    val background by animateColorAsState(
-        targetValue = if (selected) accent.copy(alpha = 0.16f) else Color.Transparent,
-        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
-        label = "langbg",
-    )
     val foreground by animateColorAsState(
         targetValue = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
         animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
@@ -107,9 +140,9 @@ private fun LanguageChip(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .sizeIn(minWidth = 44.dp, minHeight = 40.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(background)
+            .width(CHIP_WIDTH)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(9.dp))
             .selectable(
                 selected = selected,
                 interactionSource = interaction,
@@ -122,7 +155,7 @@ private fun LanguageChip(
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             color = foreground,
             maxLines = 1,
         )
@@ -130,7 +163,7 @@ private fun LanguageChip(
 }
 
 /**
- * Persists the choice and repaints. Shared by the header pill and the Settings
+ * Persists the choice and repaints. Shared by the header switch and the Settings
  * selector so there is exactly one switching path.
  */
 internal fun switchLanguage(context: Context, language: AppLanguage) {
