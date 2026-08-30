@@ -89,6 +89,9 @@ private const val DEST_HOME = 0
 private const val DEST_DIAGNOSTICS = 1
 private const val DEST_SETTINGS = 2
 
+private const val PAGE_PREFIX = "page:"
+private const val DEST_PREFIX = "dest:"
+
 /** The page margin. One value, so nothing in the app is 2dp off anything else. */
 private val PAGE = 20.dp
 
@@ -146,7 +149,7 @@ fun HomeScreen(
     // Stored as the enum NAME (String is saveable, an enum is not) so the open
     // page survives rotation and process death.
     var openPage by rememberSaveable { mutableStateOf<String?>(null) }
-    val page = openPage?.let { name -> runCatching { SettingsPage.valueOf(name) }.getOrNull() }
+    val page = openPage?.let(::settingsPageOrNull)
     val inSubpage = dest == DEST_SETTINGS && page != null
 
     BackHandler(enabled = inSubpage) { openPage = null }
@@ -165,7 +168,7 @@ fun HomeScreen(
         onToggleConnection()
     }
 
-    val routeKey = if (inSubpage) "page:${page?.name}" else "dest:$dest"
+    val routeKey = if (inSubpage) "$PAGE_PREFIX${page?.name}" else "$DEST_PREFIX$dest"
 
     Box(modifier = modifier.fillMaxSize()) {
         AmbientBackground(accent = accent, active = state.isConnected)
@@ -205,19 +208,32 @@ fun HomeScreen(
                 label = "route",
                 modifier = Modifier.weight(1f),
             ) { key ->
+                // Resolved from the KEY, never from the live state. Pressing back
+                // clears openPage immediately while the outgoing page is still
+                // animating out; reading the state here made that outgoing frame
+                // fall through to the home screen for the length of the
+                // transition, which looked like the orb flashing behind the page
+                // that was leaving.
+                val keyPage = remember(key) {
+                    if (key.startsWith(PAGE_PREFIX)) {
+                        settingsPageOrNull(key.removePrefix(PAGE_PREFIX))
+                    } else {
+                        null
+                    }
+                }
                 when {
-                    key.startsWith("page:") && page != null -> SettingsPageBody(
-                        page = page,
+                    keyPage != null -> SettingsPageBody(
+                        page = keyPage,
                         state = state,
                         profile = profile,
                         onProfileChange = onProfileChange,
                         settingsEnabled = settingsEnabled,
                     )
-                    key == "dest:$DEST_SETTINGS" -> SettingsHub(
+                    key == "$DEST_PREFIX$DEST_SETTINGS" -> SettingsHub(
                         locked = !settingsEnabled,
                         onOpen = { openPage = it.name },
                     )
-                    key == "dest:$DEST_DIAGNOSTICS" -> DiagnosticsDestination()
+                    key == "$DEST_PREFIX$DEST_DIAGNOSTICS" -> DiagnosticsDestination()
                     else -> ConnectionDestination(
                         state = state,
                         profile = profile,
@@ -244,6 +260,10 @@ fun HomeScreen(
         }
     }
 }
+
+/** Never throws on an unknown name: a saved page can outlive a renamed enum. */
+private fun settingsPageOrNull(name: String): SettingsPage? =
+    runCatching { SettingsPage.valueOf(name) }.getOrNull()
 
 // ---------------------------------------------------------------- chrome ----
 
