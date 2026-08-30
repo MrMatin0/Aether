@@ -1,11 +1,12 @@
 package studio.cluvex.aether.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -29,9 +30,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -53,11 +57,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.IpEndpoint
@@ -65,53 +66,61 @@ import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
+import studio.cluvex.aether.ui.components.AetherCard
 import studio.cluvex.aether.ui.components.AmbientBackground
 import studio.cluvex.aether.ui.components.ButtonMode
 import studio.cluvex.aether.ui.components.ConnectButton
 import studio.cluvex.aether.ui.components.ConnectionMeta
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
-import studio.cluvex.aether.ui.components.Hairline
 import studio.cluvex.aether.ui.components.LanguageToggle
-import studio.cluvex.aether.ui.components.NoticeBar
+import studio.cluvex.aether.ui.components.PageHeader
 import studio.cluvex.aether.ui.components.PhasePipeline
-import studio.cluvex.aether.ui.components.StatusLine
+import studio.cluvex.aether.ui.components.StatusHint
 import studio.cluvex.aether.ui.components.TrafficPanel
 import studio.cluvex.aether.ui.components.accentFor
+import studio.cluvex.aether.ui.components.contentColorForTone
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
-import studio.cluvex.aether.ui.theme.AetherMono
-import studio.cluvex.aether.ui.theme.OnSignal
+import studio.cluvex.aether.ui.theme.AetherRadius
+import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
-private const val TAB_CONNECTION = 0
-private const val TAB_SETTINGS = 1
-private const val TAB_DIAGNOSTICS = 2
+private const val DEST_HOME = 0
+private const val DEST_DIAGNOSTICS = 1
+private const val DEST_SETTINGS = 2
+
+/** The page margin. One value, so nothing in the app is 2dp off anything else. */
+private val PAGE = 20.dp
 
 /**
  * The app shell.
  *
  * WHAT CHANGED AND WHY
  *
- * Old structure: one scrolling column with a big circle, wrapped in a
- * ModalNavigationDrawer that hid diagnostics + share + advanced + about behind
- * a hamburger, PLUS a second copy of the advanced settings in a bottom sheet
- * reachable from a tuning icon. Three problems fell out of that:
+ * The previous shell was already a big improvement on the drawer it replaced:
+ * three destinations on a bottom bar with the primary action pinned above them,
+ * which fixed both discoverability (nothing implied that the answer to
+ * "connected but nothing loads" was behind a hamburger) and reachability (a
+ * 220dp ring in the upper half of the screen where a thumb cannot go).
  *
- *   1. Discoverability. Nothing on the home screen implied that the answer to
- *      "connected but nothing loads" was behind the hamburger.
- *   2. Duplication. Settings existed in two places with two different expand
- *      states, and the sheet copy needed a bounded 92% viewport and a deferred
- *      first frame just to avoid Material clipping its own content.
- *   3. Cost. A drawer composes its content while closed, which is why 1.2.2 had
- *      to add a drawerVisible guard. Destinations do not have that problem:
- *      what is not on screen is not composed.
+ * Two problems were left, and this pass fixes those:
  *
- * New structure: three destinations on a bottom bar, with the primary action
- * pinned directly above it — also a reachability fix, since the old 220dp
- * circle sat in the upper half of the screen where a thumb cannot go.
+ *   1. SETTINGS WAS A CLIFF. One destination held seven panels back to back —
+ *      language, the whole ~40-control engine surface, saved setups, automation,
+ *      session history, sharing, about — roughly 3500dp of scroll. Every setting
+ *      was reachable and none of them was findable, and the Everything/Essentials
+ *      toggle only reduced the middle third of it. It is now a HUB: six entries
+ *      with one line of description each, opening full pages that have their own
+ *      header and a back affordance. Hardware back is wired to the same
+ *      navigation, which is the part people notice immediately when it is
+ *      missing.
+ *   2. NOTHING WAS GROUPED. The home screen was a single column of rows
+ *      separated by identical hairlines, so the eye could not tell which facts
+ *      belonged together. Every destination is now a column of cards.
  *
- * 1.3.0 adds the in-app language pill to the header and four panels to the
- * Settings destination (language, saved setups, automation, session history).
+ * The dock (action capsule + nav bar) is one floating object at the bottom, and
+ * it is hidden on settings subpages: a full page has its own back affordance,
+ * and leaving a nav bar under it invites the classic "which back do I press".
  */
 @Composable
 fun HomeScreen(
@@ -124,6 +133,7 @@ fun HomeScreen(
     onToggleConnection: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val accents = LocalAetherAccents.current
     val mode = when {
         state.isConnected -> ButtonMode.CONNECTED
         state.isBusy -> ButtonMode.BUSY
@@ -131,7 +141,15 @@ fun HomeScreen(
         else -> ButtonMode.IDLE
     }
     val accent = accentFor(mode)
-    var tab by rememberSaveable { mutableStateOf(TAB_CONNECTION) }
+
+    var dest by rememberSaveable { mutableIntStateOf(DEST_HOME) }
+    // Stored as the enum NAME (String is saveable, an enum is not) so the open
+    // page survives rotation and process death.
+    var openPage by rememberSaveable { mutableStateOf<String?>(null) }
+    val page = openPage?.let { name -> runCatching { SettingsPage.valueOf(name) }.getOrNull() }
+    val inSubpage = dest == DEST_SETTINGS && page != null
+
+    BackHandler(enabled = inSubpage) { openPage = null }
 
     // Engine arguments are read at launch, so editing them mid-session would
     // silently do nothing until the next connect. Idle and Error are the only
@@ -139,13 +157,15 @@ fun HomeScreen(
     val settingsEnabled = state is ConnectionState.Idle || state is ConnectionState.Error
 
     // Connecting is not instant and the visual answer arrives a beat later, so
-    // the tap itself gets a physical acknowledgement. Both entry points (the
-    // ring and the pinned button) go through here, so the feel is identical.
+    // the tap itself gets a physical acknowledgement. Both entry points (the orb
+    // and the dock capsule) go through here, so the feel is identical.
     val haptics = LocalHapticFeedback.current
     val onPrimaryAction: () -> Unit = {
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         onToggleConnection()
     }
+
+    val routeKey = if (inSubpage) "page:${page?.name}" else "dest:$dest"
 
     Box(modifier = modifier.fillMaxSize()) {
         AmbientBackground(accent = accent, active = state.isConnected)
@@ -153,28 +173,52 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .navigationBarsPadding(),
         ) {
-            TopBar(mode = mode, accent = accent)
+            if (inSubpage && page != null) {
+                PageHeader(
+                    title = settingsPageTitle(page),
+                    subtitle = settingsPageSubtitle(page),
+                    onBack = { openPage = null },
+                    modifier = Modifier.padding(
+                        start = PAGE - 4.dp,
+                        end = PAGE,
+                        top = 10.dp,
+                        bottom = 10.dp,
+                    ),
+                )
+            } else {
+                RootBar(mode = mode, accent = accent)
+            }
 
             AnimatedContent(
-                targetState = tab,
+                targetState = routeKey,
                 transitionSpec = {
-                    fadeIn(tween(AetherDur.Base, easing = AetherEaseOut)) togetherWith
-                        fadeOut(tween(AetherDur.Quick))
+                    (
+                        fadeIn(tween(AetherDur.Base, easing = AetherEaseOut)) +
+                            slideInVertically(
+                                tween(AetherDur.Base, easing = AetherEaseOut),
+                            ) { it / 22 }
+                        ) togetherWith fadeOut(tween(AetherDur.Quick))
                 },
-                label = "tab",
+                label = "route",
                 modifier = Modifier.weight(1f),
-            ) { current ->
-                when (current) {
-                    TAB_SETTINGS -> SettingsTab(
+            ) { key ->
+                when {
+                    key.startsWith("page:") && page != null -> SettingsPageBody(
+                        page = page,
                         state = state,
                         profile = profile,
                         onProfileChange = onProfileChange,
                         settingsEnabled = settingsEnabled,
                     )
-                    TAB_DIAGNOSTICS -> DiagnosticsTab()
-                    else -> ConnectionTab(
+                    key == "dest:$DEST_SETTINGS" -> SettingsHub(
+                        locked = !settingsEnabled,
+                        onOpen = { openPage = it.name },
+                    )
+                    key == "dest:$DEST_DIAGNOSTICS" -> DiagnosticsDestination()
+                    else -> ConnectionDestination(
                         state = state,
                         profile = profile,
                         mode = mode,
@@ -187,8 +231,16 @@ fun HomeScreen(
                 }
             }
 
-            PrimaryAction(mode = mode, accent = accent, onClick = onPrimaryAction)
-            TabBar(selected = tab, accent = accent, onSelect = { tab = it })
+            if (!inSubpage) {
+                Dock(
+                    mode = mode,
+                    accent = accent,
+                    brand = accents.brand,
+                    selected = dest,
+                    onSelect = { dest = it },
+                    onPrimaryAction = onPrimaryAction,
+                )
+            }
         }
     }
 }
@@ -196,58 +248,55 @@ fun HomeScreen(
 // ---------------------------------------------------------------- chrome ----
 
 /**
- * 1.3.0: the header carries the language pill next to the state pill.
+ * The root header.
  *
- * It belongs HERE, not in Settings. Someone who opened the app and cannot read
- * it has no way to know which of three destinations, and which of its sections,
- * would let them fix that. Two characters at the top of the first screen do.
+ * The tagline is gone. It was decoration competing for the only horizontal space
+ * the language switch and the state chip have, and on a 360dp phone in fa it
+ * ellipsised to nothing useful anyway. What the header carries now is exactly two
+ * controls and one fact.
  *
- * The title block keeps weight(1f) and the tagline is now clipped to one line,
- * so a long translated tagline can never push the pills off the edge.
+ * The language switch belongs HERE, not in Settings. Someone who opened the app
+ * and cannot read it has no way to know which destination, and which of its
+ * pages, would let them fix that. Two characters at the top of the first screen
+ * do. It is tinted with the BRAND colour, not the state colour: it is a control,
+ * and after this redesign state colour means only one thing.
  */
 @Composable
-private fun TopBar(mode: ButtonMode, accent: Color) {
+private fun RootBar(mode: ButtonMode, accent: Color) {
+    val accents = LocalAetherAccents.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 22.dp, end = 18.dp, top = 14.dp, bottom = 12.dp),
+            .padding(start = PAGE, end = PAGE - 6.dp, top = 12.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                maxLines = 1,
-            )
-            Text(
-                text = stringResource(R.string.tagline),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        LanguageToggle(accent = accent)
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        LanguageToggle(accent = accents.brand)
         Spacer(Modifier.width(8.dp))
-        StatePill(mode = mode, accent = accent)
+        StateChip(mode = mode, accent = accent)
     }
 }
 
 @Composable
-private fun StatePill(mode: ButtonMode, accent: Color) {
+private fun StateChip(mode: ButtonMode, accent: Color) {
     val label = stateLabel(mode)
     val tint by animateColorAsState(
         targetValue = accent,
         animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
-        label = "pill",
+        label = "chip",
     )
     Row(
         modifier = Modifier
             .clip(CircleShape)
-            .background(tint.copy(alpha = 0.12f))
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .background(tint.copy(alpha = 0.14f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.size(7.dp).background(tint, CircleShape))
@@ -256,8 +305,50 @@ private fun StatePill(mode: ButtonMode, accent: Color) {
     }
 }
 
+/**
+ * The dock: the primary action and the destinations, as one floating object.
+ *
+ * Keeping the action visible on every destination is deliberate — the reason to
+ * open Diagnostics is usually to then retry — but it is hidden on settings
+ * subpages, where a nav bar under a page that has its own back affordance is
+ * just two competing ways out.
+ */
 @Composable
-private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) {
+private fun Dock(
+    mode: ButtonMode,
+    accent: Color,
+    brand: Color,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    onPrimaryAction: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        PrimaryAction(mode = mode, accent = accent, brand = brand, onClick = onPrimaryAction)
+        Spacer(Modifier.height(10.dp))
+        NavBar(selected = selected, brand = brand, onSelect = onSelect)
+    }
+}
+
+/**
+ * The primary action.
+ *
+ * FILLED with the brand colour when the action moves you forward (connect,
+ * retry), OUTLINED in the current state colour when it stops something that is
+ * already running (cancel, disconnect). The old button filled itself with the
+ * state colour when connected, which produced a solid green DISCONNECT — the
+ * loudest element on the screen telling you to undo the thing you wanted.
+ */
+@Composable
+private fun PrimaryAction(
+    mode: ButtonMode,
+    accent: Color,
+    brand: Color,
+    onClick: () -> Unit,
+) {
     val label = actionLabel(mode)
     val icon: ImageVector = when (mode) {
         ButtonMode.IDLE -> Icons.Rounded.PowerSettingsNew
@@ -265,9 +356,9 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
         ButtonMode.CONNECTED -> Icons.Rounded.Bolt
         ButtonMode.ERROR -> Icons.Rounded.Refresh
     }
-    val filled = mode == ButtonMode.CONNECTED
+    val forward = mode == ButtonMode.IDLE || mode == ButtonMode.ERROR
     val tint by animateColorAsState(
-        targetValue = accent,
+        targetValue = if (forward) brand else accent,
         animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
         label = "action",
     )
@@ -276,12 +367,11 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 22.dp, vertical = 10.dp)
-            .height(58.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = if (filled) tint else Color.Transparent,
-        contentColor = if (filled) OnSignal else tint,
-        border = if (filled) null else BorderStroke(1.5.dp, tint.copy(alpha = 0.5f)),
+            .height(56.dp),
+        shape = RoundedCornerShape(AetherRadius.Dock),
+        color = if (forward) tint else Color.Transparent,
+        contentColor = if (forward) contentColorForTone(tint) else tint,
+        border = if (forward) null else BorderStroke(1.5.dp, tint.copy(alpha = 0.55f)),
     ) {
         Row(
             modifier = Modifier.fillMaxSize(),
@@ -293,92 +383,106 @@ private fun PrimaryAction(mode: ButtonMode, accent: Color, onClick: () -> Unit) 
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-    }
-}
-
-@Composable
-private fun TabBar(selected: Int, accent: Color, onSelect: (Int) -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding(),
-    ) {
-        Hairline(alpha = 0.7f)
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
-            TabItem(
-                label = stringResource(R.string.nav_connection),
-                active = selected == TAB_CONNECTION,
-                accent = accent,
-                modifier = Modifier.weight(1f),
-                onClick = { onSelect(TAB_CONNECTION) },
-            )
-            TabItem(
-                label = stringResource(R.string.nav_settings),
-                active = selected == TAB_SETTINGS,
-                accent = accent,
-                modifier = Modifier.weight(1f),
-                onClick = { onSelect(TAB_SETTINGS) },
-            )
-            TabItem(
-                label = stringResource(R.string.nav_diagnostics),
-                active = selected == TAB_DIAGNOSTICS,
-                accent = accent,
-                modifier = Modifier.weight(1f),
-                onClick = { onSelect(TAB_DIAGNOSTICS) },
+                maxLines = 1,
             )
         }
     }
 }
 
 /**
- * One destination in the bottom bar.
+ * The destination bar.
  *
- * selectable() rather than clickable(): the accent tint and the 20dp underline
- * are the ONLY signal that a tab is current, and neither exists for a screen
- * reader. Role.Tab plus the selected flag makes the bar announce "Settings,
- * tab, 2 of 3, selected" instead of three identical buttons.
+ * Icons are new and they are not decoration: the person most likely to be lost
+ * in this app is someone who opened it in a language they cannot read, and a
+ * gear, a shield and a bug are readable in every language.
  */
 @Composable
-private fun TabItem(
+private fun NavBar(selected: Int, brand: Color, onSelect: (Int) -> Unit) {
+    val accents = LocalAetherAccents.current
+    val shape = RoundedCornerShape(AetherRadius.Dock)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(accents.dock)
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        NavItem(
+            label = stringResource(R.string.nav_home),
+            icon = Icons.Rounded.Shield,
+            active = selected == DEST_HOME,
+            brand = brand,
+            modifier = Modifier.weight(1f),
+            onClick = { onSelect(DEST_HOME) },
+        )
+        NavItem(
+            label = stringResource(R.string.nav_diagnostics),
+            icon = Icons.Rounded.BugReport,
+            active = selected == DEST_DIAGNOSTICS,
+            brand = brand,
+            modifier = Modifier.weight(1f),
+            onClick = { onSelect(DEST_DIAGNOSTICS) },
+        )
+        NavItem(
+            label = stringResource(R.string.nav_settings),
+            icon = Icons.Rounded.Settings,
+            active = selected == DEST_SETTINGS,
+            brand = brand,
+            modifier = Modifier.weight(1f),
+            onClick = { onSelect(DEST_SETTINGS) },
+        )
+    }
+}
+
+/**
+ * One destination.
+ *
+ * selectable() with Role.Tab rather than clickable(): the tint and the pill are
+ * the ONLY signal that a destination is current, and neither exists for a screen
+ * reader. This makes the bar announce "Settings, tab, 3 of 3, selected" instead
+ * of three identical buttons.
+ */
+@Composable
+private fun NavItem(
     label: String,
+    icon: ImageVector,
     active: Boolean,
-    accent: Color,
+    brand: Color,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val color by animateColorAsState(
-        targetValue = if (active) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+    val content by animateColorAsState(
+        targetValue = if (active) brand else MaterialTheme.colorScheme.onSurfaceVariant,
         animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
-        label = "tabtint",
+        label = "navfg",
     )
-    val indicator by animateDpAsState(
-        targetValue = if (active) 20.dp else 0.dp,
-        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
-        label = "tabind",
+    val fill by animateColorAsState(
+        targetValue = if (active) brand.copy(alpha = 0.14f) else Color.Transparent,
+        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        label = "navbg",
     )
     Column(
         modifier = modifier
+            .clip(RoundedCornerShape(AetherRadius.Field))
+            .background(fill)
             .selectable(selected = active, role = Role.Tab, onClick = onClick)
-            .padding(vertical = 12.dp),
+            .padding(vertical = 9.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(21.dp),
+        )
+        Spacer(Modifier.height(4.dp))
         Text(
             text = label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-            color = color,
+            style = MaterialTheme.typography.labelSmall,
+            color = content,
             maxLines = 1,
-        )
-        Spacer(Modifier.height(6.dp))
-        Box(
-            modifier = Modifier
-                .width(indicator)
-                .height(2.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(accent),
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -386,7 +490,7 @@ private fun TabItem(
 // ------------------------------------------------------------ destinations --
 
 @Composable
-private fun ConnectionTab(
+private fun ConnectionDestination(
     state: ConnectionState,
     profile: ConnectionProfile,
     mode: ButtonMode,
@@ -404,181 +508,117 @@ private fun ConnectionTab(
         is ConnectionState.Verifying -> 2
         else -> -1
     }
+    // The orb's arc is driven by the REAL stage, so it grows as work completes
+    // instead of spinning at a constant rate for four minutes.
+    val progress = when (state) {
+        is ConnectionState.Launching -> 0.2f
+        is ConnectionState.Connecting -> 0.45f
+        is ConnectionState.Reconnecting -> 0.45f
+        is ConnectionState.Verifying -> 0.78f
+        is ConnectionState.Connected -> 1f
+        else -> 0f
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp),
+            .padding(horizontal = PAGE),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         ConnectButton(
             mode = mode,
             onClick = onToggleConnection,
-            // The ring is the primary control and it is drawn on a Canvas, so
-            // without these it is an unlabelled 244dp box to TalkBack.
-            stateLabel = stateLabel(mode),
+            // The orb is the primary control and it is drawn on a Canvas, so
+            // without these it is an unlabelled 256dp box to TalkBack.
+            stateLabel = stateTitle(state),
             actionLabel = actionLabel(mode),
+            detail = rememberBusyElapsed(busy),
+            progress = progress,
         )
-        Spacer(Modifier.height(20.dp))
-
-        StatusLine(
-            title = stateTitle(state),
-            subtitle = stateSubtitle(state, profile),
-            accent = when (mode) {
-                ButtonMode.CONNECTED, ButtonMode.ERROR -> accent
-                else -> MaterialTheme.colorScheme.onBackground
-            },
-        )
+        Spacer(Modifier.height(14.dp))
+        StatusHint(text = stateHint(state, profile))
 
         if (step >= 0) {
-            Spacer(Modifier.height(24.dp))
-            PhasePipeline(
-                step = step,
-                labels = listOf(
-                    stringResource(R.string.phase_engine),
-                    stringResource(R.string.phase_tunnel),
-                    stringResource(R.string.phase_verify),
-                    stringResource(R.string.phase_ready),
-                ),
-                accent = accent,
-                active = busy,
-            )
-            Spacer(Modifier.height(12.dp))
-            ElapsedCounter(active = busy)
+            Spacer(Modifier.height(22.dp))
+            AetherCard(padding = 16.dp) {
+                PhasePipeline(
+                    step = step,
+                    labels = listOf(
+                        stringResource(R.string.phase_engine),
+                        stringResource(R.string.phase_tunnel),
+                        stringResource(R.string.phase_verify),
+                        stringResource(R.string.phase_ready),
+                    ),
+                    accent = accent,
+                    active = busy,
+                )
+            }
         }
 
         if (state.isConnected) {
-            Spacer(Modifier.height(30.dp))
+            Spacer(Modifier.height(14.dp))
             TrafficPanel(connectedSince = connectedSince)
         }
 
-        Spacer(Modifier.height(30.dp))
+        Spacer(Modifier.height(14.dp))
         ConnectionMeta(
             connected = state.isConnected,
             connectedSince = connectedSince,
             ipInfo = ipInfo,
             ipLoading = ipLoading,
         )
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun DiagnosticsDestination() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = PAGE, vertical = 4.dp),
+    ) {
+        DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 360.dp)
         Spacer(Modifier.height(24.dp))
     }
 }
 
 /**
- * A visible clock while the engine works.
+ * A visible clock while the engine works, shown inside the orb.
  *
- * Without it, a four-minute Ironclad scan and a hung process look identical,
- * and people force-quit the app mid-scan.
+ * Without it, a four-minute Ironclad scan and a hung process look identical, and
+ * people force-quit the app mid-scan.
  *
- * Locale.US, not the default locale: AppLocale sets the JVM default to fa, so
- * plain "%d".format() printed the clock in Persian-Indic digits while the
- * latency and traffic readouts (which already pin Locale.US) stayed Latin. Two
- * numbering systems on one screen, in a monospaced style that only lines up
- * with one of them. Prose keeps the locale's digits; instrument readouts do not.
+ * [formatDuration] pins Locale.US on purpose: AppLocale sets the JVM default to
+ * fa, so a plain "%d".format() printed the clock in Persian-Indic digits while
+ * the latency and traffic readouts (which already pin Locale.US) stayed Latin.
+ * Two numbering systems on one screen, in a monospaced style that only lines up
+ * with one of them. Prose keeps the locale's digits; instruments do not.
  */
 @Composable
-private fun ElapsedCounter(active: Boolean) {
+private fun rememberBusyElapsed(active: Boolean): String? {
     var seconds by remember(active) { mutableIntStateOf(0) }
     LaunchedEffect(active) {
-        if (active) {
-            while (true) {
-                delay(1000L)
-                seconds += 1
-            }
+        if (!active) return@LaunchedEffect
+        while (true) {
+            delay(1000L)
+            seconds += 1
         }
     }
-    Text(
-        text = stringResource(
-            R.string.busy_elapsed,
-            formatDuration(seconds * 1000L),
-        ),
-        style = MaterialTheme.typography.bodySmall.copy(
-            fontFamily = AetherMono,
-            textDirection = TextDirection.Ltr,
-        ),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    )
-}
-
-/**
- * The Settings destination.
- *
- * Order is deliberate and follows "how likely is this to be the reason you came
- * here":
- *
- *   1. Language — if the app is in a language you cannot read, every other
- *      section below is unusable, so it can never sit under them.
- *   2. Engine settings (AdvancedPanel) — the controls that decide whether a
- *      connection succeeds at all.
- *   3. Saved setups — the settings that worked, re-applied in one tap. Gated on
- *      [settingsEnabled] like the engine settings, because a setup rewrites the
- *      same arguments and those are only read at launch.
- *   4. Automation — when Aether connects by itself, and what it keeps.
- *   5. Session history — what the tunnel actually did, after the fact.
- *   6. Share / About — occasional, so last.
- */
-@Composable
-private fun SettingsTab(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    onProfileChange: (ConnectionProfile) -> Unit,
-    settingsEnabled: Boolean,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp),
-    ) {
-        if (!settingsEnabled) {
-            Spacer(Modifier.height(4.dp))
-            NoticeBar(text = stringResource(R.string.settings_locked))
-        }
-        LanguagePanel()
-        AdvancedPanel(
-            profile = profile,
-            onProfileChange = onProfileChange,
-            enabled = settingsEnabled,
-        )
-        PresetsPanel(
-            profile = profile,
-            onProfileChange = onProfileChange,
-            enabled = settingsEnabled,
-        )
-        AutomationPanel()
-        HistoryPanel()
-        SharePanel(
-            state = state,
-            profile = profile,
-            onProfileChange = onProfileChange,
-        )
-        AboutPanel()
-        Spacer(Modifier.height(32.dp))
-    }
-}
-
-@Composable
-private fun DiagnosticsTab() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp, vertical = 6.dp),
-    ) {
-        DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 340.dp)
-        Spacer(Modifier.height(32.dp))
-    }
+    return if (active) formatDuration(seconds * 1000L) else null
 }
 
 // ----------------------------------------------------------------- copy -----
 
 /**
- * The one-word state, as shown in the header pill.
+ * The coarse state, as shown in the header chip.
  *
- * Shared with the ring's semantics so a sighted user and a screen-reader user
- * are told the same thing in the same words.
+ * Two granularities on purpose, and no duplication between them: the chip says
+ * WHETHER you are protected (four possible words, readable from across the room)
+ * and the orb says WHAT IS HAPPENING right now.
  */
 @Composable
 private fun stateLabel(mode: ButtonMode): String = stringResource(
@@ -590,7 +630,7 @@ private fun stateLabel(mode: ButtonMode): String = stringResource(
     },
 )
 
-/** What a tap on the ring or the pinned button will do. */
+/** What a tap on the orb or the dock capsule will do. */
 @Composable
 private fun actionLabel(mode: ButtonMode): String = stringResource(
     when (mode) {
@@ -601,6 +641,7 @@ private fun actionLabel(mode: ButtonMode): String = stringResource(
     },
 )
 
+/** The precise state, shown inside the orb and read out by TalkBack. */
 @Composable
 private fun stateTitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Idle -> stringResource(R.string.state_idle)
@@ -613,11 +654,12 @@ private fun stateTitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Error -> stringResource(R.string.state_error)
 }
 
+/** Why the state is what it is, and what happens next. */
 @Composable
-private fun stateSubtitle(state: ConnectionState, profile: ConnectionProfile): String =
+private fun stateHint(state: ConnectionState, profile: ConnectionProfile): String =
     when (state) {
         is ConnectionState.Idle -> stringResource(R.string.tap_to_connect)
-        // The exit IP + flag lives in the ledger below, so the subtitle never
+        // The exit IP + flag lives in the session card below, so this never
         // leaks the internal 127.0.0.1:port address.
         is ConnectionState.Connected -> stringResource(R.string.tap_to_disconnect)
         is ConnectionState.Launching,
