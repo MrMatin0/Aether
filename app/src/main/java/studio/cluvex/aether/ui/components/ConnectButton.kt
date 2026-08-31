@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -52,6 +53,8 @@ import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.LocalReducedMotion
+import studio.cluvex.aether.ui.theme.aetherDuration
 
 enum class ButtonMode { IDLE, BUSY, CONNECTED, ERROR }
 
@@ -76,6 +79,18 @@ fun accentFor(mode: ButtonMode): Color {
 /** Degrees -> radians. Plain val: a conversion call is not a const expression. */
 private const val START_ANGLE = -90f
 
+/** The size the orb was designed at, and the size it still uses when it fits. */
+private val ORB_MAX = 256.dp
+
+/**
+ * The smallest the orb may get. Below this the state word inside it starts
+ * wrapping to three lines and the ring stops reading as a gauge.
+ */
+private val ORB_MIN = 184.dp
+
+/** Breathing room either side of the orb, so it never touches the page margin. */
+private val ORB_GUTTER = 96.dp
+
 /**
  * The centrepiece: a progress orb.
  *
@@ -87,7 +102,7 @@ private const val START_ANGLE = -90f
  * one, which is exactly the situation where people force-quit the app and
  * conclude the tunnel never works.
  *
- * Two changes fix that:
+ * Two changes fixed that:
  *
  *   1. The arc is DETERMINATE. [progress] is driven by the real controller
  *      stage (engine → tunnel → verify → ready), so the ring fills as actual
@@ -104,6 +119,26 @@ private const val START_ANGLE = -90f
  *   BUSY       amber arc grows with real progress, highlight sweeps the track
  *   CONNECTED  full mint ring, core fills, one slow halo rotation
  *   ERROR      three broken rose arcs, frozen
+ *
+ * WHAT CHANGED IN THIS PASS
+ *
+ *   SIZE. The orb was a hard 256.dp, twice — once on the Box and once on the
+ *   Canvas inside it. On a 360dp-wide phone that is 71% of the viewport, and on
+ *   a 320dp one (still a live device class, and the width every phone becomes in
+ *   split-screen) it left 32dp of margin while the dock, the status hint and the
+ *   session card all competed for what was left, so the PRIMARY CONTROL was the
+ *   element that got squeezed. It is derived from the viewport now, clamped
+ *   between [ORB_MIN] and [ORB_MAX], and the Canvas simply matches its parent so
+ *   the two can never disagree again.
+ *
+ *   MOTION. Both loops now ask [LocalReducedMotion] first. The connected halo is
+ *   an INFINITE animation, so on a session that lasts three hours this Canvas was
+ *   being redrawn at the refresh rate for three hours, on a phone whose owner may
+ *   have explicitly asked the system to remove animations. Under reduced motion
+ *   the loops do not run at all (a 0ms infinite repeat would be a spin at
+ *   infinite speed) and every remaining tween collapses to the next frame. The
+ *   orb keeps every bit of its meaning: the arc still fills, the colour still
+ *   changes, the words still change — they just stop moving.
  *
  * PERFORMANCE: the rotation is an [Animatable] read INSIDE the draw lambda — a
  * draw-only state read, so a live orb costs redraws of one Canvas and never a
@@ -127,14 +162,21 @@ fun ConnectButton(
 ) {
     val accents = LocalAetherAccents.current
     val accent = accentFor(mode)
+    val reduced = LocalReducedMotion.current
+
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val diameter = remember(screenWidthDp) {
+        (screenWidthDp.dp - ORB_GUTTER).coerceIn(ORB_MIN, ORB_MAX)
+    }
+
     val animatedAccent by animateColorAsState(
         targetValue = accent,
-        animationSpec = tween(AetherDur.Slow, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
         label = "accent",
     )
     val core by animateFloatAsState(
         targetValue = if (mode == ButtonMode.CONNECTED) 1f else 0f,
-        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Base), easing = AetherEaseOut),
         label = "core",
     )
     val sweep by animateFloatAsState(
@@ -146,7 +188,7 @@ fun ConnectButton(
             ButtonMode.ERROR -> 1f
             ButtonMode.IDLE -> 0f
         },
-        animationSpec = tween(AetherDur.Slow, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
         label = "sweep",
     )
 
@@ -154,12 +196,19 @@ fun ConnectButton(
     val pressed by interaction.collectIsPressedAsState()
     val press by animateFloatAsState(
         targetValue = if (pressed) 0.97f else 1f,
-        animationSpec = tween(AetherDur.Snap, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Snap), easing = AetherEaseOut),
         label = "press",
     )
 
     val spin = remember { Animatable(0f) }
-    LaunchedEffect(mode) {
+    LaunchedEffect(mode, reduced) {
+        // Reduced motion: the loops are not slowed down, they are not started.
+        // An infinite repeat with a 0ms duration is not "no animation", it is an
+        // invalidation every single frame forever.
+        if (reduced) {
+            spin.snapTo(0f)
+            return@LaunchedEffect
+        }
         when (mode) {
             ButtonMode.BUSY -> {
                 spin.snapTo(0f)
@@ -178,11 +227,13 @@ fun ConnectButton(
 
     val track = MaterialTheme.colorScheme.outlineVariant
     val cardTone = accents.card
+    val showHighlight = !reduced &&
+        (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED)
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(256.dp)
+            .size(diameter)
             .scale(press)
             .clip(CircleShape)
             .clickable(
@@ -194,7 +245,10 @@ fun ConnectButton(
             )
             .semantics { stateDescription = stateLabel },
     ) {
-        Canvas(modifier = Modifier.size(256.dp)) {
+        // matchParentSize, not a second hardcoded diameter: the ring geometry is
+        // all derived from the Canvas's own size, so the Canvas must be exactly
+        // the tappable circle and nothing else.
+        Canvas(modifier = Modifier.matchParentSize()) {
             val cx = size.width / 2f
             val cy = size.height / 2f
             val stroke = 8.dp.toPx()
@@ -258,7 +312,10 @@ fun ConnectButton(
 
             // The travelling highlight: proof of life, never mistaken for
             // progress because it laps the whole ring regardless of the arc.
-            if (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED) {
+            // Skipped under reduced motion, where a parked highlight would just
+            // be a bright notch of the same colour sitting on the arc, saying
+            // nothing.
+            if (showHighlight) {
                 drawArc(
                     color = animatedAccent.copy(
                         alpha = if (mode == ButtonMode.BUSY) 0.95f else 0.55f,
@@ -303,7 +360,9 @@ fun ConnectButton(
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = 30.dp),
+            // Proportional, not a fixed 30dp: the inset has to stay inside the
+            // core disc, and the disc is now a function of the diameter.
+            modifier = Modifier.padding(horizontal = diameter * 0.12f),
         ) {
             Icon(
                 imageVector = icon,
@@ -315,7 +374,8 @@ fun ConnectButton(
             AnimatedContent(
                 targetState = stateLabel,
                 transitionSpec = {
-                    fadeIn(tween(AetherDur.Base)) togetherWith fadeOut(tween(AetherDur.Quick))
+                    fadeIn(tween(aetherDuration(AetherDur.Base))) togetherWith
+                        fadeOut(tween(aetherDuration(AetherDur.Quick)))
                 },
                 label = "word",
             ) { word ->
