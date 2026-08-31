@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui.components
 
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -48,6 +49,7 @@ import studio.cluvex.aether.core.PingMonitor
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherNumeralLarge
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.aetherDuration
 
 private const val DASH = "\u2014"
 private const val ELLIPSIS = "\u2026"
@@ -129,7 +131,8 @@ fun ConnectionMeta(
             AnimatedContent(
                 targetState = ipValue,
                 transitionSpec = {
-                    fadeIn(tween(AetherDur.Base)) togetherWith fadeOut(tween(AetherDur.Quick))
+                    fadeIn(tween(aetherDuration(AetherDur.Base))) togetherWith
+                        fadeOut(tween(aetherDuration(AetherDur.Quick)))
                 },
                 label = "ip",
                 modifier = Modifier.weight(1f),
@@ -215,6 +218,19 @@ fun ConnectionMeta(
  * Persian-Indic digits directly beside a latency value that already pins
  * Locale.US. One instrument panel, two numbering systems, in a monospaced style
  * whose advance widths only match Latin figures.
+ *
+ * WHAT CHANGED IN THIS PASS: the tick. It used to read the clock and then sleep a
+ * flat `delay(1000)`, so every tick was late by however long the frame took, and
+ * the error ACCUMULATED. On a 60Hz phone that lands on the wrong side of a whole
+ * second every few minutes, and the visible symptom is a clock that shows the
+ * same second twice and then skips one — on the one readout whose entire job is
+ * being trusted. It now sleeps to the next whole second OF THE SESSION, so the
+ * digit flips on the boundary and stays on it for hours.
+ *
+ * It also measures with elapsedRealtime instead of wall-clock time. connectedSince
+ * is a monotonic stamp; comparing it against currentTimeMillis meant an NTP
+ * correction (routine on a phone that just left airplane mode, which is a very
+ * normal way to start a VPN session) could make the uptime jump or run backwards.
  */
 @Composable
 private fun UptimeTile(
@@ -222,12 +238,14 @@ private fun UptimeTile(
     tint: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier,
 ) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(connectedSince) {
         if (connectedSince == null) return@LaunchedEffect
         while (true) {
-            now = System.currentTimeMillis()
-            delay(1000L)
+            val tick = SystemClock.elapsedRealtime()
+            now = tick
+            val intoSecond = (tick - connectedSince).coerceAtLeast(0L) % 1000L
+            delay((1000L - intoSecond).coerceIn(1L, 1000L))
         }
     }
     val text = if (connectedSince == null) {

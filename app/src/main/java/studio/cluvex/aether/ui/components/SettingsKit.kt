@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,6 +43,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
@@ -80,6 +82,11 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * [FieldLabel], [Hint], [SwitchRow], [ValueRow]) that lives inside them. The old
  * names and signatures are all preserved, so every panel kept compiling while
  * it was restyled.
+ *
+ * WHAT CHANGED IN THIS PASS: semantics and touch targets. Everything here looked
+ * right and several things did not ANNOUNCE right — which for an app whose whole
+ * job is being usable on a phone you did not configure yourself is the same
+ * category of bug. See [SwitchRow] for the worst of it.
  */
 
 /**
@@ -247,6 +254,11 @@ fun PageHeader(
  * hand rather than using an auto-mirrored asset, because ChevronRight has no
  * auto-mirrored twin and a right-pointing chevron in an RTL layout reads as
  * "go back".
+ *
+ * The row height has a floor. Its natural height came entirely from the type
+ * inside it, so at a 130% font scale with no subtitle it was still fine, but at
+ * an 85% scale it dropped under the platform's 48dp minimum touch target — and
+ * this is the ONLY way into any settings page.
  */
 @Composable
 fun NavRow(
@@ -262,7 +274,8 @@ fun NavRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            .heightIn(min = 56.dp)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -304,6 +317,9 @@ fun NavRow(
  *
  * Tappable when [onClick] is given — which is how the latency tile replaced the
  * separate "Test" button that used to sit beside it. One target, one meaning.
+ * When it IS tappable it now says so (Role.Button): a tile that looks exactly
+ * like the four read-only tiles around it is the last place a screen reader user
+ * would go looking for the latency probe.
  */
 @Composable
 fun StatTile(
@@ -332,7 +348,11 @@ fun StatTile(
             )
             .then(
                 if (onClick != null) {
-                    Modifier.clickable(onClickLabel = onClickLabel, onClick = onClick)
+                    Modifier.clickable(
+                        onClickLabel = onClickLabel,
+                        role = Role.Button,
+                        onClick = onClick,
+                    )
                 } else {
                     Modifier
                 },
@@ -447,9 +467,23 @@ fun Hint(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * A toggle row. The whole row is the hit target, not just the 40dp switch —
- * missing a switch on a moving bus was the single most annoying thing about the
- * old settings list.
+ * A toggle row.
+ *
+ * The whole row is the hit target, not just the 40dp switch — missing a switch
+ * on a moving bus was the single most annoying thing about the old settings list.
+ *
+ * WHAT WAS WRONG WITH IT: the row carried a `clickable` AND the Switch carried
+ * its own `onCheckedChange`. Visually that is one control. To the accessibility
+ * tree it is TWO nodes for one setting: a Button with no state (so TalkBack read
+ * out "Kill switch, block traffic when the tunnel drops, button" and never said
+ * whether it was on), immediately followed by a Switch with no label ("on,
+ * switch"). Switch Access and keyboard traversal had to stop at both. The row is
+ * now a single `toggleable` node with `Role.Switch`, and the Switch is passed a
+ * null callback so it renders as pure state — which is exactly what it is. One
+ * announcement: "Kill switch, block traffic when the tunnel drops, on, switch".
+ *
+ * The height floor is for the same reason as [NavRow]: this is the most common
+ * control in the app and it must not fall under 48dp at a small font scale.
  */
 @Composable
 fun SwitchRow(
@@ -463,7 +497,13 @@ fun SwitchRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled) { onChange(!checked) }
+            .heightIn(min = 48.dp)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onChange,
+            )
             .padding(vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -485,7 +525,10 @@ fun SwitchRow(
         Spacer(Modifier.width(16.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
+            // Null on purpose: the ROW owns the interaction and the semantics.
+            // A second callback here would put a second focusable node on top of
+            // the first one.
+            onCheckedChange = null,
             enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
@@ -502,6 +545,11 @@ fun SwitchRow(
 /**
  * A fixed technical value with a one-tap copy affordance. Always LTR: `ip:port`
  * must not be reordered by the BiDi algorithm in the Persian locale.
+ *
+ * The copy affordance is the whole row, and the row now declares itself a button
+ * with the copy action as its click label — the 18dp copy glyph on the trailing
+ * edge is the only hint that the row does anything, and a glyph is not an
+ * announcement.
  */
 @Composable
 fun ValueRow(
@@ -513,6 +561,7 @@ fun ValueRow(
     val context = LocalContext.current
     val accents = LocalAetherAccents.current
     val shape = RoundedCornerShape(AetherRadius.Field)
+    val copyLabel = stringResource(R.string.share_copy)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -525,7 +574,8 @@ fun ValueRow(
                     MaterialTheme.colorScheme.surfaceContainerHigh
                 },
             )
-            .clickable {
+            .heightIn(min = 48.dp)
+            .clickable(onClickLabel = copyLabel, role = Role.Button) {
                 clipboard.setText(AnnotatedString(value))
                 Toast.makeText(context, R.string.share_copied, Toast.LENGTH_SHORT).show()
             }
@@ -550,7 +600,9 @@ fun ValueRow(
         Spacer(Modifier.width(10.dp))
         Icon(
             imageVector = Icons.Rounded.ContentCopy,
-            contentDescription = stringResource(R.string.share_copy),
+            // The row already announces the copy action as its click label, so a
+            // description here would make TalkBack say "copy" twice.
+            contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp),
         )
