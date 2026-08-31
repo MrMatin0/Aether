@@ -143,9 +143,9 @@ private val LightScheme = lightColorScheme(
 /**
  * The app theme.
  *
- * Two things are read from outside Compose, both from the same synchronous
- * SharedPreferences-backed sources the rest of the app uses, so nothing can
- * disagree about what is on screen:
+ * Three things are read from outside Compose, all from the same synchronous
+ * sources the rest of the app uses, so nothing can disagree about what is on
+ * screen:
  *
  *  - the language, from [AppLocale] — fa gets extra leading (see
  *    [PERSIAN_LEADING]) because Vazirmatn's Persian ink extent does not fit the
@@ -153,6 +153,10 @@ private val LightScheme = lightColorScheme(
  *  - the theme mode, from [AppPrefs] — SYSTEM (default) follows the platform,
  *    DARK and LIGHT pin it. Pinning matters: half the point of this app is
  *    being usable on a borrowed or oddly-configured phone.
+ *  - whether animations are wanted at all, from the platform's animator duration
+ *    scale (see [rememberSystemReducedMotion]). Publishing it HERE, at the one
+ *    place the whole tree already reads its tokens from, is what makes it
+ *    impossible for a new screen to quietly ignore it.
  */
 @Composable
 fun AetherTheme(content: @Composable () -> Unit) {
@@ -194,6 +198,7 @@ fun AetherTheme(content: @Composable () -> Unit) {
 
     CompositionLocalProvider(
         LocalAetherAccents provides if (dark) DarkAccents else LightAccents,
+        LocalReducedMotion provides rememberSystemReducedMotion(),
     ) {
         MaterialTheme(
             colorScheme = if (dark) DarkScheme else LightScheme,
