@@ -166,6 +166,14 @@ fun ConnectButton(
     val accent = accentFor(mode)
     val reduced = LocalReducedMotion.current
 
+    // AnimatedContent's transitionSpec is a PLAIN lambda, not a @Composable one,
+    // so aetherDuration (a @Composable read of LocalReducedMotion) cannot be
+    // called inside it. Resolve both lengths here, in composition, and let the
+    // spec capture the Ints. Still theme-aware, still collapses to 0 under
+    // reduced motion.
+    val wordFadeInMs = aetherDuration(AetherDur.Base)
+    val wordFadeOutMs = aetherDuration(AetherDur.Quick)
+
     val animatedAccent by animateColorAsState(
         targetValue = accent,
         animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
@@ -377,8 +385,7 @@ fun ConnectButton(
                 AnimatedContent(
                     targetState = stateLabel,
                     transitionSpec = {
-                        fadeIn(tween(aetherDuration(AetherDur.Base))) togetherWith
-                            fadeOut(tween(aetherDuration(AetherDur.Quick)))
+                        fadeIn(tween(wordFadeInMs)) togetherWith fadeOut(tween(wordFadeOutMs))
                     },
                     label = "word",
                 ) { word ->

@@ -95,6 +95,14 @@ fun ConnectionMeta(
     val ping by PingMonitor.state.collectAsState()
     val scope = rememberCoroutineScope()
 
+    // AnimatedContent's transitionSpec is a PLAIN lambda, not a @Composable one,
+    // so aetherDuration (a @Composable read of LocalReducedMotion) cannot be
+    // called inside it. Resolve both lengths here, in composition, and let the
+    // spec capture the Ints. Still theme-aware, still collapses to 0 under
+    // reduced motion.
+    val ipFadeInMs = aetherDuration(AetherDur.Base)
+    val ipFadeOutMs = aetherDuration(AetherDur.Quick)
+
     // Manual-only latency: nothing probes in the background. The value is
     // refreshed exactly when the user taps the tile.
     LaunchedEffect(connected) {
@@ -131,8 +139,7 @@ fun ConnectionMeta(
             AnimatedContent(
                 targetState = ipValue,
                 transitionSpec = {
-                    fadeIn(tween(aetherDuration(AetherDur.Base))) togetherWith
-                        fadeOut(tween(aetherDuration(AetherDur.Quick)))
+                    fadeIn(tween(ipFadeInMs)) togetherWith fadeOut(tween(ipFadeOutMs))
                 },
                 label = "ip",
                 modifier = Modifier.weight(1f),
