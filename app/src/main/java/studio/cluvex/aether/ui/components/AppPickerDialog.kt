@@ -3,7 +3,6 @@ package studio.cluvex.aether.ui.components
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
@@ -31,7 +31,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -40,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,6 +71,23 @@ data class AppEntry(val packageName: String, val label: String)
  *
  * Apps are still loaded off the main thread — PackageManager queries are slow on
  * devices with many apps, and this dialog is opened from a scrolling form.
+ *
+ * WHAT CHANGED IN THIS PASS, and it is the reason this dialog felt sticky on a
+ * phone with a lot of apps installed:
+ *
+ *  - The selection was a SnapshotStateList. Every visible row read it (to decide
+ *    its own checked state) via `contains`, which is a LINEAR scan, and every
+ *    toggle invalidated the whole list, so one tap cost O(rows x selection) list
+ *    walks plus a recomposition of every row on screen. With 300 launchable apps
+ *    and "Select all" pressed, that is exactly the state the interaction is
+ *    designed for and exactly where it stuttered. It is an immutable Set behind a
+ *    single state now: contains is O(1), and a toggle allocates one small set.
+ *  - A row is a `toggleable` node with `Role.Checkbox`. It was a `clickable`, so
+ *    TalkBack read out three hundred identical buttons and never once said
+ *    whether an app was selected — in a dialog whose ENTIRE purpose is choosing
+ *    which apps bypass the tunnel. Getting that wrong silently leaks traffic.
+ *  - Rows have a 48dp floor, because they are a list of small tap targets that
+ *    people scroll fast.
  */
 @Composable
 fun AppPickerDialog(
@@ -82,7 +99,7 @@ fun AppPickerDialog(
     val accents = LocalAetherAccents.current
     var apps by remember { mutableStateOf<List<AppEntry>?>(null) }
     var query by remember { mutableStateOf("") }
-    val chosen = remember { mutableStateListOf<String>().apply { addAll(selected) } }
+    var chosen by remember { mutableStateOf(selected.toSet()) }
 
     LaunchedEffect(Unit) {
         apps = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
@@ -126,8 +143,7 @@ fun AppPickerDialog(
                         label = stringResource(R.string.apps_select_all),
                         onClick = {
                             loaded?.let { all ->
-                                chosen.clear()
-                                chosen.addAll(all.map { it.packageName })
+                                chosen = all.mapTo(LinkedHashSet()) { it.packageName }
                             }
                         },
                         enabled = loaded != null,
@@ -135,7 +151,7 @@ fun AppPickerDialog(
                     )
                     ActionPill(
                         label = stringResource(R.string.apps_select_none),
-                        onClick = { chosen.clear() },
+                        onClick = { chosen = emptySet() },
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
@@ -173,13 +189,14 @@ fun AppPickerDialog(
                             items(filtered, key = { it.packageName }) { app ->
                                 AppRow(
                                     app = app,
-                                    checked = chosen.contains(app.packageName),
+                                    checked = app.packageName in chosen,
                                     tint = accents.brand,
                                     onToggle = {
-                                        if (chosen.contains(app.packageName)) {
-                                            chosen.remove(app.packageName)
+                                        val pkg = app.packageName
+                                        chosen = if (pkg in chosen) {
+                                            chosen - pkg
                                         } else {
-                                            chosen.add(app.packageName)
+                                            chosen + pkg
                                         }
                                     },
                                 )
@@ -218,8 +235,13 @@ private fun AppRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(AetherRadius.Chip))
-            .clickable(onClick = onToggle)
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = { onToggle() },
+            )
             .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

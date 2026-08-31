@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
  * The app backdrop.
@@ -33,6 +34,10 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * Both blooms are drawn in whatever the current [accent] is, so the room the
  * app is in changes colour with the tunnel state — which is the one piece of
  * decoration in this UI that is actually load-bearing information.
+ *
+ * The one transition it does have now goes through [aetherDuration], so on a
+ * phone set to "remove animations" the room changes colour on the next frame
+ * instead of over half a second.
  */
 @Composable
 fun AmbientBackground(
@@ -47,7 +52,7 @@ fun AmbientBackground(
         } else {
             if (accents.dark) 0.08f else 0.05f
         },
-        animationSpec = tween(AetherDur.Slow, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
         label = "bloom",
     )
     val brand = accents.brand

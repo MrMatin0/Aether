@@ -1,9 +1,11 @@
 package studio.cluvex.aether.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
@@ -42,6 +45,12 @@ import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 private const val PAGES = 3
+
+/** The size the page artwork is drawn at when there is room for it. */
+private val ART_MAX = 196.dp
+
+/** The smallest it may shrink to before it stops reading as a figure. */
+private val ART_MIN = 104.dp
 
 /**
  * First-run onboarding.
@@ -61,6 +70,23 @@ private const val PAGES = 3
  * The backdrop is the same [AmbientBackground] as the app, in the brand colour:
  * onboarding is the first impression of the product's room, and it used to be a
  * flat slab.
+ *
+ * WHAT THIS PASS FIXES
+ *
+ *   1. BACK THREW YOU OUT OF FIRST RUN. There was no BackHandler, so the system
+ *      back gesture on page 2 or 3 went straight to the Activity and finished it.
+ *      A three-page pager is the most obviously back-navigable thing in any app;
+ *      being unable to return to the page you just read, on the one screen with
+ *      no other way out, is the kind of thing people read as "this app crashed".
+ *      Back is a page back now, and only leaves from page one.
+ *   2. THE COPY FELL OFF SHORT SCREENS. The artwork was a hard 196dp square with
+ *      a fixed 40dp gap under it, inside a centred column with NO scroll
+ *      container. On a short viewport — a small phone, a phone in split screen,
+ *      or any phone at a large system font scale — the body paragraph simply ran
+ *      past the bottom edge with no way to reach it, and the paragraph is the
+ *      only thing on the page that explains anything. Both the figure and the
+ *      gap are now proportional to the height the pager actually got, so the
+ *      text is always the part that keeps its space.
  */
 @Composable
 fun OnboardingScreen(onFinished: () -> Unit) {
@@ -68,6 +94,10 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     val scope = rememberCoroutineScope()
     val accents = LocalAetherAccents.current
     val brand = accents.brand
+
+    BackHandler(enabled = pagerState.currentPage > 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AmbientBackground(accent = brand, active = false)
@@ -110,40 +140,52 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 state = pagerState,
                 modifier = Modifier.weight(1f),
             ) { page ->
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center,
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    // Proportional, not fixed: the words are the payload here, so
+                    // the decoration is what gives up space when there is less of
+                    // it. See the class comment.
+                    val art = (maxHeight * 0.30f).coerceIn(ART_MIN, ART_MAX)
+                    val gap = (maxHeight * 0.06f).coerceIn(16.dp, 40.dp)
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
                     ) {
-                        PageArt(page = page, accent = brand, highlight = accents.protected)
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            PageArt(
+                                page = page,
+                                accent = brand,
+                                highlight = accents.protected,
+                                size = art,
+                            )
+                        }
+                        Spacer(Modifier.height(gap))
+                        Text(
+                            text = stringResource(
+                                when (page) {
+                                    0 -> R.string.onboarding_title_1
+                                    1 -> R.string.onboarding_title_2
+                                    else -> R.string.onboarding_title_3
+                                },
+                            ),
+                            style = MaterialTheme.typography.displaySmall,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = stringResource(
+                                when (page) {
+                                    0 -> R.string.onboarding_body_1
+                                    1 -> R.string.onboarding_body_2
+                                    else -> R.string.onboarding_body_3
+                                },
+                            ),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    Spacer(Modifier.height(40.dp))
-                    Text(
-                        text = stringResource(
-                            when (page) {
-                                0 -> R.string.onboarding_title_1
-                                1 -> R.string.onboarding_title_2
-                                else -> R.string.onboarding_title_3
-                            },
-                        ),
-                        style = MaterialTheme.typography.displaySmall,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = stringResource(
-                            when (page) {
-                                0 -> R.string.onboarding_body_1
-                                1 -> R.string.onboarding_body_2
-                                else -> R.string.onboarding_body_3
-                            },
-                        ),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
 
@@ -196,14 +238,17 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 /**
  * Page artwork: an aperture (the app's own motif), a signal profile with one
  * chosen peak, and a field of nodes with a single one lit.
+ *
+ * Every dimension inside is a fraction of [size], so the figures stay themselves
+ * at any diameter the pager hands them.
  */
 @Composable
-private fun PageArt(page: Int, accent: Color, highlight: Color) {
+private fun PageArt(page: Int, accent: Color, highlight: Color, size: Dp) {
     val muted = MaterialTheme.colorScheme.outlineVariant
-    Canvas(modifier = Modifier.size(196.dp)) {
-        val radius = size.minDimension / 2f
-        val cx = size.width / 2f
-        val cy = size.height / 2f
+    Canvas(modifier = Modifier.size(size)) {
+        val radius = this.size.minDimension / 2f
+        val cx = this.size.width / 2f
+        val cy = this.size.height / 2f
         when (page) {
             0 -> {
                 // A quieter echo of the connect orb: concentric rings plus one
@@ -229,14 +274,14 @@ private fun PageArt(page: Int, accent: Color, highlight: Color) {
             }
             1 -> {
                 val heights = listOf(0.30f, 0.55f, 0.95f, 0.45f, 0.68f)
-                val gap = size.width / (heights.size + 1)
+                val gap = this.size.width / (heights.size + 1)
                 heights.forEachIndexed { index, factor ->
                     val x = gap * (index + 1)
                     val isPick = index == 2
                     drawLine(
                         color = if (isPick) highlight else muted,
-                        start = Offset(x, size.height * 0.9f),
-                        end = Offset(x, size.height * (0.9f - 0.75f * factor)),
+                        start = Offset(x, this.size.height * 0.9f),
+                        end = Offset(x, this.size.height * (0.9f - 0.75f * factor)),
                         strokeWidth = if (isPick) 11.dp.toPx() else 6.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
@@ -244,7 +289,7 @@ private fun PageArt(page: Int, accent: Color, highlight: Color) {
             }
             else -> {
                 val cols = 6
-                val spacing = size.width / (cols + 1)
+                val spacing = this.size.width / (cols + 1)
                 for (row in 1..cols) {
                     for (col in 1..cols) {
                         val lit = row == 3 && col == 4
