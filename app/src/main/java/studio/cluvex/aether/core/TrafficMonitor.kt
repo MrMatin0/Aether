@@ -94,7 +94,16 @@ object TrafficMonitor {
                     val now = SystemClock.elapsedRealtime()
                     var downRate = _sample.value.downloadRate
                     var upRate = _sample.value.uploadRate
-                    if (lastAt > 0L && now > lastAt) {
+                    // REBASE FIX: a core/engine restart resets the native
+                    // counters to zero. The old code only clamped the negative
+                    // delta, so the meter printed 0 B/s for a full second and
+                    // then a catch-up spike once the counters passed their
+                    // pre-restart values. Re-anchor on the new baseline instead,
+                    // so the NEXT tick measures a real interval.
+                    if (lastDown >= 0L && (down < lastDown || up < lastUp)) {
+                        downRate = 0L
+                        upRate = 0L
+                    } else if (lastAt > 0L && now > lastAt) {
                         val dtMs = now - lastAt
                         downRate = ((down - lastDown).coerceAtLeast(0L) * 1000L) / dtMs
                         upRate = ((up - lastUp).coerceAtLeast(0L) * 1000L) / dtMs
@@ -110,6 +119,18 @@ object TrafficMonitor {
                     lastDown = down
                     lastUp = up
                     lastAt = now
+                } else if (_sample.value.live) {
+                    // FROZEN-METER FIX: with every source gone (tunnel torn
+                    // down, engine dead, sharing stopped) the loop used to just
+                    // skip the tick, leaving the last live=true sample — and
+                    // therefore a non-zero speed — on the notification and in
+                    // the UI for as long as the monitor stayed up. Publish a
+                    // dead reading and forget the deltas, so a fresh session's
+                    // counters are never compared against the old one's.
+                    _sample.value = Sample()
+                    lastDown = -1L
+                    lastUp = -1L
+                    lastAt = 0L
                 }
                 delay(TICK_MS)
             }

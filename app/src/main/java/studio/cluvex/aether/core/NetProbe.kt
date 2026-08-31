@@ -17,7 +17,6 @@ import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
-import kotlin.concurrent.thread
 
 /** Public IP + country as reported by a geolocation endpoint. */
 data class IpInfo(val ip: String, val countryCode: String?)
@@ -335,11 +334,23 @@ object NetProbe {
      * octet must be numeric and in range: a silent `and 0xFF` truncation would
      * quietly redirect a probe meant for 1.1.1.999 at 1.1.1.231 and report a
      * PASS against the wrong host.
+     *
+     * RANGE-CHECK FIX: this used to read
+     * `octets.any { it.toIntOrNull() !in 0..255 }`. That looks like a range
+     * test but the receiver is `Int?`, so Kotlin resolves it to
+     * `Iterable<Int?>.contains` — a LINEAR SCAN over all 256 elements of the
+     * range, per octet, on a helper that runs for every single probe. An
+     * explicit null check plus two comparisons is both correct and O(1).
      */
     private fun validateIpv4Literal(host: String) {
         val octets = host.split(".")
-        if (octets.size != 4 || octets.any { it.toIntOrNull() !in 0..255 }) {
-            throw IOException("bad IPv4 literal: $host")
+        if (octets.size != 4) throw IOException("bad IPv4 literal: $host")
+        for (octet in octets) {
+            val value = octet.toIntOrNull()
+                ?: throw IOException("bad IPv4 literal: $host (non-numeric octet '$octet')")
+            if (value < 0 || value > 255) {
+                throw IOException("bad IPv4 literal: $host (octet out of range: $value)")
+            }
         }
     }
 
@@ -384,6 +395,16 @@ object NetProbe {
             req.write(0x00)
             if (useDomain) {
                 val host = destHost.toByteArray(Charsets.US_ASCII)
+                // LENGTH-FIELD FIX: ATYP=0x03 encodes the host length in ONE
+                // byte, and `req.write(int)` writes only the low 8 bits. A host
+                // of 256+ bytes therefore wrote a truncated length, so the proxy
+                // read a short domain followed by trailing garbage where it
+                // expected the port — reported back as a plain "CONNECT
+                // rejected", which is a lie about whose fault it was. Refuse an
+                // unrepresentable host here instead.
+                if (host.isEmpty() || host.size > 255) {
+                    throw IOException("SOCKS5 domain not representable: ${host.size} bytes")
+                }
                 req.write(0x03)
                 req.write(host.size)
                 req.write(host)

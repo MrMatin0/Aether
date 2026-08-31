@@ -257,16 +257,31 @@ object DiagnosticsLog {
             while (buffer.size > MAX_LINES) buffer.removeFirst()
         }
         dirty.set(true)
-        runCatching {
-            // Drain whatever the writer thread has not flushed yet, so the log
-            // ends with a complete picture instead of a hole before the crash.
-            val pending = ArrayList<String>(64)
-            pendingWrites.drainTo(pending)
-            pending.add(line.format())
-            val file = logFile ?: return@runCatching
+
+        // LOG-LOSS FIX: the previous version drained [pendingWrites] FIRST and
+        // only then looked for the log file. If init() had not run yet, or the
+        // append threw, those lines were already off the queue and gone for
+        // good — taking the tail of the log the crash report exists to explain
+        // with them. Resolve the file first, and hand anything we could not
+        // write back to the writer thread instead of dropping it.
+        val file = logFile
+        if (file == null) {
+            pendingWrites.offer(line.format())
+            ensureWriter()
+            return
+        }
+
+        val pending = ArrayList<String>(64)
+        pendingWrites.drainTo(pending)
+        pending.add(line.format())
+        val written = runCatching {
             synchronized(fileLock) {
                 file.appendText(pending.joinToString("\n", postfix = "\n"))
             }
+        }.isSuccess
+        if (!written) {
+            pending.forEach { pendingWrites.offer(it) }
+            ensureWriter()
         }
     }
 
