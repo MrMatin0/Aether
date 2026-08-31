@@ -90,20 +90,17 @@ object TrafficMonitor {
                     val down =
                         (hev?.downloadBytes ?: 0L) + (bridge?.rxBytes ?: 0L) + share.downloadBytes
                     val up =
-                        (hev?.uploadBytes ?: 0L) + (bridge?.uploadOrTx() ?: 0L) + share.uploadBytes
+                        (hev?.uploadBytes ?: 0L) + (bridge?.txBytes ?: 0L) + share.uploadBytes
                     val now = SystemClock.elapsedRealtime()
                     var downRate = _sample.value.downloadRate
                     var upRate = _sample.value.uploadRate
                     // REBASE FIX: a core/engine restart resets the native
                     // counters to zero. The old code only clamped the negative
-                    // delta to 0, so the meter reported 0 B/s for a full second
-                    // and then a catch-up spike once the counters passed their
-                    // pre-restart values. Re-anchor on the new baseline
-                    // instead, so the next tick measures a real interval.
+                    // delta, so the meter printed 0 B/s for a full second and
+                    // then a catch-up spike once the counters passed their
+                    // pre-restart values. Re-anchor on the new baseline instead,
+                    // so the NEXT tick measures a real interval.
                     if (lastDown >= 0L && (down < lastDown || up < lastUp)) {
-                        lastDown = down
-                        lastUp = up
-                        lastAt = now
                         downRate = 0L
                         upRate = 0L
                     } else if (lastAt > 0L && now > lastAt) {
@@ -147,9 +144,6 @@ object TrafficMonitor {
         job = null
         _sample.value = Sample()
     }
-
-    /** The bridge's device→internet counter, named for the direction it means. */
-    private fun SocksTunBridge.Stats.uploadOrTx(): Long = txBytes
 
     /**
      * Instrument-style byte formatting. Locale.US on purpose: AppLocale sets
