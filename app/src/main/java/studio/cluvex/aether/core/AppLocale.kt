@@ -97,7 +97,20 @@ object AppLocale {
      */
     fun wrap(base: Context): Context {
         val language = stored(base)
-        if (language == AppLanguage.SYSTEM) return base
+        if (language == AppLanguage.SYSTEM) {
+            // FOLLOW-THE-PHONE FIX: Locale.setDefault() below is process-wide
+            // and SURVIVES the setting change -- the app is not restarted when
+            // the language is switched. So after picking Persian and then going
+            // back to "follow the system", every String.format / date / number
+            // that relies on the JVM default kept rendering Persian-Indic
+            // digits underneath an English UI (and stayed that way until the
+            // process was killed). Restore the system locale on this path.
+            runCatching {
+                val systemLocale = base.resources.configuration.locales[0]
+                if (Locale.getDefault() != systemLocale) Locale.setDefault(systemLocale)
+            }
+            return base
+        }
         val locale = Locale.forLanguageTag(language.tag)
         // Also set the JVM default so date/number formatting agrees with the UI.
         Locale.setDefault(locale)
