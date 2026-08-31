@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui
 
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
@@ -9,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,6 +86,7 @@ import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherRadius
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.aetherDuration
 
 private const val DEST_HOME = 0
 private const val DEST_DIAGNOSTICS = 1
@@ -106,17 +109,14 @@ private val PAGE = 20.dp
  * "connected but nothing loads" was behind a hamburger) and reachability (a
  * 220dp ring in the upper half of the screen where a thumb cannot go).
  *
- * Two problems were left, and this pass fixes those:
+ * Two problems were left, and the previous pass fixed those:
  *
  *   1. SETTINGS WAS A CLIFF. One destination held seven panels back to back —
  *      language, the whole ~40-control engine surface, saved setups, automation,
  *      session history, sharing, about — roughly 3500dp of scroll. Every setting
- *      was reachable and none of them was findable, and the Everything/Essentials
- *      toggle only reduced the middle third of it. It is now a HUB: six entries
+ *      was reachable and none of them was findable. It is now a HUB: six entries
  *      with one line of description each, opening full pages that have their own
- *      header and a back affordance. Hardware back is wired to the same
- *      navigation, which is the part people notice immediately when it is
- *      missing.
+ *      header and a back affordance.
  *   2. NOTHING WAS GROUPED. The home screen was a single column of rows
  *      separated by identical hairlines, so the eye could not tell which facts
  *      belonged together. Every destination is now a column of cards.
@@ -124,6 +124,30 @@ private val PAGE = 20.dp
  * The dock (action capsule + nav bar) is one floating object at the bottom, and
  * it is hidden on settings subpages: a full page has its own back affordance,
  * and leaving a nav bar under it invites the classic "which back do I press".
+ *
+ * WHAT THIS PASS FIXES — all three are things that only show up once you USE the
+ * shell rather than look at it:
+ *
+ *   1. BACK ONLY WORKED IN ONE PLACE. The BackHandler was enabled exclusively
+ *      inside a settings subpage. Everywhere else the system back gesture fell
+ *      through to the Activity and CLOSED THE APP. So the flow "tap Diagnostics
+ *      because the connection is stuck, read the log, swipe back to watch the
+ *      orb" ended with the app gone, mid-connect. Back now unwinds the path the
+ *      user actually walked: subpage → hub → home → leave. Nothing about a
+ *      bottom nav bar suggests it is a one-way trip, and Android users do not
+ *      reach for an on-screen control to go back.
+ *   2. EVERY DESTINATION FORGOT ITS SCROLL. Each one called rememberScrollState
+ *      inside the AnimatedContent, whose content lambda is a fresh composition
+ *      per route key, so nothing survived leaving a destination. Scroll the
+ *      engine log to the interesting part, glance at Home, come back — top of
+ *      the log again. The states are hoisted out here, where the shell keeps
+ *      them, so they survive tab switches AND rotation.
+ *   3. THE CONNECT TIMER RESTARTED. Same root cause, much worse consequence: the
+ *      elapsed counter inside the orb was owned by the connection destination.
+ *      Leaving that destination during a four-minute Ironclad scan and coming
+ *      back showed 0:00, which reads as "the scan restarted" — precisely the
+ *      belief that makes someone force-quit the app halfway through a scan that
+ *      was about to succeed. It is owned by the shell now.
  */
 @Composable
 fun HomeScreen(
@@ -152,7 +176,21 @@ fun HomeScreen(
     val page = openPage?.let(::settingsPageOrNull)
     val inSubpage = dest == DEST_SETTINGS && page != null
 
-    BackHandler(enabled = inSubpage) { openPage = null }
+    // The whole navigation stack, in one place. Enabled whenever there is
+    // somewhere in the app to go back TO, and disabled on the connection screen
+    // so back there still means "leave", which is what people expect from a
+    // start destination.
+    BackHandler(enabled = inSubpage || dest != DEST_HOME) {
+        if (inSubpage) openPage = null else dest = DEST_HOME
+    }
+
+    // Owned by the shell, not by the destinations: see the class comment. A
+    // destination that is not on screen has no composition to remember anything
+    // in, so anything the user would be annoyed to lose has to live out here.
+    val connectionScroll = rememberScrollState()
+    val diagnosticsScroll = rememberScrollState()
+    val hubScroll = rememberScrollState()
+    val busyElapsed = rememberBusyElapsed(state.isBusy)
 
     // Engine arguments are read at launch, so editing them mid-session would
     // silently do nothing until the next connect. Idle and Error are the only
@@ -169,6 +207,8 @@ fun HomeScreen(
     }
 
     val routeKey = if (inSubpage) "$PAGE_PREFIX${page?.name}" else "$DEST_PREFIX$dest"
+    val routeIn = aetherDuration(AetherDur.Base)
+    val routeOut = aetherDuration(AetherDur.Quick)
 
     Box(modifier = modifier.fillMaxSize()) {
         AmbientBackground(accent = accent, active = state.isConnected)
@@ -199,11 +239,11 @@ fun HomeScreen(
                 targetState = routeKey,
                 transitionSpec = {
                     (
-                        fadeIn(tween(AetherDur.Base, easing = AetherEaseOut)) +
+                        fadeIn(tween(routeIn, easing = AetherEaseOut)) +
                             slideInVertically(
-                                tween(AetherDur.Base, easing = AetherEaseOut),
+                                tween(routeIn, easing = AetherEaseOut),
                             ) { it / 22 }
-                        ) togetherWith fadeOut(tween(AetherDur.Quick))
+                        ) togetherWith fadeOut(tween(routeOut))
                 },
                 label = "route",
                 modifier = Modifier.weight(1f),
@@ -232,8 +272,11 @@ fun HomeScreen(
                     key == "$DEST_PREFIX$DEST_SETTINGS" -> SettingsHub(
                         locked = !settingsEnabled,
                         onOpen = { openPage = it.name },
+                        scrollState = hubScroll,
                     )
-                    key == "$DEST_PREFIX$DEST_DIAGNOSTICS" -> DiagnosticsDestination()
+                    key == "$DEST_PREFIX$DEST_DIAGNOSTICS" -> DiagnosticsDestination(
+                        scrollState = diagnosticsScroll,
+                    )
                     else -> ConnectionDestination(
                         state = state,
                         profile = profile,
@@ -242,6 +285,8 @@ fun HomeScreen(
                         connectedSince = connectedSince,
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
+                        busyElapsed = busyElapsed,
+                        scrollState = connectionScroll,
                         onToggleConnection = onPrimaryAction,
                     )
                 }
@@ -253,7 +298,13 @@ fun HomeScreen(
                     accent = accent,
                     brand = accents.brand,
                     selected = dest,
-                    onSelect = { dest = it },
+                    onSelect = { target ->
+                        // Clearing the open page on every destination change keeps
+                        // "Settings" in the nav bar meaning the hub, not whichever
+                        // page happened to be open the last time.
+                        openPage = null
+                        dest = target
+                    },
                     onPrimaryAction = onPrimaryAction,
                 )
             }
@@ -309,7 +360,7 @@ private fun StateChip(mode: ButtonMode, accent: Color) {
     val label = stateLabel(mode)
     val tint by animateColorAsState(
         targetValue = accent,
-        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Base), easing = AetherEaseOut),
         label = "chip",
     )
     Row(
@@ -379,7 +430,7 @@ private fun PrimaryAction(
     val forward = mode == ButtonMode.IDLE || mode == ButtonMode.ERROR
     val tint by animateColorAsState(
         targetValue = if (forward) brand else accent,
-        animationSpec = tween(AetherDur.Base, easing = AetherEaseOut),
+        animationSpec = tween(aetherDuration(AetherDur.Base), easing = AetherEaseOut),
         label = "action",
     )
 
@@ -472,14 +523,15 @@ private fun NavItem(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val swap = aetherDuration(AetherDur.Quick)
     val content by animateColorAsState(
         targetValue = if (active) brand else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        animationSpec = tween(swap, easing = AetherEaseOut),
         label = "navfg",
     )
     val fill by animateColorAsState(
         targetValue = if (active) brand.copy(alpha = 0.14f) else Color.Transparent,
-        animationSpec = tween(AetherDur.Quick, easing = AetherEaseOut),
+        animationSpec = tween(swap, easing = AetherEaseOut),
         label = "navbg",
     )
     Column(
@@ -518,6 +570,8 @@ private fun ConnectionDestination(
     connectedSince: Long?,
     ipInfo: IpEndpoint?,
     ipLoading: Boolean,
+    busyElapsed: String?,
+    scrollState: ScrollState,
     onToggleConnection: () -> Unit,
 ) {
     val busy = state.isBusy
@@ -542,7 +596,7 @@ private fun ConnectionDestination(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = PAGE),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -551,10 +605,10 @@ private fun ConnectionDestination(
             mode = mode,
             onClick = onToggleConnection,
             // The orb is the primary control and it is drawn on a Canvas, so
-            // without these it is an unlabelled 256dp box to TalkBack.
+            // without these it is an unlabelled box to TalkBack.
             stateLabel = stateTitle(state),
             actionLabel = actionLabel(mode),
-            detail = rememberBusyElapsed(busy),
+            detail = busyElapsed,
             progress = progress,
         )
         Spacer(Modifier.height(14.dp))
@@ -594,11 +648,11 @@ private fun ConnectionDestination(
 }
 
 @Composable
-private fun DiagnosticsDestination() {
+private fun DiagnosticsDestination(scrollState: ScrollState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = PAGE, vertical = 4.dp),
     ) {
         DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 360.dp)
@@ -610,7 +664,22 @@ private fun DiagnosticsDestination() {
  * A visible clock while the engine works, shown inside the orb.
  *
  * Without it, a four-minute Ironclad scan and a hung process look identical, and
- * people force-quit the app mid-scan.
+ * people force-quit the app mid-scan. Which makes it the last readout in the app
+ * that should be allowed to lie — and it did, twice:
+ *
+ *   - It counted with a local `seconds` that was keyed on `remember(active)`, so
+ *     it restarted from zero every time this destination left composition (a tab
+ *     switch) or the Activity was recreated (a rotation). "The scan restarted"
+ *     is the single worst thing this counter can imply. The anchor is a saved
+ *     TIMESTAMP now, so the count is derived rather than accumulated, and it is
+ *     hoisted into the shell so leaving the screen cannot touch it.
+ *   - `delay(1000)` after the increment drifts by the frame time on every tick,
+ *     which is visible as a repeated then skipped second. It now sleeps to the
+ *     next whole second of the session.
+ *
+ * elapsedRealtime, not currentTimeMillis: a clock correction (routine on a phone
+ * that just came out of airplane mode, which is a very normal way to start a VPN
+ * session) must not be able to rewind the counter.
  *
  * [formatDuration] pins Locale.US on purpose: AppLocale sets the JVM default to
  * fa, so a plain "%d".format() printed the clock in Persian-Indic digits while
@@ -620,15 +689,28 @@ private fun DiagnosticsDestination() {
  */
 @Composable
 private fun rememberBusyElapsed(active: Boolean): String? {
-    var seconds by remember(active) { mutableIntStateOf(0) }
+    var startedAt by rememberSaveable { mutableStateOf(0L) }
+    var now by remember { mutableStateOf(0L) }
+
     LaunchedEffect(active) {
-        if (!active) return@LaunchedEffect
+        if (!active) {
+            startedAt = 0L
+            return@LaunchedEffect
+        }
+        if (startedAt == 0L) startedAt = SystemClock.elapsedRealtime()
+        val anchor = startedAt
         while (true) {
-            delay(1000L)
-            seconds += 1
+            val tick = SystemClock.elapsedRealtime()
+            now = tick
+            val intoSecond = (tick - anchor).coerceAtLeast(0L) % 1000L
+            delay((1000L - intoSecond).coerceIn(1L, 1000L))
         }
     }
-    return if (active) formatDuration(seconds * 1000L) else null
+
+    if (!active) return null
+    val anchor = startedAt
+    if (anchor == 0L) return formatDuration(0L)
+    return formatDuration((now - anchor).coerceAtLeast(0L))
 }
 
 // ----------------------------------------------------------------- copy -----

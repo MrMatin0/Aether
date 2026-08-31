@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -92,18 +93,26 @@ internal fun settingsPageIcon(page: SettingsPage): ImageVector = when (page) {
     SettingsPage.ABOUT -> Icons.Rounded.Info
 }
 
-/** The hub. Two grouped cards, six entries, one line of description each. */
+/**
+ * The hub. Two grouped cards, six entries, one line of description each.
+ *
+ * [scrollState] is a parameter rather than an internal `rememberScrollState` so
+ * the shell can own it. The hub lives inside an AnimatedContent, whose content
+ * lambda is a fresh composition per route, so anything remembered in here is
+ * discarded the moment the user taps another destination.
+ */
 @Composable
 fun SettingsHub(
     locked: Boolean,
     onOpen: (SettingsPage) -> Unit,
     modifier: Modifier = Modifier,
+    scrollState: ScrollState = rememberScrollState(),
 ) {
     val accents = LocalAetherAccents.current
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp),
     ) {
         if (locked) {
@@ -156,6 +165,10 @@ private fun HubRow(
  * the same ConnectionProfile property through the same synchronous
  * onProfileChange path, so the scrambled-input fix and the DataStore write
  * behaviour are untouched.
+ *
+ * The scroll state is deliberately NOT hoisted here, unlike the hub's: opening a
+ * settings page should start at the top of it every time. Only the destinations
+ * you tab away from and back to need to remember where you were.
  */
 @Composable
 fun SettingsPageBody(
