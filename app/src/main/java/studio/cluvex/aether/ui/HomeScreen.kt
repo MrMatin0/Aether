@@ -109,17 +109,9 @@ private val PAGE = 20.dp
  * "connected but nothing loads" was behind a hamburger) and reachability (a
  * 220dp ring in the upper half of the screen where a thumb cannot go).
  *
- * Two problems were left, and the previous pass fixed those:
- *
- *   1. SETTINGS WAS A CLIFF. One destination held seven panels back to back —
- *      language, the whole ~40-control engine surface, saved setups, automation,
- *      session history, sharing, about — roughly 3500dp of scroll. Every setting
- *      was reachable and none of them was findable. It is now a HUB: six entries
- *      with one line of description each, opening full pages that have their own
- *      header and a back affordance.
- *   2. NOTHING WAS GROUPED. The home screen was a single column of rows
- *      separated by identical hairlines, so the eye could not tell which facts
- *      belonged together. Every destination is now a column of cards.
+ * The pass before this one turned Settings from a ~3500dp single scroll into a
+ * six-entry HUB, and turned every destination from a column of hairline-separated
+ * rows into a column of cards, so the eye can tell which facts belong together.
  *
  * The dock (action capsule + nav bar) is one floating object at the bottom, and
  * it is hidden on settings subpages: a full page has its own back affordance,
@@ -142,12 +134,8 @@ private val PAGE = 20.dp
  *      engine log to the interesting part, glance at Home, come back — top of
  *      the log again. The states are hoisted out here, where the shell keeps
  *      them, so they survive tab switches AND rotation.
- *   3. THE CONNECT TIMER RESTARTED. Same root cause, much worse consequence: the
- *      elapsed counter inside the orb was owned by the connection destination.
- *      Leaving that destination during a four-minute Ironclad scan and coming
- *      back showed 0:00, which reads as "the scan restarted" — precisely the
- *      belief that makes someone force-quit the app halfway through a scan that
- *      was about to succeed. It is owned by the shell now.
+ *   3. THE CONNECT TIMER RESTARTED. Same root cause, much worse consequence: see
+ *      [rememberBusyAnchor].
  */
 @Composable
 fun HomeScreen(
@@ -184,13 +172,13 @@ fun HomeScreen(
         if (inSubpage) openPage = null else dest = DEST_HOME
     }
 
-    // Owned by the shell, not by the destinations: see the class comment. A
-    // destination that is not on screen has no composition to remember anything
-    // in, so anything the user would be annoyed to lose has to live out here.
+    // Owned by the shell, not by the destinations: a destination that is not on
+    // screen has no composition to remember anything in, so anything the user
+    // would be annoyed to lose has to live out here.
     val connectionScroll = rememberScrollState()
     val diagnosticsScroll = rememberScrollState()
     val hubScroll = rememberScrollState()
-    val busyElapsed = rememberBusyElapsed(state.isBusy)
+    val busyAnchor = rememberBusyAnchor(state.isBusy)
 
     // Engine arguments are read at launch, so editing them mid-session would
     // silently do nothing until the next connect. Idle and Error are the only
@@ -285,7 +273,7 @@ fun HomeScreen(
                         connectedSince = connectedSince,
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
-                        busyElapsed = busyElapsed,
+                        busyAnchor = busyAnchor,
                         scrollState = connectionScroll,
                         onToggleConnection = onPrimaryAction,
                     )
@@ -570,7 +558,7 @@ private fun ConnectionDestination(
     connectedSince: Long?,
     ipInfo: IpEndpoint?,
     ipLoading: Boolean,
-    busyElapsed: String?,
+    busyAnchor: Long?,
     scrollState: ScrollState,
     onToggleConnection: () -> Unit,
 ) {
@@ -608,7 +596,7 @@ private fun ConnectionDestination(
             // without these it is an unlabelled box to TalkBack.
             stateLabel = stateTitle(state),
             actionLabel = actionLabel(mode),
-            detail = busyElapsed,
+            detail = rememberElapsedLabel(busyAnchor),
             progress = progress,
         )
         Spacer(Modifier.height(14.dp))
@@ -661,25 +649,50 @@ private fun DiagnosticsDestination(scrollState: ScrollState) {
 }
 
 /**
- * A visible clock while the engine works, shown inside the orb.
+ * When the current piece of work started, or null when nothing is working.
  *
- * Without it, a four-minute Ironclad scan and a hung process look identical, and
- * people force-quit the app mid-scan. Which makes it the last readout in the app
- * that should be allowed to lie — and it did, twice:
+ * WHY THIS IS SPLIT IN TWO (an anchor here, the ticking in [rememberElapsedLabel])
  *
- *   - It counted with a local `seconds` that was keyed on `remember(active)`, so
- *     it restarted from zero every time this destination left composition (a tab
- *     switch) or the Activity was recreated (a rotation). "The scan restarted"
- *     is the single worst thing this counter can imply. The anchor is a saved
- *     TIMESTAMP now, so the count is derived rather than accumulated, and it is
- *     hoisted into the shell so leaving the screen cannot touch it.
- *   - `delay(1000)` after the increment drifts by the frame time on every tick,
- *     which is visible as a repeated then skipped second. It now sleeps to the
- *     next whole second of the session.
+ * The visible clock inside the orb is what stops a four-minute Ironclad scan and
+ * a hung process from looking identical — without it, people force-quit the app
+ * mid-scan. Which makes it the last readout in this app that should be allowed to
+ * lie, and it did: it counted with a local `seconds` keyed on `remember(active)`,
+ * so it restarted from ZERO every time the connection destination left
+ * composition (any tab switch) or the Activity was recreated (any rotation).
+ * "The scan restarted" is precisely the belief that makes someone kill a scan
+ * that was about to succeed.
+ *
+ * The fix is to stop accumulating and start deriving. What the shell owns is one
+ * saved TIMESTAMP, which changes exactly twice per attempt — when work starts and
+ * when it stops. The once-a-second tick stays down in the destination that draws
+ * it. Hoisting the whole counter up here instead would have worked and cost a
+ * recomposition of the entire shell every second while connecting; fixing a state
+ * bug by paying for it in frames is not a fix.
  *
  * elapsedRealtime, not currentTimeMillis: a clock correction (routine on a phone
  * that just came out of airplane mode, which is a very normal way to start a VPN
  * session) must not be able to rewind the counter.
+ */
+@Composable
+private fun rememberBusyAnchor(active: Boolean): Long? {
+    var startedAt by rememberSaveable { mutableStateOf(0L) }
+    LaunchedEffect(active) {
+        if (!active) {
+            startedAt = 0L
+        } else if (startedAt == 0L) {
+            startedAt = SystemClock.elapsedRealtime()
+        }
+    }
+    return if (active && startedAt != 0L) startedAt else null
+}
+
+/**
+ * A `m:ss` clock counting up from [since], or null when there is nothing to count.
+ *
+ * The tick sleeps to the next whole second OF THE SESSION rather than a flat
+ * `delay(1000)`. A flat delay is late by however long the frame took and the
+ * error accumulates, whose visible symptom is a clock that shows the same second
+ * twice and then skips one.
  *
  * [formatDuration] pins Locale.US on purpose: AppLocale sets the JVM default to
  * fa, so a plain "%d".format() printed the clock in Persian-Indic digits while
@@ -688,29 +701,18 @@ private fun DiagnosticsDestination(scrollState: ScrollState) {
  * with one of them. Prose keeps the locale's digits; instruments do not.
  */
 @Composable
-private fun rememberBusyElapsed(active: Boolean): String? {
-    var startedAt by rememberSaveable { mutableStateOf(0L) }
-    var now by remember { mutableStateOf(0L) }
-
-    LaunchedEffect(active) {
-        if (!active) {
-            startedAt = 0L
-            return@LaunchedEffect
-        }
-        if (startedAt == 0L) startedAt = SystemClock.elapsedRealtime()
-        val anchor = startedAt
+private fun rememberElapsedLabel(since: Long?): String? {
+    var now by remember(since) { mutableStateOf(since ?: 0L) }
+    LaunchedEffect(since) {
+        if (since == null) return@LaunchedEffect
         while (true) {
             val tick = SystemClock.elapsedRealtime()
             now = tick
-            val intoSecond = (tick - anchor).coerceAtLeast(0L) % 1000L
+            val intoSecond = (tick - since).coerceAtLeast(0L) % 1000L
             delay((1000L - intoSecond).coerceIn(1L, 1000L))
         }
     }
-
-    if (!active) return null
-    val anchor = startedAt
-    if (anchor == 0L) return formatDuration(0L)
-    return formatDuration((now - anchor).coerceAtLeast(0L))
+    return if (since == null) null else formatDuration((now - since).coerceAtLeast(0L))
 }
 
 // ----------------------------------------------------------------- copy -----

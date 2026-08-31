@@ -2,6 +2,7 @@ package studio.cluvex.aether
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -14,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -46,6 +48,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var profileStore: ProfileStore
     private lateinit var onboardingStore: OnboardingStore
     private var pendingProfile: ConnectionProfile? = null
+
+    /** One prompt per process. See [maybeRequestNotificationPermission]. */
+    private var notificationPromptShown = false
 
     private val uiProfile = MutableStateFlow<ConnectionProfile?>(null)
     private val profileSaves = MutableSharedFlow<ConnectionProfile>(
@@ -90,7 +95,14 @@ class MainActivity : ComponentActivity() {
             profileSaves.conflate().collect { snapshot -> profileStore.save(snapshot) }
         }
 
-        maybeRequestNotificationPermission()
+        // NOT unconditionally, and not here-and-now for a first-run user: see
+        // maybeRequestNotificationPermission. A returning user still gets asked
+        // as early as possible, because the session notification is the only
+        // place the live throughput readout exists.
+        lifecycleScope.launch {
+            if (onboardingStore.completed.first()) maybeRequestNotificationPermission()
+        }
+
         if (savedInstanceState == null && File(filesDir, AetherApp.CRASH_FILE).exists()) {
             startActivity(Intent(this, CrashReportActivity::class.java))
         }
@@ -152,7 +164,14 @@ class MainActivity : ComponentActivity() {
                     if (!onboardingDone) {
                         OnboardingScreen(
                             onFinished = {
-                                lifecycleScope.launch { onboardingStore.markCompleted() }
+                                lifecycleScope.launch {
+                                    onboardingStore.markCompleted()
+                                    // Now, and not a moment earlier: the user has
+                                    // just been told what the app does, so the
+                                    // permission dialog is a question they can
+                                    // actually answer.
+                                    maybeRequestNotificationPermission()
+                                }
                             },
                         )
                     } else {
@@ -215,8 +234,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Ask for POST_NOTIFICATIONS, at a moment where the question makes sense.
+     *
+     * WHAT WAS WRONG: this was called unconditionally from onCreate. On a first
+     * launch that put the system permission dialog on top of page one of
+     * onboarding, before a single word had explained why a VPN client wants to
+     * post notifications — and the session notification is not decoration here,
+     * it is where the live throughput readout lives and the only thing that keeps
+     * the foreground service honest. A dialog nobody has been given a reason for
+     * gets dismissed, and on Android 13+ two dismissals mean the permission is
+     * permanently denied with no in-app way back. Asking after onboarding costs
+     * nothing and turns a reflex into an answer.
+     *
+     * It is also guarded twice now: not re-asked when already granted (onCreate
+     * runs again on every rotation, and firing a launcher for a permission the
+     * app already holds is pure noise), and not more than once per process.
+     */
     private fun maybeRequestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationPromptShown) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        notificationPromptShown = true
+        runCatching {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
     }
