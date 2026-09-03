@@ -153,6 +153,12 @@ android {
     namespace = "studio.cluvex.aether"
     compileSdk = 37
 
+    // AGP 9 creates unit-test tasks only for the tested build type. CI invokes
+    // testReleaseUnitTest, so make release the tested build type explicitly.
+    // Without this, AGP registers testDebugUnitTest only and configuration
+    // fails before Gradle can run any task.
+    testBuildType = "release"
+
     defaultConfig {
         // FORK IDENTITY. Upstream ships studio.cluvex.aether; the package name
         // is the unique key the platform installs an app under, so as long as
@@ -169,7 +175,7 @@ android {
         // applicationId so the whole "this is not the upstream build" identity
         // lives in one place, and so two icons with the exact same name can
         // never sit next to each other on the home screen.
-        // Needs buildFeatures.resValues below: AGP 9 stopped enabling that
+        // Needs buildFeatures.resValues below: AGP 9 stopped enabling it
         // implicitly, and configuration fails outright if this call is present
         // while the feature is off.
         resValue("string", "app_label", "Aether (Fork)")
@@ -228,7 +234,6 @@ android {
             //    that class and its native methods must keep their names;
             //  - enum names are persisted through DataStore, so valueOf() must
             //    keep working.
-            // Manifest components are kept by AGP automatically.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
