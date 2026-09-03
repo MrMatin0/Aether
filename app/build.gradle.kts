@@ -15,7 +15,10 @@ val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
 
 // The variant callbacks below must not read the android DSL back (AGP 9 no longer
 // guarantees that is safe), so the base version code lives here instead.
-val baseVersionCode = 10
+// 1.4.5: 10 -> 13. This MUST move with versionName, otherwise Android treats the
+// new APK as the same build and refuses to install it as an update. 11 and 12
+// belong to the 1.4.3 / 1.4.4 line, so they are skipped rather than reused.
+val baseVersionCode = 13
 
 val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
@@ -103,15 +106,39 @@ val fetchVazirmatn = tasks.register("fetchVazirmatn") {
 }
 
 android {
+    // NOTE: namespace != applicationId on purpose.
+    //
+    // The namespace only decides which package R and BuildConfig are generated
+    // into, i.e. it is a COMPILE-TIME concern and every Kotlin file already
+    // declares `package studio.cluvex.aether.*`. Renaming it would mean moving
+    // the entire source tree and rewriting every import for zero runtime gain,
+    // so it stays as it is. What Android actually keys the installed app on is
+    // the applicationId below, and that is what this fork changes.
     namespace = "studio.cluvex.aether"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "studio.cluvex.aether"
+        // FORK IDENTITY. Upstream ships studio.cluvex.aether; the package name
+        // is the unique key the platform installs an app under, so as long as
+        // this fork reused it the two builds were the same app to Android and
+        // installing one replaced the other. With a distinct id both can live
+        // on the same device side by side.
+        //
+        // Consequence, on purpose: this is a NEW app to the system, so it gets
+        // its own private data directory. Settings from an earlier build of
+        // this fork are not carried over, and updating in place from it is not
+        // possible - it has to be installed next to (or instead of) the old one.
+        applicationId = "io.github.mrmatin0.aether"
         minSdk = 26
         targetSdk = 37
         versionCode = baseVersionCode
-        versionName = "1.3.0"
+        versionName = "1.4.5"
+
+        // Launcher, Quick Settings tile and widget label. Defined here next to
+        // the applicationId so the whole "this is not the upstream build"
+        // identity lives in one place, and so two icons with the exact same
+        // name can never sit next to each other on the home screen.
+        resValue("string", "app_label", "Aether (Fork)")
 
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
