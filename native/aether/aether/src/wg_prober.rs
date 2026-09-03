@@ -1,126 +1,35 @@
+//! WireGuard endpoint selection: WHAT to probe, and how to verify ONE
+//! candidate.
+//!
+//! The scanner itself lives in [`crate::prober::scan`] and is shared with the
+//! MASQUE prober. This file used to carry a second copy of it - its own
+//! five-variant mode enum, its own tuning table, its own candidate builder and
+//! its own CIDR sampler - which is why the two paths kept drifting apart.
+
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use futures::stream::StreamExt;
-use rand::RngExt;
+use std::time::Duration;
 
 use crate::aethernoize::AetherNoizeConfig;
 use crate::error::{AetherError, Result};
-use crate::prober::IpScan;
+use crate::prober::scan::{self, Family, IpScan};
 use crate::wireguard;
+
+/// The scan modes are the SAME three modes for both transports; only the
+/// tuning differs. The alias keeps older call sites (`wg_prober::WgScanMode`)
+/// compiling.
+pub use crate::prober::scan::ScanMode as WgScanMode;
+
+/// How long a real HTTP round trip through a candidate may take in the
+/// deep-verifying mode before that candidate is written off.
+const DEEP_PING_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 pub struct WgProbeResult {
     pub ip: IpAddr,
     pub port: u16,
     pub rtt: Duration,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WgScanMode {
-    Turbo,
-    Balanced,
-    Thorough,
-    Stealth,
-    Ironclad,
-}
-
-impl WgScanMode {
-    pub fn parse(s: &str) -> WgScanMode {
-        match s.trim().to_lowercase().as_str() {
-            "turbo" | "fast" => WgScanMode::Turbo,
-            "thorough" | "deep" | "pro" => WgScanMode::Thorough,
-            "stealth" | "quiet" => WgScanMode::Stealth,
-            "ironclad" | "real" | "verify" | "guaranteed" => WgScanMode::Ironclad,
-            _ => WgScanMode::Balanced,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            WgScanMode::Turbo => "turbo",
-            WgScanMode::Balanced => "balanced",
-            WgScanMode::Thorough => "thorough",
-            WgScanMode::Stealth => "stealth",
-            WgScanMode::Ironclad => "ironclad",
-        }
-    }
-
-    fn strategy(&self) -> WgStrategy {
-        match self {
-            WgScanMode::Turbo => WgStrategy {
-                concurrency: 12,
-                per_probe_timeout: Duration::from_millis(5000),
-                overall_deadline: Duration::from_secs(30),
-                quiet_after_first: Duration::from_secs(0),
-                target_successes: 1,
-                early_exit_first: true,
-                full_subnet: false,
-                sample_per_cidr: 40,
-                pool_port_waves: 1,
-            },
-            WgScanMode::Balanced => WgStrategy {
-                concurrency: 8,
-                per_probe_timeout: Duration::from_millis(7000),
-                overall_deadline: Duration::from_secs(80),
-                quiet_after_first: Duration::from_secs(12),
-                target_successes: 5,
-                early_exit_first: false,
-                full_subnet: false,
-                sample_per_cidr: 120,
-                pool_port_waves: 3,
-            },
-            WgScanMode::Thorough => WgStrategy {
-                concurrency: 10,
-                per_probe_timeout: Duration::from_millis(9000),
-                overall_deadline: Duration::from_secs(250),
-                quiet_after_first: Duration::from_secs(25),
-                target_successes: 0,
-                early_exit_first: false,
-                full_subnet: true,
-                sample_per_cidr: 0,
-                pool_port_waves: 4,
-            },
-            WgScanMode::Stealth => WgStrategy {
-                concurrency: 3,
-                per_probe_timeout: Duration::from_millis(10000),
-                overall_deadline: Duration::from_secs(150),
-                quiet_after_first: Duration::from_secs(20),
-                target_successes: 3,
-                early_exit_first: false,
-                full_subnet: false,
-                sample_per_cidr: 50,
-                pool_port_waves: 2,
-            },
-            WgScanMode::Ironclad => WgStrategy {
-                concurrency: 4,
-                per_probe_timeout: Duration::from_millis(15000),
-                overall_deadline: Duration::from_secs(180),
-                quiet_after_first: Duration::from_secs(15),
-                target_successes: 3,
-                early_exit_first: false,
-                full_subnet: false,
-                sample_per_cidr: 120,
-                pool_port_waves: 3,
-            },
-        }
-    }
-}
-
-const WG_IRONCLAD_TCPING_TIMEOUT: Duration = Duration::from_secs(10);
-
-struct WgStrategy {
-    concurrency: usize,
-    per_probe_timeout: Duration,
-    overall_deadline: Duration,
-    quiet_after_first: Duration,
-    target_successes: usize,
-    early_exit_first: bool,
-    full_subnet: bool,
-    sample_per_cidr: usize,
-    pool_port_waves: usize,
 }
 
 #[derive(Clone)]
@@ -143,152 +52,130 @@ pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<
         .ok_or(AetherError::NoCleanEndpoint)
 }
 
+/// Finds up to [`want`] endpoints on DISTINCT addresses, best first.
+///
+/// Warp-in-warp asks for two, because using one address for both hops is not
+/// warp-in-warp.
 pub async fn hunt_wg_endpoints(
     probe: &WgProbe,
     mode: WgScanMode,
     want: usize,
 ) -> Result<Vec<WgProbeResult>> {
     let want = want.max(1);
-    let mut st = mode.strategy();
-    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
-    let timeout = st.per_probe_timeout;
-    let mut effective_ip = probe.ip;
-    if probe.ip.want_v6() && !crate::prober::host_has_ipv6().await {
-        if probe.ip.want_v4() {
-            log::warn!("[-] host has no IPv6 route; falling back to IPv4-only scan");
-            effective_ip = IpScan::V4;
-        } else {
-            log::warn!("[-] host has no IPv6 route; IPv6 scan needs native IPv6 connectivity");
-            return Err(AetherError::NoCleanEndpoint);
-        }
-    }
-    let candidates = build_wg_candidates(&st, &probe.ports, effective_ip, &probe.excluded);
+    let mut tuning = mode.tuning(Family::WireGuard);
+    tuning.concurrency = crate::sysprofile::cap_concurrency(tuning.concurrency);
 
-    log::info!(
-        "[*] wireguard scan mode={} ip={} candidates={} ports={:?} concurrency={} per_probe={:?} budget={:?}",
-        mode.label(),
-        effective_ip.label(),
-        candidates.len(),
-        probe.ports,
-        st.concurrency,
-        st.per_probe_timeout,
-        st.overall_deadline,
+    let ip = match scan::usable_ip(probe.ip).await {
+        Some(ip) => ip,
+        None => return Err(AetherError::NoCleanEndpoint),
+    };
+
+    let ports = scan::dedup_ports(&probe.ports, 2408);
+    let pinned = pinned_cidrs_v4();
+    let cidrs_v4: Vec<String> = match &pinned {
+        Some(list) => list.clone(),
+        None => wireguard::wg_prefixes_v4()
+            .iter()
+            .map(|c| c.to_string())
+            .collect(),
+    };
+    let cidrs_v6: Vec<String> = wireguard::wg_prefixes_v6()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    // A pinned range means "scan exactly this", so the built-in seeds - which
+    // live outside it - are dropped instead of being tried first.
+    let anchors_v4: Vec<Ipv4Addr> = match pinned.is_some() {
+        true => Vec::new(),
+        false => wireguard::wg_seeds_v4()
+            .iter()
+            .filter_map(|s| s.parse().ok())
+            .collect(),
+    };
+    let anchors_v6: Vec<Ipv6Addr> = match pinned.is_some() {
+        true => Vec::new(),
+        false => wireguard::WG_SEEDS_V6
+            .iter()
+            .filter_map(|s| s.parse().ok())
+            .collect(),
+    };
+
+    let targets = scan::build_targets(
+        &scan::TargetPlan {
+            ip,
+            ports: &ports,
+            anchors_v4: &anchors_v4,
+            anchors_v6: &anchors_v6,
+            cidrs_v4: &cidrs_v4,
+            cidrs_v6: &cidrs_v6,
+            excluded: &probe.excluded,
+        },
+        &tuning,
     );
 
-    let ironclad = mode == WgScanMode::Ironclad;
+    log::info!(
+        "[*] wireguard scan mode={} ip={} want={} candidates={} ports={:?} concurrency={} per_probe={:?} budget={:?}{}{}",
+        mode.label(),
+        ip.label(),
+        want,
+        targets.len(),
+        ports,
+        tuning.concurrency,
+        tuning.probe_timeout,
+        tuning.budget,
+        if tuning.deep_verify {
+            " verify=real-http"
+        } else {
+            ""
+        },
+        match &pinned {
+            Some(list) => format!(" ranges={}", list.join(",")),
+            None => String::new(),
+        },
+    );
 
-    let stream = futures::stream::iter(
-        candidates
-            .into_iter()
-            .map(|(ip, port)| verify_one_wg(probe, ip, port, timeout, ironclad)),
-    )
-    .buffer_unordered(st.concurrency);
-    tokio::pin!(stream);
+    let timeout = tuning.probe_timeout;
+    let deep = tuning.deep_verify;
+    let found = scan::sweep("wireguard", targets, &tuning, want, |ip, port| {
+        verify_one_wg(probe, ip, port, timeout, deep)
+    })
+    .await;
 
-    if want > 1 {
-        st.early_exit_first = false;
-        st.target_successes = st.target_successes.max(want * 3);
-    }
-
-    let deadline = Instant::now() + st.overall_deadline;
-    let mut verified: Vec<WgProbeResult> = Vec::new();
-    let mut found = 0usize;
-    let mut quiet_until: Option<Instant> = None;
-
-    loop {
-        let effective = match quiet_until {
-            Some(q) => q.min(deadline),
-            None => deadline,
-        };
-        let remaining = effective.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            if !verified.is_empty() {
-                if quiet_until.is_some() {
-                    log::info!("[+] no new endpoints recently, finalizing selection");
-                } else {
-                    log::warn!("[-] scan deadline reached");
-                }
-            } else {
-                log::warn!("[-] scan deadline reached with no endpoint");
-            }
-            break;
-        }
-
-        tokio::select! {
-            item = stream.next() => {
-                match item {
-                    None => break,
-                    Some(None) => continue,
-                    Some(Some(pr)) => {
-                        log::info!("[+] wg candidate ok {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
-                        if st.early_exit_first {
-                            return Ok(vec![pr]);
-                        }
-                        verified.push(pr);
-                        found += 1;
-
-                        if distinct_by_ip(&verified).len() >= want && want > 1 {
-                            log::info!("[+] found {want} endpoints on separate addresses");
-                            break;
-                        }
-
-
-                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
-                            log::info!("[+] reached target of {} endpoints, selecting best", st.target_successes);
-                            if !st.quiet_after_first.is_zero() {
-                                quiet_until = Some(Instant::now() + st.quiet_after_first);
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            _ = tokio::time::sleep(remaining) => {
-                if !verified.is_empty() {
-                    if quiet_until.is_some() {
-                        log::info!("[+] no new endpoints recently, finalizing selection");
-                    } else {
-                        log::warn!("[-] scan deadline reached");
-                    }
-                } else {
-                    log::warn!("[-] scan deadline reached with no endpoint");
-                }
-                break;
-            }
-        }
-    }
-
-    let picked = distinct_by_ip(&verified);
-    if picked.is_empty() {
+    if found.is_empty() {
         return Err(AetherError::NoCleanEndpoint);
     }
 
-    for pr in picked.iter().take(want) {
-        log::info!("[+] wg endpoint {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
+    let picked: Vec<WgProbeResult> = found
+        .into_iter()
+        .take(want)
+        .map(|hit| WgProbeResult {
+            ip: hit.ip,
+            port: hit.port,
+            rtt: hit.rtt,
+        })
+        .collect();
+
+    for result in &picked {
+        log::info!(
+            "[+] wg endpoint {}:{} rtt={:?}",
+            result.ip,
+            result.port,
+            result.rtt,
+        );
     }
 
-    Ok(picked.into_iter().take(want).collect())
+    Ok(picked)
 }
 
-fn distinct_by_ip(found: &[WgProbeResult]) -> Vec<WgProbeResult> {
-    let mut sorted = found.to_vec();
-    sorted.sort_by_key(|pr| pr.rtt);
-
-    let mut seen = std::collections::HashSet::new();
-    sorted
-        .into_iter()
-        .filter(|pr| seen.insert(pr.ip))
-        .collect()
-}
-
+/// Proves ONE candidate: a real WireGuard handshake, and in the deep mode a
+/// real HTTP round trip through the session that handshake produced.
 async fn verify_one_wg(
     probe: &WgProbe,
     ip: IpAddr,
     port: u16,
     timeout: Duration,
-    ironclad: bool,
-) -> Option<WgProbeResult> {
+    deep: bool,
+) -> Option<Duration> {
     let peer = SocketAddr::new(ip, port);
 
     let (rtt, session) = match wireguard::verify_endpoint_keep_session(
@@ -303,15 +190,15 @@ async fn verify_one_wg(
     )
     .await
     {
-        Ok(v) => v,
+        Ok(value) => value,
         Err(e) => {
             log::trace!("wg probe {ip}:{port} -> {e}");
             return None;
         }
     };
 
-    if !ironclad {
-        return Some(WgProbeResult { ip, port, rtt });
+    if !deep {
+        return Some(rtt);
     }
 
     let params = crate::tunnelping::WgPingParams {
@@ -319,360 +206,70 @@ async fn verify_one_wg(
         local_ipv6: "::1".parse().unwrap(),
         aethernoize: probe.aethernoize.clone(),
     };
-    match crate::tunnelping::wg_http_ping_established(session, &params, WG_IRONCLAD_TCPING_TIMEOUT).await {
+    match crate::tunnelping::wg_http_ping_established(session, &params, DEEP_PING_TIMEOUT).await {
         Ok(http_rtt) => {
-            log::info!(
-                "[+] ironclad verified wg {ip}:{port} real http round trip rtt={:?}",
-                http_rtt
-            );
-            Some(WgProbeResult { ip, port, rtt: http_rtt })
+            log::info!("[+] {ip}:{port} carried a real http round trip in {http_rtt:?}");
+            Some(http_rtt)
         }
         Err(e) => {
-            log::trace!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
+            log::trace!("[-] {ip}:{port} failed the real http check: {e}");
             None
         }
     }
 }
 
-/// App-owned manual IPv4 range parser. Core 1.6.0 no longer exposes the old helper.
-fn custom_wg_cidrs_v4() -> Option<Vec<String>> {
-    fn normalize(raw: &str) -> Option<String> {
-        let v = raw.trim(); let (ip, prefix) = v.split_once('/')?;
-        let addr = ip.parse::<Ipv4Addr>().ok()?; let bits: u8 = prefix.parse().ok()?;
-        if bits > 32 { return None; } Some(format!("{addr}/{bits}"))
+/// The ranges the user pinned in Settings, if any. Core 1.6.0 stopped
+/// exposing the old upstream helper, so the app owns this.
+fn pinned_cidrs_v4() -> Option<Vec<String>> {
+    let raw = std::env::var("AETHER_WG_CIDRS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AETHER_SCAN_CIDRS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })?;
+    let list: Vec<String> = raw
+        .split(',')
+        .filter_map(scan::normalize_cidr_v4)
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
     }
-    let raw = std::env::var("AETHER_WG_CIDRS").ok().filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("AETHER_SCAN_CIDRS").ok().filter(|s| !s.trim().is_empty()))?;
-    let list: Vec<String> = raw.split(',').filter_map(normalize).collect();
-    if list.is_empty() { None } else { Some(list) }
-}
-
-fn build_wg_candidates(
-    st: &WgStrategy,
-    ports: &[u16],
-    ip: IpScan,
-    excluded: &HashSet<SocketAddr>,
-) -> Vec<(IpAddr, u16)> {
-    let ports: Vec<u16> = {
-        let mut seen_port: HashSet<u16> = HashSet::new();
-        let deduped: Vec<u16> = ports.iter().copied().filter(|p| seen_port.insert(*p)).collect();
-        if deduped.is_empty() {
-            vec![2408]
-        } else {
-            deduped
-        }
-    };
-
-    let custom_v4 = custom_wg_cidrs_v4();
-    let wg_v4_cidrs: Vec<String> = match &custom_v4 {
-        Some(list) => list.clone(),
-        None => wireguard::wg_prefixes_v4().iter().map(|s| s.to_string()).collect(),
-    };
-
-    let mut anchors: Vec<IpAddr> = Vec::new();
-    let mut pool: Vec<IpAddr> = Vec::new();
-
-    if ip.want_v4() {
-        if custom_v4.is_none() {
-            for s in wireguard::wg_seeds_v4() {
-                if let Ok(a) = s.parse::<Ipv4Addr>() { anchors.push(IpAddr::V4(a)); }
-            }
-        }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wg_v4_cidrs
-            .iter()
-            .map(|c| {
-                if st.full_subnet {
-                    enumerate_cidr_v4(c)
-                } else {
-                    sample_cidr_v4(c, st.sample_per_cidr)
-                }
-            })
-            .collect();
-        let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
-        for i in 0..max_len {
-            for hosts in &cidr_hosts {
-                if let Some(a) = hosts.get(i) {
-                    pool.push(IpAddr::V4(*a));
-                }
-            }
-        }
-    }
-
-    if ip.want_v6() {
-        for s in wireguard::WG_SEEDS_V6 {
-            if let Ok(a) = s.parse::<Ipv6Addr>() {
-                anchors.push(IpAddr::V6(a));
-            }
-        }
-        let per = if st.sample_per_cidr == 0 { 80 } else { st.sample_per_cidr };
-        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::wg_prefixes_v6()
-            .iter()
-            .map(|c| sample_cidr_v6(c, per, wireguard::WG_PREFIXES_V4))
-            .collect();
-        let max6 = cidr6.iter().map(|v| v.len()).max().unwrap_or(0);
-        for i in 0..max6 {
-            for hosts in &cidr6 {
-                if let Some(a) = hosts.get(i) {
-                    pool.push(IpAddr::V6(*a));
-                }
-            }
-        }
-    }
-
-    let mut out: Vec<(IpAddr, u16)> = Vec::new();
-    let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
-    let port_count = ports.len();
-
-    let mut push = |ip: IpAddr, port: u16| {
-        if !excluded.contains(&SocketAddr::new(ip, port)) && seen.insert((ip, port)) {
-            out.push((ip, port));
-        }
-    };
-
-    let mut ips: Vec<IpAddr> = Vec::with_capacity(anchors.len() + pool.len());
-    ips.extend(anchors.iter().copied());
-    ips.extend(pool.iter().copied());
-
-    for wave in 0..st.pool_port_waves.max(1) {
-        for (idx, candidate_ip) in ips.iter().enumerate() {
-            push(*candidate_ip, ports[(idx + wave) % port_count]);
-        }
-    }
-
-    out
-}
-
-fn parse_cidr_v4(cidr: &str) -> Option<(u32, u8)> {
-    let (ip, prefix) = cidr.split_once('/')?;
-    Some((u32::from(ip.parse::<Ipv4Addr>().ok()?), prefix.parse().ok()?))
-}
-
-fn enumerate_cidr_v4(cidr: &str) -> Vec<Ipv4Addr> {
-    let (base, prefix) = match parse_cidr_v4(cidr) {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let host_bits = 32u32.saturating_sub(prefix as u32);
-    if host_bits == 0 {
-        return vec![Ipv4Addr::from(base)];
-    }
-    if host_bits > 12 {
-        return Vec::new();
-    }
-    let size = 1u32 << host_bits;
-    (1..size.saturating_sub(1))
-        .map(|off| Ipv4Addr::from(base + off))
-        .collect()
-}
-
-fn sample_cidr_v4(cidr: &str, n: usize) -> Vec<Ipv4Addr> {
-    let (base, prefix) = match parse_cidr_v4(cidr) {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let host_bits = 32u32.saturating_sub(prefix as u32);
-    let size = if host_bits >= 32 { u32::MAX } else { 1u32 << host_bits };
-    if size <= 2 {
-        return vec![Ipv4Addr::from(base)];
-    }
-
-    let usable = size - 2;
-    let want = (n as u32).min(usable);
-    let mut rng = rand::rng();
-    let mut chosen: HashSet<u32> = HashSet::with_capacity(want as usize);
-    let mut out = Vec::with_capacity(want as usize);
-
-    while (out.len() as u32) < want {
-        let off = 1 + rng.random_range(0..usable);
-        if chosen.insert(off) {
-            out.push(Ipv4Addr::from(base + off));
-        }
-    }
-
-    out
-}
-
-fn parse_cidr_v6(cidr: &str) -> Option<(u128, u8)> {
-    let (ip, prefix) = cidr.split_once('/')?;
-    Some((u128::from(ip.parse::<Ipv6Addr>().ok()?), prefix.parse().ok()?))
-}
-
-fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
-    let (base, prefix) = match parse_cidr_v6(cidr) {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    if 128u32.saturating_sub(prefix as u32) == 0 {
-        return vec![Ipv6Addr::from(base)];
-    }
-
-    let v4: Vec<(u32, u8)> = v4_cidrs.iter().filter_map(|c| parse_cidr_v4(c)).collect();
-    let mut rng = rand::rng();
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        let embedded = if v4.is_empty() {
-            rng.random::<u32>() as u128
-        } else {
-            let (b, p) = v4[rng.random_range(0..v4.len())];
-            let host_bits = 32u32.saturating_sub(p as u32);
-            let host = if host_bits == 0 {
-                0
-            } else {
-                rng.random::<u32>() & ((1u32 << host_bits) - 1)
-            };
-            (b | host) as u128
-        };
-        out.push(Ipv6Addr::from(base | embedded));
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
-    fn anchors_come_first_but_each_on_its_own_port() {
-        let strategy = WgScanMode::Turbo.strategy();
-        let ports = [2408, 500, 1701, 4500, 854];
-        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
+    fn the_wireguard_modes_are_the_same_three_modes() {
+        assert_eq!(WgScanMode::parse("turbo"), WgScanMode::Turbo);
+        assert_eq!(WgScanMode::parse("balanced"), WgScanMode::Precise);
+        assert_eq!(WgScanMode::parse("ironclad"), WgScanMode::Ultra);
+    }
 
-        for (idx, seed) in wireguard::wg_seeds_v4().iter().enumerate() {
-            let ip = IpAddr::V4(seed.parse().expect("wireguard seed"));
-            assert_eq!(
-                candidates[idx],
-                (ip, ports[idx % ports.len()]),
-                "anchor {ip} should be tried once, on a port of its own"
-            );
+    #[test]
+    fn a_wireguard_scan_leans_on_more_ports_than_a_masque_scan() {
+        // WireGuard edges answer on a wide set of udp ports and 2408 is the
+        // one operators filter first, so every mode gets more than one pass.
+        for mode in [WgScanMode::Turbo, WgScanMode::Precise, WgScanMode::Ultra] {
+            assert!(mode.tuning(Family::WireGuard).port_waves >= 2);
         }
     }
 
     #[test]
-    fn the_front_of_the_scan_never_hammers_one_port() {
-        let strategy = WgScanMode::Turbo.strategy();
-        let ports = [2408, 500, 1701, 4500, 854];
-        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
-
-        let head: HashSet<u16> = candidates[..ports.len()].iter().map(|(_, p)| *p).collect();
-        assert_eq!(
-            head.len(),
-            ports.len(),
-            "the first candidates must spread across ports, not stack on 2408"
-        );
-
-        let on_2408 = candidates.iter().take(20).filter(|(_, p)| *p == 2408).count();
-        assert!(on_2408 <= 4, "port 2408 took {on_2408} of the first twenty slots");
+    fn a_pinned_range_is_read_from_either_variable_and_normalized() {
+        std::env::set_var("AETHER_WG_CIDRS", "188.114.96.x , 162.159.192.0/24");
+        let pinned = pinned_cidrs_v4().expect("a pinned range");
+        std::env::remove_var("AETHER_WG_CIDRS");
+        assert_eq!(pinned, vec!["188.114.96.0/24", "162.159.192.0/24"]);
     }
 
     #[test]
-    fn turbo_tries_every_address_once_before_repeating_any() {
-        let strategy = WgScanMode::Turbo.strategy();
-        let ports = [2408, 500, 1701, 4500, 854];
-        let candidates = build_wg_candidates(&strategy, &ports, IpScan::V4, &HashSet::new());
-
-        let mut per_ip: std::collections::HashMap<IpAddr, usize> =
-            std::collections::HashMap::new();
-        for (ip, _) in &candidates {
-            *per_ip.entry(*ip).or_default() += 1;
-        }
-
-        let repeated = per_ip.values().filter(|count| **count > 1).count();
-        assert!(
-            repeated <= wireguard::wg_seeds_v4().len(),
-            "only an anchor that the pool also sampled may appear twice, saw {repeated}"
-        );
-        assert!(
-            per_ip.values().all(|count| *count <= 2),
-            "no address should be tried more than twice in turbo"
-        );
-    }
-
-    #[test]
-    fn sampled_ips_receive_multiple_rotated_port_attempts() {
-        let mut strategy = WgScanMode::Balanced.strategy();
-        strategy.sample_per_cidr = 1;
-        let candidates = build_wg_candidates(
-            &strategy,
-            &[2408, 500, 1701, 4500],
-            IpScan::V4,
-            &HashSet::new(),
-        );
-        let anchors: HashSet<IpAddr> = wireguard::wg_seeds_v4()
-            .into_iter()
-            .map(|seed| IpAddr::V4(seed.parse().expect("wireguard seed")))
-            .collect();
-        let mut ports_per_ip: HashMap<IpAddr, HashSet<u16>> = HashMap::new();
-
-        for (ip, port) in candidates {
-            if !anchors.contains(&ip) {
-                ports_per_ip.entry(ip).or_default().insert(port);
-            }
-        }
-
-        assert!(
-            ports_per_ip.values().any(|ports| ports.len() >= 3),
-            "sampled IPs should be tried across multiple port waves"
-        );
-    }
-
-    fn result(ip: &str, port: u16, rtt_ms: u64) -> WgProbeResult {
-        WgProbeResult {
-            ip: ip.parse().unwrap(),
-            port,
-            rtt: Duration::from_millis(rtt_ms),
-        }
-    }
-
-    #[test]
-    fn two_ports_on_one_edge_count_as_a_single_choice() {
-        let found = vec![
-            result("162.159.192.1", 2408, 40),
-            result("162.159.192.1", 500, 30),
-            result("162.159.192.1", 1701, 50),
-        ];
-        let picked = distinct_by_ip(&found);
-        assert_eq!(picked.len(), 1, "one address must not fill both gool hops");
-        assert_eq!(picked[0].port, 500, "the quickest port on it is kept");
-    }
-
-    #[test]
-    fn separate_edges_are_offered_quickest_first() {
-        let found = vec![
-            result("162.159.193.7", 2408, 90),
-            result("162.159.192.1", 2408, 20),
-            result("162.159.192.1", 500, 25),
-            result("162.159.195.4", 4500, 55),
-        ];
-        let picked = distinct_by_ip(&found);
-        assert_eq!(picked.len(), 3);
-        assert_eq!(picked[0].ip.to_string(), "162.159.192.1");
-        assert_eq!(picked[1].ip.to_string(), "162.159.195.4");
-        assert_eq!(picked[2].ip.to_string(), "162.159.193.7");
-        assert_ne!(
-            picked[0].ip, picked[1].ip,
-            "gool must get two different addresses"
-        );
-    }
-
-    #[test]
-    fn nothing_verified_means_nothing_offered() {
-        assert!(distinct_by_ip(&[]).is_empty());
-    }
-
-    #[test]
-    fn cooled_down_endpoint_is_excluded_from_the_scan() {
-        let strategy = WgScanMode::Turbo.strategy();
-        let peer: SocketAddr = "162.159.192.1:2408".parse().unwrap();
-        let excluded = HashSet::from([peer]);
-        let candidates = build_wg_candidates(
-            &strategy,
-            &[2408, 500, 1701, 4500],
-            IpScan::V4,
-            &excluded,
-        );
-
-        assert!(!candidates.contains(&(peer.ip(), peer.port())));
+    fn the_default_wireguard_port_leads_the_scan() {
+        assert_eq!(scan::dedup_ports(&wireguard::WG_PORTS.to_vec(), 2408)[0], wireguard::WG_PORTS[0]);
     }
 }
-

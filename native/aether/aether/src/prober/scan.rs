@@ -121,17 +121,6 @@ impl ScanMode {
         }
     }
 
-    /// Legacy spellings, kept as aliases so older call sites keep compiling.
-    /// They are not modes: each one IS one of the three above.
-    #[allow(non_upper_case_globals)]
-    pub const Balanced: ScanMode = ScanMode::Precise;
-    #[allow(non_upper_case_globals)]
-    pub const Thorough: ScanMode = ScanMode::Precise;
-    #[allow(non_upper_case_globals)]
-    pub const Stealth: ScanMode = ScanMode::Precise;
-    #[allow(non_upper_case_globals)]
-    pub const Ironclad: ScanMode = ScanMode::Ultra;
-
     /// The whole definition of a mode, for one transport.
     pub fn tuning(&self, family: Family) -> ScanTuning {
         match (family, self) {
@@ -172,7 +161,7 @@ impl ScanMode {
                 deep_verify: true,
             },
 
-            // ---- WireGuard: one candidate is a handshake plus a data check --
+            // ---- WireGuard: a handshake plus a data-plane check ------------
             (Family::WireGuard, ScanMode::Turbo) => ScanTuning {
                 concurrency: 16,
                 probe_timeout: Duration::from_millis(4_000),
@@ -208,6 +197,17 @@ impl ScanMode {
             },
         }
     }
+
+    /// Legacy spellings, kept as aliases so older call sites keep compiling.
+    /// They are not modes: each one IS one of the three above.
+    #[allow(non_upper_case_globals)]
+    pub const Balanced: ScanMode = ScanMode::Precise;
+    #[allow(non_upper_case_globals)]
+    pub const Thorough: ScanMode = ScanMode::Precise;
+    #[allow(non_upper_case_globals)]
+    pub const Stealth: ScanMode = ScanMode::Precise;
+    #[allow(non_upper_case_globals)]
+    pub const Ironclad: ScanMode = ScanMode::Ultra;
 }
 
 /// A mode, expanded into numbers. This is the only knob set in the scanner.
@@ -224,7 +224,7 @@ pub struct ScanTuning {
     pub settle: Duration,
     /// How many verified endpoints are "enough". 0 = spend the whole budget.
     pub target_hits: usize,
-    /// Addresses sampled per range. 0 with [`Self::full_subnet`] = sweep it all.
+    /// Addresses sampled per range, when not sweeping the whole range.
     pub sample_per_cidr: usize,
     /// Enumerate every host in each range instead of sampling it.
     pub full_subnet: bool,
@@ -389,7 +389,7 @@ pub fn build_targets(plan: &TargetPlan<'_>, tuning: &ScanTuning) -> Vec<(IpAddr,
 /// Runs the scan and returns the endpoints that passed, fastest first, one per
 /// address.
 ///
-/// [`want`] is how many DISTINCT addresses the caller needs (warp-in-warp needs
+/// `want` is how many DISTINCT addresses the caller needs (warp-in-warp needs
 /// two, everything else needs one). The sweep ends on the first of:
 ///
 ///   * enough distinct addresses AND enough total hits for the mode - then, if
@@ -499,13 +499,17 @@ pub fn rank(hits: &[Hit]) -> Vec<Hit> {
     let mut sorted = hits.to_vec();
     sorted.sort_by_key(|hit| hit.rtt);
     let mut seen: HashSet<IpAddr> = HashSet::new();
-    sorted.into_iter().filter(|hit| seen.insert(hit.ip)).collect()
+    sorted
+        .into_iter()
+        .filter(|hit| seen.insert(hit.ip))
+        .collect()
 }
 
 /// Round-robins across groups: one item from each, then the next.
 fn interleave<T: Copy>(groups: &[Vec<T>]) -> Vec<T> {
     let longest = groups.iter().map(|group| group.len()).max().unwrap_or(0);
-    let mut out: Vec<T> = Vec::with_capacity(groups.iter().map(|g| g.len()).sum());
+    let total: usize = groups.iter().map(|group| group.len()).sum();
+    let mut out: Vec<T> = Vec::with_capacity(total);
     for index in 0..longest {
         for group in groups {
             if let Some(value) = group.get(index) {
@@ -516,14 +520,48 @@ fn interleave<T: Copy>(groups: &[Vec<T>]) -> Vec<T> {
     out
 }
 
-// ---- CIDR helpers -------------------------------------------------------
+// ---- range helpers ------------------------------------------------------
 //
 // One copy. These were duplicated verbatim in both probers, which is how the
 // two of them drifted apart in the first place.
 
+/// Accepts a range in any shape the settings screen says it accepts:
+/// `188.114.96.0/24`, `8.6.112.x`, or a single address.
+///
+/// The old parser took CIDR only and silently dropped everything else, so a
+/// range typed exactly as the hint suggested (`8.6.112.x`) left the scan
+/// quietly running on the built-in list instead.
+pub fn normalize_cidr_v4(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some((ip, prefix)) = value.split_once('/') {
+        let addr = ip.trim().parse::<Ipv4Addr>().ok()?;
+        let bits: u8 = prefix.trim().parse().ok()?;
+        if bits > 32 {
+            return None;
+        }
+        return Some(format!("{addr}/{bits}"));
+    }
+    let lowered = value.to_lowercase();
+    if let Some(head) = lowered.strip_suffix(".x") {
+        if head.split('.').count() != 3 {
+            return None;
+        }
+        let addr = format!("{head}.0").parse::<Ipv4Addr>().ok()?;
+        return Some(format!("{addr}/24"));
+    }
+    let addr = value.parse::<Ipv4Addr>().ok()?;
+    Some(format!("{addr}/32"))
+}
+
 pub fn parse_cidr_v4(cidr: &str) -> Option<(u32, u8)> {
     let (ip, prefix) = cidr.split_once('/')?;
-    Some((u32::from(ip.trim().parse::<Ipv4Addr>().ok()?), prefix.trim().parse().ok()?))
+    Some((
+        u32::from(ip.trim().parse::<Ipv4Addr>().ok()?),
+        prefix.trim().parse().ok()?,
+    ))
 }
 
 /// Every usable host in a range, network and broadcast excluded. Refuses
@@ -580,7 +618,10 @@ pub fn sample_cidr_v4(cidr: &str, n: usize) -> Vec<Ipv4Addr> {
 
 pub fn parse_cidr_v6(cidr: &str) -> Option<(u128, u8)> {
     let (ip, prefix) = cidr.split_once('/')?;
-    Some((u128::from(ip.trim().parse::<Ipv6Addr>().ok()?), prefix.trim().parse().ok()?))
+    Some((
+        u128::from(ip.trim().parse::<Ipv6Addr>().ok()?),
+        prefix.trim().parse().ok()?,
+    ))
 }
 
 /// `n` addresses from an IPv6 range, each carrying an address from the v4
@@ -605,8 +646,8 @@ pub fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[String]) -> Vec<Ipv6Addr
         let embedded = if v4.is_empty() {
             rng.random::<u32>() as u128
         } else {
-            let (network, prefix) = v4[rng.random_range(0..v4.len())];
-            let host_bits = 32u32.saturating_sub(prefix as u32);
+            let (network, bits) = v4[rng.random_range(0..v4.len())];
+            let host_bits = 32u32.saturating_sub(bits as u32);
             let host = if host_bits == 0 {
                 0
             } else {
@@ -698,7 +739,10 @@ mod tests {
     #[test]
     fn anchors_lead_on_the_documented_port_then_on_every_fallback_port() {
         let ports = [2408u16, 500, 1701];
-        let anchors: Vec<Ipv4Addr> = vec!["162.159.192.1".parse().unwrap(), "162.159.193.1".parse().unwrap()];
+        let anchors: Vec<Ipv4Addr> = vec![
+            "162.159.192.1".parse().unwrap(),
+            "162.159.193.1".parse().unwrap(),
+        ];
         let cidrs = vec!["162.159.195.0/24".to_string()];
         let excluded = HashSet::new();
         let targets = build_targets(&plan(&ports, &anchors, &cidrs, &excluded), &tuning());
@@ -712,16 +756,16 @@ mod tests {
         // Everything after the anchors is sampled, and the first pass over the
         // pool is on the documented port.
         assert_eq!(targets[6].1, 2408);
-        assert!(!anchors.contains(match targets[6].0 {
-            IpAddr::V4(ref addr) => addr,
-            IpAddr::V6(_) => panic!("an ipv4-only plan produced an ipv6 target"),
-        }));
+        assert!(targets[6].0.to_string().starts_with("162.159.195."));
     }
 
     #[test]
     fn the_pool_is_interleaved_across_ranges_so_a_dead_range_cannot_stall_the_scan() {
         let ports = [443u16];
-        let cidrs = vec!["162.159.192.0/24".to_string(), "188.114.96.0/24".to_string()];
+        let cidrs = vec![
+            "162.159.192.0/24".to_string(),
+            "188.114.96.0/24".to_string(),
+        ];
         let excluded = HashSet::new();
         let mut tuning = tuning();
         tuning.sample_per_cidr = 4;
@@ -746,7 +790,10 @@ mod tests {
         assert_eq!(targets.len(), 6, "three addresses over two port waves");
         let unique: HashSet<(IpAddr, u16)> = targets.iter().copied().collect();
         assert_eq!(unique.len(), targets.len(), "no pair may be probed twice");
-        assert_eq!(targets[3..].iter().filter(|(_, port)| *port == 500).count(), 3);
+        assert_eq!(
+            targets[3..].iter().filter(|(_, port)| *port == 500).count(),
+            3,
+        );
     }
 
     #[test]
@@ -764,9 +811,21 @@ mod tests {
     #[test]
     fn two_ports_on_one_edge_count_as_a_single_choice() {
         let hits = vec![
-            Hit { ip: "162.159.192.1".parse().unwrap(), port: 2408, rtt: Duration::from_millis(40) },
-            Hit { ip: "162.159.192.1".parse().unwrap(), port: 500, rtt: Duration::from_millis(30) },
-            Hit { ip: "162.159.195.4".parse().unwrap(), port: 4500, rtt: Duration::from_millis(55) },
+            Hit {
+                ip: "162.159.192.1".parse().unwrap(),
+                port: 2408,
+                rtt: Duration::from_millis(40),
+            },
+            Hit {
+                ip: "162.159.192.1".parse().unwrap(),
+                port: 500,
+                rtt: Duration::from_millis(30),
+            },
+            Hit {
+                ip: "162.159.195.4".parse().unwrap(),
+                port: 4500,
+                rtt: Duration::from_millis(55),
+            },
         ];
         let ranked = rank(&hits);
         assert_eq!(ranked.len(), 2);
@@ -775,11 +834,11 @@ mod tests {
         assert!(rank(&[]).is_empty());
     }
 
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    #[tokio::test]
     async fn turbo_returns_the_first_endpoint_that_answers() {
-        let targets = vec![
-            ("1.1.1.1".parse().unwrap(), 443u16),
-            ("1.0.0.1".parse().unwrap(), 443u16),
+        let targets: Vec<(IpAddr, u16)> = vec![
+            ("1.1.1.1".parse().unwrap(), 443),
+            ("1.0.0.1".parse().unwrap(), 443),
         ];
         let tuning = ScanMode::Turbo.tuning(Family::Masque);
         let hits = sweep("test", targets, &tuning, 1, |ip, _port| async move {
@@ -794,7 +853,7 @@ mod tests {
         assert_eq!(hits[0].ip.to_string(), "1.1.1.1");
     }
 
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    #[tokio::test]
     async fn a_precise_scan_keeps_the_fastest_of_what_answered() {
         let targets: Vec<(IpAddr, u16)> = vec![
             ("1.1.1.1".parse().unwrap(), 443),
@@ -816,7 +875,7 @@ mod tests {
         assert_eq!(hits[0].ip.to_string(), "1.0.0.1");
     }
 
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    #[tokio::test]
     async fn nothing_answering_is_reported_as_nothing_found() {
         let targets: Vec<(IpAddr, u16)> = vec![("1.1.1.1".parse().unwrap(), 443)];
         let tuning = ScanMode::Turbo.tuning(Family::Masque);
@@ -831,11 +890,28 @@ mod tests {
     }
 
     #[test]
+    fn a_range_may_be_written_the_way_the_settings_screen_says_it_can() {
+        assert_eq!(
+            normalize_cidr_v4(" 188.114.96.0/24 ").as_deref(),
+            Some("188.114.96.0/24"),
+        );
+        assert_eq!(normalize_cidr_v4("8.6.112.x").as_deref(), Some("8.6.112.0/24"));
+        assert_eq!(normalize_cidr_v4("8.6.112.X").as_deref(), Some("8.6.112.0/24"));
+        assert_eq!(normalize_cidr_v4("1.2.3.4").as_deref(), Some("1.2.3.4/32"));
+        assert!(normalize_cidr_v4("188.114.96.0/64").is_none());
+        assert!(normalize_cidr_v4("nonsense").is_none());
+        assert!(normalize_cidr_v4("").is_none());
+    }
+
+    #[test]
     fn a_sampled_range_stays_inside_the_range() {
         let hosts = sample_cidr_v4("188.114.96.0/24", 32);
         assert_eq!(hosts.len(), 32);
         for host in hosts {
-            assert!(host.to_string().starts_with("188.114.96."), "{host} escaped");
+            assert!(
+                host.to_string().starts_with("188.114.96."),
+                "{host} escaped its range",
+            );
         }
         assert!(sample_cidr_v4("not a range", 4).is_empty());
     }
@@ -852,7 +928,10 @@ mod tests {
         let hosts = sample_cidr_v6("2606:4700:d0::/48", 8, &v4);
         assert_eq!(hosts.len(), 8);
         for host in hosts {
-            assert!(host.to_string().starts_with("2606:4700:d0:"), "{host} escaped");
+            assert!(
+                host.to_string().starts_with("2606:4700:d0:"),
+                "{host} escaped its range",
+            );
         }
     }
 }
