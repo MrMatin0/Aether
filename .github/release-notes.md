@@ -1,21 +1,21 @@
-# AetherMobile v1.2.5
+# Aether v1.4.5
 
-- **Engine upgraded:** bundled core is now 1.6.0.
-- **Build compatibility fixed:** the manual WireGuard range parser no longer depends on a removed internal helper.
-- **Signing preserved:** version code 9; existing signing configuration unchanged.
-- **UI compatibility preserved:** existing protocol, proxy, routing, diagnostics, and advanced settings remain available.
+- **Version:** 1.4.5, base version code 13.
+- **New package name:** this build is now `io.github.mrmatin0.aether` instead of `studio.cluvex.aether`. Android identifies an installed app by its package name, so this fork and the original app can now be installed **side by side** on the same device.
+- **Distinct name on the launcher:** the icon, the Quick Settings tile and the widget are labelled **Aether (Fork)**, so the two installs cannot be mixed up.
+- **Unchanged:** protocols, obfuscation, routing, split tunneling, kill switch, proxy mode, diagnostics and every advanced setting behave exactly as before. No new permission was added.
 
-Version: AetherMobile 1.2.5, version code 9.
+**Note:** because the package name changed, this APK does not upgrade an existing install of the previous build - the system treats it as a new app with its own storage, so its settings start from the defaults.
 
 <div dir="rtl">
 
-# AetherMobile نسخهٔ ۱.۲.۵
+# اِتِر نسخهٔ ۱.۴.۵
 
-- **ارتقای موتور:** هستهٔ همراه برنامه اکنون 1.6.0 است.
-- **رفع سازگاری بیلد:** تجزیه‌گر رنج دستی وایرگارد دیگر به helper داخلی حذف‌شده وابسته نیست.
-- **حفظ امضا:** version code برابر 9 است و تنظیمات امضای قبلی تغییر نکرده است.
-- **حفظ سازگاری رابط کاربری:** کنترل‌های پروتکل، پراکسی، مسیریابی، عیب‌یابی و تنظیمات پیشرفته همچنان در دسترس هستند.
+- **نسخه:** ۱.۴.۵ با version code پایهٔ ۱۳.
+- **نام پکیج جدید:** این بیلد از این پس `io.github.mrmatin0.aether` است (قبلاً `studio.cluvex.aether` بود). اندروید هر برنامه را با نام پکیجش می‌شناسد، پس این فورک و برنامهٔ اصلی **می‌توانند در کنار هم** روی یک دستگاه نصب باشند.
+- **نام متفاوت روی لانچر:** آیکون، تایل تنظیمات سریع و ویجت با عنوان **Aether (Fork)** نمایش داده می‌شوند تا این دو نصب با هم اشتباه نشوند.
+- **بدون تغییر:** پروتکل‌ها، مبهم‌سازی، مسیریابی، تونل تفکیکی، کیل سوییچ، حالت پراکسی، عیب‌یابی و همهٔ تنظیمات پیشرفته مثل قبل کار می‌کنند. هیچ دسترسی جدیدی اضافه نشده است.
 
-نسخه: AetherMobile 1.2.5، version code 9.
+**توجه:** چون نام پکیج تغییر کرده، این APK روی نصب قبلی به‌عنوان آپدیت نمی‌نشیند؛ سیستم آن را یک برنامهٔ جدید با فضای ذخیره‌سازی مستقل می‌بیند، بنابراین تنظیماتش از حالت پیش‌فرض شروع می‌شود.
 
 </div>
