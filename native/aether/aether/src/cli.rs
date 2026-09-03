@@ -26,12 +26,12 @@ Scan mode (how hard the endpoint scanner tries):
   --turbo                  first edge that answers wins; seconds, not minutes
   --precise                collect several working edges, keep the fastest (default)
   --ultra                  only accept an edge that carries a real HTTP request
-                           end to end; slowest, and the one to use on a network
-                           that keeps handing out edges that connect but do not
-                           actually pass traffic
-                           (the old names --balanced, --thorough, --stealth and
-                           --ironclad are still accepted: the first three mean
-                           --precise and the last one means --ultra)
+                           end to end; the slowest mode, and the one for a
+                           network that keeps handing out edges which connect
+                           but never actually pass traffic
+                           (the retired names --balanced, --thorough, --stealth
+                           and --ironclad are still accepted: the first three
+                           mean --precise, the last one means --ultra)
 
 Obfuscation:
   --noize <profile>        obfuscation profile (off, light/firewall, balanced, gfw/aggressive, ...)
@@ -237,15 +237,15 @@ mod tests {
         ScanMode::parse(&raw)
     }
 
+    /// One test for every scan flag on purpose: they all write the same
+    /// environment variable, and cargo would run separate tests in parallel.
     #[test]
-    fn the_three_scan_flags_select_the_three_modes() {
+    fn the_scan_flags_select_the_three_modes_and_the_retired_names_still_work() {
         assert_eq!(scan_mode_of("--turbo"), ScanMode::Turbo);
         assert_eq!(scan_mode_of("--precise"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--accurate"), ScanMode::Precise);
         assert_eq!(scan_mode_of("--ultra"), ScanMode::Ultra);
-    }
-
-    #[test]
-    fn the_retired_scan_flags_still_land_on_the_closest_mode() {
+        assert_eq!(scan_mode_of("--ultra-precise"), ScanMode::Ultra);
         assert_eq!(scan_mode_of("--balanced"), ScanMode::Precise);
         assert_eq!(scan_mode_of("--thorough"), ScanMode::Precise);
         assert_eq!(scan_mode_of("--stealth"), ScanMode::Precise);

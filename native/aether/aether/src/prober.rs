@@ -126,10 +126,7 @@ fn pinned_cidrs_v4() -> Option<Vec<String>> {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
         })?;
-    let list: Vec<String> = raw
-        .split(',')
-        .filter_map(scan::normalize_cidr_v4)
-        .collect();
+    let list: Vec<String> = raw.split(',').filter_map(scan::normalize_cidr_v4).collect();
     if list.is_empty() {
         None
     } else {
@@ -158,7 +155,7 @@ pub struct MasqueProbe {
     pub local_ipv4: Ipv4Addr,
 }
 
-/// Picks the best MASQUE gateway this network will give us, in [`mode`]'s
+/// Picks the best MASQUE gateway this network will give us, inside the mode's
 /// budget.
 pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
     let mut tuning = mode.tuning(Family::Masque);
@@ -233,12 +230,7 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
 
     match found.first() {
         Some(hit) => {
-            log::info!(
-                "[+] best gateway {}:{} rtt={:?}",
-                hit.ip,
-                hit.port,
-                hit.rtt,
-            );
+            log::info!("[+] best gateway {}:{} rtt={:?}", hit.ip, hit.port, hit.rtt);
             Ok(ProbeResult {
                 ip: hit.ip,
                 port: hit.port,
@@ -251,7 +243,7 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
 
 /// Proves ONE candidate.
 ///
-/// [`deep`] is what the slowest mode buys: instead of accepting a completed
+/// `deep` is what the slowest mode buys: instead of accepting a completed
 /// handshake, the candidate has to carry a real HTTP request through the
 /// tunnel and bring the answer back. That is the difference between "the edge
 /// is up" and "the edge will actually serve you".
@@ -373,19 +365,24 @@ mod tests {
         );
     }
 
+    /// One test, not two: cargo runs a test binary's tests on several threads
+    /// in ONE process, so a second test that sets or clears the same variable
+    /// would race this one and fail at random.
     #[test]
     fn a_pinned_range_replaces_the_built_in_list_and_accepts_the_documented_shapes() {
+        std::env::remove_var("AETHER_MASQUE_CIDRS");
+        std::env::remove_var("AETHER_SCAN_CIDRS");
+        assert!(pinned_cidrs_v4().is_none(), "nothing pinned, nothing overridden");
+
         std::env::set_var("AETHER_MASQUE_CIDRS", "8.6.112.x, 188.114.96.0/24 , junk");
         let pinned = pinned_cidrs_v4().expect("a pinned range");
         std::env::remove_var("AETHER_MASQUE_CIDRS");
         assert_eq!(pinned, vec!["8.6.112.0/24", "188.114.96.0/24"]);
-    }
 
-    #[test]
-    fn nothing_pinned_means_nothing_overridden() {
-        std::env::remove_var("AETHER_MASQUE_CIDRS");
+        std::env::set_var("AETHER_SCAN_CIDRS", "162.159.192.0/24");
+        let shared = pinned_cidrs_v4().expect("the shared variable is read too");
         std::env::remove_var("AETHER_SCAN_CIDRS");
-        assert!(pinned_cidrs_v4().is_none());
+        assert_eq!(shared, vec!["162.159.192.0/24"]);
     }
 
     #[test]
