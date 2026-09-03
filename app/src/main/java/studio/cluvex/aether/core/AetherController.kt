@@ -35,7 +35,7 @@ object AetherController {
     private val _ipInfo = MutableStateFlow<IpEndpoint?>(null)
     val ipInfo: StateFlow<IpEndpoint?> = _ipInfo.asStateFlow()
 
-    /** True while an IP lookup is in flight (drives the “…” placeholder). */
+    /** True while an IP lookup is in flight (drives the "..." placeholder). */
     private val _ipLoading = MutableStateFlow(false)
     val ipLoading: StateFlow<Boolean> = _ipLoading.asStateFlow()
 
@@ -98,7 +98,7 @@ object AetherController {
  * new builds can decode each other's payloads without crashing.
  *
  * DROPPED-SETTINGS FIX: the codec is the ONLY channel between the UI and
- * [AetherVpnService], so anything it forgets is silently thrown away — the user
+ * [AetherVpnService], so anything it forgets is silently thrown away - the user
  * configures it in Settings, sees it persisted, and the engine never learns
  * about it. The 1.2.3 feature block (in-tunnel DNS, Zero Trust organization,
  * `--route-block` / `--route-direct`) was never added here, so those fields
@@ -130,7 +130,7 @@ object ProfileCodec {
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
         add("splitApps=${p.splitApps.joinToString(",")}")
-        // Added in 1.2.3 (engine v1.5.0) — these were missing from the codec,
+        // Added in 1.2.3 (engine v1.5.0) - these were missing from the codec,
         // so the engine never received them (see the class doc).
         add("dns=${flatten(p.dnsServers)}")
         add("team=${flatten(p.team)}")
@@ -173,7 +173,10 @@ object ProfileCodec {
         return runCatching {
             ConnectionProfile(
                 protocol = map["protocol"]?.let { enumOr<Protocol>(it) } ?: d.protocol,
-                scanMode = map["scan"]?.let { enumOr<ScanMode>(it) } ?: d.scanMode,
+                // Not enumOr(): a payload written before 1.4.6 carries one of
+                // the five retired names, and ScanMode knows how to map those
+                // onto the three that exist now.
+                scanMode = ScanMode.fromStored(map["scan"]) ?: d.scanMode,
                 ipVersion = map["ip"]?.let { enumOr<IpVersion>(it) } ?: d.ipVersion,
                 quickReconnect = map["quick"]?.toBooleanStrictOrNull() ?: d.quickReconnect,
                 masqueHttp2 = map["h2"]?.toBooleanStrictOrNull() ?: d.masqueHttp2,
@@ -220,10 +223,13 @@ object ProfileCodec {
     private fun decodeLegacy(raw: String): ConnectionProfile {
         val parts = raw.split("|")
         if (parts.size < 5) return ConnectionProfile()
+        val d = ConnectionProfile()
         return runCatching {
             ConnectionProfile(
                 protocol = Protocol.valueOf(parts[0]),
-                scanMode = ScanMode.valueOf(parts[1]),
+                // Field two is a scan mode from the five-mode era by
+                // definition: this format predates 1.2.
+                scanMode = ScanMode.fromStored(parts[1]) ?: d.scanMode,
                 ipVersion = IpVersion.valueOf(parts[2]),
                 quickReconnect = parts[3].toBoolean(),
                 masqueHttp2 = parts[4].toBoolean(),

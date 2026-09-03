@@ -81,8 +81,10 @@ class ProfileStore(private val context: Context) {
         ConnectionProfile(
             protocol = prefs[Keys.protocol]
                 ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO,
-            scanMode = prefs[Keys.scan]
-                ?.let { runCatching { ScanMode.valueOf(it) }.getOrNull() } ?: ScanMode.BALANCED,
+            // Not valueOf(): the five-mode set was retired in 1.4.6 and this
+            // file still holds whatever the user picked before, so the stored
+            // name is MIGRATED rather than dropped on the floor.
+            scanMode = ScanMode.fromStored(prefs[Keys.scan]) ?: d.scanMode,
             ipVersion = prefs[Keys.ip]
                 ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: IpVersion.V4,
             quickReconnect = prefs[Keys.quick] ?: true,

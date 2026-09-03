@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="scan_mode_hint">این یک انتخاب بین سرعت و کیفیت است: چقدر وقت صرف پیدا کردن سرور شود. روی بیشتر شبکه‌ها توربو کافی است.</string>
+
+    <string name="scan_mode_turbo">توربو</string>
+    <string name="scan_mode_turbo_desc">اولین سروری که جواب بدهد انتخاب می‌شود. وقتی فقط می‌خواهی سریع وصل شوی.</string>
+    <string name="scan_mode_turbo_eta">چند ثانیه</string>
+
+    <string name="scan_mode_precise">دقیق</string>
+    <string name="scan_mode_precise_desc">چند سرور سالم پیدا می‌کند و سریع‌ترین را نگه می‌دارد. حالت پیشنهادی.</string>
+    <string name="scan_mode_precise_eta">۱ تا ۳ دقیقه</string>
+
+    <string name="scan_mode_ultra">بسیار دقیق</string>
+    <string name="scan_mode_ultra_desc">فقط سروری را قبول می‌کند که یک درخواست واقعی را تا آخر ببرد. برای شبکه‌های به‌شدت فیلترشده، جایی که تونل وصل می‌شود ولی چیزی باز نمی‌شود.</string>
+    <string name="scan_mode_ultra_eta">۳ تا ۶ دقیقه</string>
+</resources>

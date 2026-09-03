@@ -37,7 +37,6 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
-import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.ui.components.ActionPill
@@ -49,6 +48,7 @@ import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hairline
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.LtrOutlinedTextField
+import studio.cluvex.aether.ui.components.ScanModeSelector
 import studio.cluvex.aether.ui.components.SegmentedSelector
 import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.components.ValueRow
@@ -60,8 +60,8 @@ private enum class Depth { BASIC, FULL }
  * The engine settings page.
  *
  * ROOT CAUSE THIS FIXES (usability): the original panel presented roughly forty
- * controls as one flat list inside a collapsed card. Protocol — which decides
- * whether you connect at all — sat at the same visual level as the TLS curve
+ * controls as one flat list inside a collapsed card. Protocol - which decides
+ * whether you connect at all - sat at the same visual level as the TLS curve
  * list, so people changed MTU or fragment sizes at random, could not get back to
  * a working configuration, and reported the tunnel as broken. Nothing said which
  * controls matter, and nothing said the defaults are usually right.
@@ -72,8 +72,13 @@ private enum class Depth { BASIC, FULL }
  * connect" and "things that decide what goes through the tunnel" was a 1px rule.
  *
  * So every group is now a card with a badge and a name. Same controls, same
- * order, same profile writes — but a scroll through it has landmarks, and the
+ * order, same profile writes - but a scroll through it has landmarks, and the
  * card is the unit a screenshot can be cropped to when someone asks for help.
+ *
+ * The scan mode is the one control here that is no longer a dropdown: it is a
+ * three-option radio group that states what each mode does and how long it
+ * takes (see [ScanModeSelector]). It decides how long the user sits on the
+ * connecting screen, which is not something a collapsed one-word row can say.
  *
  * The depth choice is [rememberSaveable] now: it used to reset to Essentials on
  * every rotation and every return to the page, which is maddening when you are
@@ -82,7 +87,7 @@ private enum class Depth { BASIC, FULL }
  * Every field still writes to exactly the same ConnectionProfile property
  * through the same synchronous onProfileChange path, so the scrambled-input fix
  * and the DataStore write behaviour are untouched. Technical fields remain
- * LtrOutlinedTextField — never a bare OutlinedTextField.
+ * LtrOutlinedTextField - never a bare OutlinedTextField.
  *
  * [startExpanded] is kept for source compatibility with older callers; the
  * surface is a page now, so it is always open.
@@ -144,13 +149,12 @@ fun AdvancedPanel(
 
             Spacer(Modifier.height(18.dp))
             FieldLabel(stringResource(R.string.scan_mode))
-            DropdownSelector(
-                options = ScanMode.entries,
+            ScanModeSelector(
                 selected = profile.scanMode,
                 onSelect = { onProfileChange(profile.copy(scanMode = it)) },
-                label = { scanLabel(it) },
                 enabled = enabled,
             )
+            Hint(stringResource(R.string.scan_mode_hint))
 
             Spacer(Modifier.height(18.dp))
             FieldLabel(stringResource(R.string.endpoint_mode))
