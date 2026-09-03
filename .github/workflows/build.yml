@@ -82,7 +82,10 @@ jobs:
         if: steps.natives-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "ndk;${NDK_VERSION}" > /dev/null
+          test -d "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" \
+            || { echo "::error::NDK ${NDK_VERSION} not installed"; exit 1; }
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Rust (Android targets)
