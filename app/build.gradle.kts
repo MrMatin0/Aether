@@ -352,5 +352,17 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     debugImplementation(libs.compose.ui.tooling)
-    testImplementation(kotlin("test"))
+
+    // Unit tests. This used to read `testImplementation(kotlin("test"))`, which
+    // only works when the Kotlin Gradle Plugin is applied to the module: KGP is
+    // what inspects the test task and rewrites that bare notation into the
+    // framework-specific artifact. AGP 9 compiles Kotlin with built-in Kotlin
+    // support and KGP is never applied here (see gradle/libs.versions.toml), so
+    // the test classpath got plain kotlin-test - assertEquals resolved, but
+    // kotlin.test.Test, a typealias that lives only in the JUnit variant, did
+    // not, and :app:compileReleaseUnitTestKotlin failed with
+    // "Unresolved reference 'Test'". Name the JUnit variant explicitly so
+    // nothing has to be inferred.
+    testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.junit)
 }

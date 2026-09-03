@@ -21,6 +21,9 @@ androidxActivity = "1.13.0"
 androidxLifecycle = "2.11.0"
 androidxDatastore = "1.2.1"
 coroutines = "1.11.0"
+# AGP runs local unit tests on JUnit 4 by default, and kotlin-test-junit is
+# built against that same line.
+junit = "4.13.2"
 
 [libraries]
 # The BOM pins every androidx.compose.* artifact below, so those carry no
@@ -40,6 +43,14 @@ androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-ru
 androidx-lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "androidxLifecycle" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+
+# Unit tests. kotlin-test-junit, NOT the bare kotlin-test artifact: the
+# kotlin.test.Test annotation is a typealias that only exists in the
+# framework-specific variants, and the plugin that would normally pick one for
+# us (KGP) is never applied to :app - AGP 9 compiles Kotlin itself. Its version
+# must track the Kotlin version above.
+kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
