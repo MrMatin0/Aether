@@ -138,6 +138,10 @@ android {
         // the applicationId so the whole "this is not the upstream build"
         // identity lives in one place, and so two icons with the exact same
         // name can never sit next to each other on the home screen.
+        //
+        // Needs buildFeatures.resValues = true below: AGP 9 stopped turning the
+        // resValues feature on implicitly, and configuration fails outright if
+        // this call is present while the feature is off.
         resValue("string", "app_label", "Aether (Fork)")
 
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
@@ -213,6 +217,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // Required by the resValue("string", "app_label", ...) call in
+        // defaultConfig. AGP 9 defaults this off, and a resValue with the
+        // feature disabled is a hard configuration error, not a warning.
+        resValues = true
     }
 
     packaging {
