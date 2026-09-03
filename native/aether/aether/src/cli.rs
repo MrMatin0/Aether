@@ -21,13 +21,17 @@ Protocol:
                            use classic WireGuard
   --gool, --wiw            use WARP-in-WARP (wireguard tunneled in wireguard)
 
-Scan mode:
-  --scan <mode>            turbo | balanced | thorough | stealth
-  --turbo                  shortcut for --scan turbo
-  --balanced               shortcut for --scan balanced
-  --thorough               shortcut for --scan thorough
-  --stealth                shortcut for --scan stealth
-  --ironclad               shortcut for --scan ironclad (real tunnel + real HTTP check per candidate)
+Scan mode (how hard the endpoint scanner tries):
+  --scan <mode>            turbo | precise | ultra
+  --turbo                  first edge that answers wins; seconds, not minutes
+  --precise                collect several working edges, keep the fastest (default)
+  --ultra                  only accept an edge that carries a real HTTP request
+                           end to end; the slowest mode, and the one for a
+                           network that keeps handing out edges which connect
+                           but never actually pass traffic
+                           (the retired names --balanced, --thorough, --stealth
+                           and --ironclad are still accepted: the first three
+                           mean --precise, the last one means --ultra)
 
 Obfuscation:
   --noize <profile>        obfuscation profile (off, light/firewall, balanced, gfw/aggressive, ...)
@@ -144,12 +148,16 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
             "--gool" | "--wiw" => set("AETHER_PROTOCOL", "gool"),
             "--protocol" => set("AETHER_PROTOCOL", next_value!()),
 
+            // Three modes. The value is normalized by prober::ScanMode::parse,
+            // which also still understands the five pre-1.4.6 names, so an old
+            // script or a saved profile keeps working instead of silently
+            // falling back to the default.
             "--scan" => set("AETHER_SCAN", next_value!()),
             "--turbo" => set("AETHER_SCAN", "turbo"),
-            "--balanced" => set("AETHER_SCAN", "balanced"),
-            "--thorough" => set("AETHER_SCAN", "thorough"),
-            "--stealth" => set("AETHER_SCAN", "stealth"),
-            "--ironclad" => set("AETHER_SCAN", "ironclad"),
+            "--precise" | "--accurate" | "--balanced" | "--thorough" | "--stealth" => {
+                set("AETHER_SCAN", "precise")
+            }
+            "--ultra" | "--ultra-precise" | "--ironclad" => set("AETHER_SCAN", "ultra"),
 
             "--noize" => set("AETHER_NOIZE", next_value!()),
 
@@ -214,4 +222,39 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<()> {
 
 fn set(key: &str, value: &str) {
     std::env::set_var(key, value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prober::ScanMode;
+
+    fn scan_mode_of(flag: &str) -> ScanMode {
+        std::env::remove_var("AETHER_SCAN");
+        parse_args(vec![flag.to_string()]).expect("the flag should be accepted");
+        let raw = std::env::var("AETHER_SCAN").expect("the flag should set a scan mode");
+        std::env::remove_var("AETHER_SCAN");
+        ScanMode::parse(&raw)
+    }
+
+    /// One test for every scan flag on purpose: they all write the same
+    /// environment variable, and cargo would run separate tests in parallel.
+    #[test]
+    fn the_scan_flags_select_the_three_modes_and_the_retired_names_still_work() {
+        assert_eq!(scan_mode_of("--turbo"), ScanMode::Turbo);
+        assert_eq!(scan_mode_of("--precise"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--accurate"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--ultra"), ScanMode::Ultra);
+        assert_eq!(scan_mode_of("--ultra-precise"), ScanMode::Ultra);
+        assert_eq!(scan_mode_of("--balanced"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--thorough"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--stealth"), ScanMode::Precise);
+        assert_eq!(scan_mode_of("--ironclad"), ScanMode::Ultra);
+    }
+
+    #[test]
+    fn an_unknown_flag_is_refused_with_the_usage_text() {
+        let error = parse_args(vec!["--nope".to_string()]).expect_err("should be refused");
+        assert!(error.to_string().contains("unknown option"));
+    }
 }

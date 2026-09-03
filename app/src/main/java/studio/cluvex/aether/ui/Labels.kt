@@ -29,11 +29,25 @@ internal fun protocolLabel(protocol: Protocol): String = when (protocol) {
 
 @Composable
 internal fun scanLabel(mode: ScanMode): String = when (mode) {
-    ScanMode.TURBO -> stringResource(R.string.scan_turbo)
-    ScanMode.BALANCED -> stringResource(R.string.scan_balanced)
-    ScanMode.THOROUGH -> stringResource(R.string.scan_thorough)
-    ScanMode.STEALTH -> stringResource(R.string.scan_stealth)
-    ScanMode.IRONCLAD -> stringResource(R.string.scan_ironclad)
+    ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo)
+    ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise)
+    ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra)
+}
+
+/** What the mode does, in one line. Shown WITH the choice, not after it. */
+@Composable
+internal fun scanDescription(mode: ScanMode): String = when (mode) {
+    ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo_desc)
+    ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise_desc)
+    ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra_desc)
+}
+
+/** Roughly how long that mode takes, so the wait is a choice and not a surprise. */
+@Composable
+internal fun scanEta(mode: ScanMode): String = when (mode) {
+    ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo_eta)
+    ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise_eta)
+    ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra_eta)
 }
 
 @Composable

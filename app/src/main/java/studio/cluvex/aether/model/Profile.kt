@@ -4,8 +4,57 @@ package studio.cluvex.aether.model
 /** Transport protocol, mapped 1:1 to the desktop app's CLI flags. */
 enum class Protocol { AUTO, MASQUE, WIREGUARD, GOOL }
 
-/** Endpoint scanning strategy. IRONCLAD added in engine v1.3.0. */
-enum class ScanMode { TURBO, BALANCED, THOROUGH, STEALTH, IRONCLAD }
+/**
+ * How hard the engine's endpoint scanner tries. THREE modes, and that is the
+ * whole surface the UI offers.
+ *
+ * WHY THREE AND NOT FIVE: this used to be TURBO, BALANCED, THOROUGH, STEALTH
+ * and IRONCLAD. Two of those were the same intention with a different amount of
+ * patience (balanced vs thorough), one was "balanced, but slower and quieter"
+ * (stealth), and the only genuinely different one - every candidate has to
+ * carry a REAL request end to end before it is accepted - was called
+ * "ironclad", a word that cannot be ranked against "thorough" by anyone who has
+ * not read the engine source. Five options, three meanings, no guidance.
+ *
+ * So the modes are now the three questions a user actually has:
+ *
+ *  - [TURBO]   "just get me online"      -> first edge that answers wins
+ *  - [PRECISE] "give me a good one"      -> collect several, keep the fastest
+ *  - [ULTRA]   "nothing works here"      -> only accept an edge that proves
+ *                                           itself with a real request
+ *
+ * [engineFlag] is the single place a mode becomes an engine argument, and
+ * [fromStored] is the single place an older saved name becomes one of these.
+ */
+enum class ScanMode(val engineFlag: String) {
+    TURBO("--turbo"),
+    PRECISE("--precise"),
+    ULTRA("--ultra"),
+    ;
+
+    companion object {
+        /**
+         * Reads a mode from a persisted / transported name, or null when the
+         * value means nothing (the caller then keeps its own default).
+         *
+         * MIGRATION: the five pre-1.4.6 names are still understood, because
+         * they are sitting in every existing DataStore file, every saved setup,
+         * every exported config and every pending Intent extra. Without this a
+         * user who had chosen THOROUGH would silently be moved to the default
+         * on upgrade - and "my settings reset themselves" is exactly the kind
+         * of thing that gets read as a broken update.
+         */
+        fun fromStored(raw: String?): ScanMode? {
+            val name = raw?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+            entries.firstOrNull { it.name == name }?.let { return it }
+            return when (name) {
+                "BALANCED", "THOROUGH", "STEALTH" -> PRECISE
+                "IRONCLAD" -> ULTRA
+                else -> null
+            }
+        }
+    }
+}
 
 /** IP family preference. */
 enum class IpVersion { V4, V6, BOTH }
@@ -52,14 +101,14 @@ enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("war
  */
 data class ConnectionProfile(
     val protocol: Protocol = Protocol.AUTO,
-    val scanMode: ScanMode = ScanMode.BALANCED,
+    val scanMode: ScanMode = ScanMode.PRECISE,
     val ipVersion: IpVersion = IpVersion.V4,
     val quickReconnect: Boolean = true,
     val masqueHttp2: Boolean = false,
     /**
      * Share the tunnel with other devices on the same Wi-Fi / hotspot via the
      * in-app proxy bridge (see [studio.cluvex.aether.core.ShareBridge]).
-     * UI-side option only — it never reaches the engine's CLI args.
+     * UI-side option only - it never reaches the engine's CLI args.
      */
     val lanShare: Boolean = false,
 
@@ -74,8 +123,8 @@ data class ConnectionProfile(
     /**
      * Comma-separated IP range(s) used when [endpointMode] is MANUAL_RANGE,
      * e.g. "8.6.112.x" or "188.114.96.0/24, 162.159.192.0/24". The engine
-     * scans exactly these ranges (see AETHER_SCAN_CIDRS in prober.rs), minus
-     * anything the no-Iran filter rejects.
+     * scans exactly these ranges (see AETHER_SCAN_CIDRS in prober/scan.rs) for
+     * BOTH transports, and accepts either shape.
      */
     val manualRange: String = "",
     /** WireGuard persistent keepalive, seconds. 0 = engine default (5). */
@@ -119,7 +168,7 @@ data class ConnectionProfile(
     val accessClientId: String = "",
     /**
      * Access service-token client secret. SECURITY: never emitted as a CLI
-     * argument (argv is world-readable via /proc on rooted devices) — it is
+     * argument (argv is world-readable via /proc on rooted devices) - it is
      * handed to the engine through its environment instead.
      */
     val accessClientSecret: String = "",
@@ -194,15 +243,9 @@ data class ConnectionProfile(
         }
 
         // A pinned peer makes scan mode irrelevant, so only emit it otherwise.
-        if (!hasManualPeer) {
-            when (scanMode) {
-                ScanMode.TURBO -> args += "--turbo"
-                ScanMode.BALANCED -> args += "--balanced"
-                ScanMode.THOROUGH -> args += "--thorough"
-                ScanMode.STEALTH -> args += "--stealth"
-                ScanMode.IRONCLAD -> args += "--ironclad"
-            }
-        }
+        // The flag lives on the mode itself, so there is exactly one place
+        // where a mode becomes an engine argument.
+        if (!hasManualPeer) args += scanMode.engineFlag
 
         when (ipVersion) {
             IpVersion.V4 -> args += "-4"
@@ -355,18 +398,20 @@ data class ConnectionProfile(
 
     /**
      * How long to wait for the engine to open the local SOCKS5 port before
-     * giving up. This MUST comfortably exceed the engine's own endpoint-scan
-     * budget for the chosen mode; otherwise we abort while the engine is still
-     * legitimately scanning. A pinned peer connects almost immediately.
+     * giving up.
+     *
+     * This MUST comfortably exceed the engine's OWN scan budget for the chosen
+     * mode (prober/scan.rs: 45 s turbo, 150 s precise, 300 s ultra on MASQUE),
+     * otherwise the app aborts an attempt while the engine is still
+     * legitimately scanning - which looks exactly like a failure and is not
+     * one. A pinned peer connects almost immediately.
      */
     fun connectTimeoutMs(): Long {
         if (hasManualPeer) return 45_000L
         return when (scanMode) {
             ScanMode.TURBO -> 60_000L
-            ScanMode.BALANCED -> 150_000L
-            ScanMode.STEALTH -> 240_000L
-            ScanMode.THOROUGH -> 300_000L
-            ScanMode.IRONCLAD -> 360_000L
+            ScanMode.PRECISE -> 190_000L
+            ScanMode.ULTRA -> 340_000L
         }
     }
 
@@ -374,7 +419,7 @@ data class ConnectionProfile(
     private fun sanitizedRange(raw: String): String? {
         val text = raw.trim().takeIf { it.matches(RANGE_ENTRY) } ?: return null
         val numbers = text.split("-").map { it.toInt() }
-        // Out-of-bounds or reversed values are typos, not tuning data — the
+        // Out-of-bounds or reversed values are typos, not tuning data - the
         // engine would receive garbage flags and fail late instead of never.
         if (numbers.any { it < 1 || it > 65_535 }) return null
         return if (numbers.size == 2 && numbers[0] > numbers[1]) null else text
@@ -397,7 +442,7 @@ data class ConnectionProfile(
 
         /**
          * `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port).
-         * Octets and ports are numerically bounded — `\d{1,3}` alone would
+         * Octets and ports are numerically bounded - `\d{1,3}` alone would
          * accept `999.999.999.999:99999` and defer the failure to the engine.
          */
         private val OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)"
