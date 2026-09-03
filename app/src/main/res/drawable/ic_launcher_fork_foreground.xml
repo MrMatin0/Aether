@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FORK LAUNCHER FOREGROUND: the Aether "A", forked.
+
+  Still the same letter, because this IS Aether and the icon should say so.
+  What changes are the only two properties that survive being drawn at 48dp:
+
+  1. Hue - amber and pink, against upstream's blue and teal.
+  2. Silhouette - the mark is split into two legs bridged by a crossbar.
+     Upstream's mark has no bar, so the two icons differ in SHAPE and not just
+     in colour. That is what keeps them apart in the monochrome/themed layer
+     (this same drawable), where the launcher tints everything a single colour
+     and hue differentiates nothing whatsoever.
+
+  This drawable is used as BOTH the foreground and the monochrome layer, which
+  is why the bar overlaps both legs instead of floating between them: flattened
+  to one colour it has to read as a joined letter, not three loose shards.
+
+  Geometry: scaled to 0.62 about the centre and nudged 2 units left (the right
+  leg is offset, so the raw mark is not centred). The result spans roughly
+  33..75 on both axes, inside the 66dp safe zone every adaptive-icon mask
+  guarantees.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:pivotX="54"
+        android:pivotY="54"
+        android:translateX="-2">
+        <!-- Left leg. -->
+        <path
+            android:fillColor="#FFB020"
+            android:pathData="M54,20L54,54L42,86L26,86Z" />
+        <!-- Right leg, offset outward: this is the "fork" in the mark. -->
+        <path
+            android:fillColor="#FFB020"
+            android:pathData="M60,20L88,86L72,86L60,54Z" />
+        <!-- Crossbar. Overlaps both legs so the flattened monochrome layer
+             still reads as one letter. -->
+        <path
+            android:fillColor="#FF5C7A"
+            android:pathData="M46,62L68,62L68,70L46,70Z" />
+    </group>
+</vector>

@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  1.4.5: same fork art as ic_launcher.xml. Both entries must move together,
+  otherwise a launcher that asks for the round variant would still hand back
+  the upstream mark.
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <background android:drawable="@drawable/ic_launcher_fork_background" />
+    <foreground android:drawable="@drawable/ic_launcher_fork_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_fork_foreground" />
 </adaptive-icon>
