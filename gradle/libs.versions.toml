@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Single source of truth for every plugin and dependency version.
+#
+# Versions used to be scattered as string literals across two build files,
+# which is how you end up with lifecycle 2.11.0 in one place and 2.10.0 in
+# another. Bump a line here and the whole project moves with it.
+#
+# NOTE: the versions below are exactly the ones this project already builds
+# with. This file changes WHERE they live, not WHAT they are - a build-system
+# rewrite is the wrong moment to also chase dependency upgrades.
+# ---------------------------------------------------------------------------
+
+[versions]
+# AGP 9.3 requires Gradle 9.5.0 (see gradle/wrapper/gradle-wrapper.properties)
+# and JDK 17, and supports up to API 37.
+agp = "9.3.0"
+kotlin = "2.4.10"
+composeBom = "2026.08.00"
+androidxCore = "1.19.0"
+androidxActivity = "1.13.0"
+androidxLifecycle = "2.11.0"
+androidxDatastore = "1.2.1"
+coroutines = "1.11.0"
+
+[libraries]
+# The BOM pins every androidx.compose.* artifact below, so those carry no
+# version of their own on purpose.
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidxLifecycle" }
+androidx-lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "androidxLifecycle" }
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+# AGP 9 compiles Kotlin itself (built-in Kotlin), so the Kotlin Android plugin
+# is only declared to put a known Kotlin version on the build classpath - it is
+# never applied to a module. Do not remove it: the version it pins is what the
+# built-in Kotlin support and the Compose compiler plugin agree on.
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

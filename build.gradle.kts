@@ -1,6 +1,14 @@
-// Top-level build file. Plugin versions are declared once here and reused by modules.
+// ---------------------------------------------------------------------------
+// Top-level build file. It declares plugins and applies none of them; every
+// version comes from gradle/libs.versions.toml so a bump happens in one place.
+// ---------------------------------------------------------------------------
 plugins {
-    id("com.android.application") version "9.3.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.4.10" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10" apply false
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.compose) apply false
+}
+
+// `gradle clean` from the root, without a stray `clean` task per module.
+tasks.register<Delete>("clean") {
+    delete(rootProject.layout.buildDirectory)
 }
