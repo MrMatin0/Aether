@@ -1,0 +1,128 @@
+name: Core sync
+
+# ---------------------------------------------------------------------------
+# Keeps the vendored Aether engine current WITHOUT putting an upstream change
+# in the path of a release.
+#
+# This used to run inside every build: each push checked the upstream core,
+# upgraded the vendored engine, tried to compile it, rolled back when it did
+# not, and pushed the result straight to the branch it was building. Three
+# problems with that, all of them real:
+#
+#   * a release built from a tag could ship an engine the tag never contained;
+#   * two builds of the same branch raced each other's `git push`;
+#   * a red build was ambiguous - upstream drift or an actual regression?
+#
+# So the upgrade lives here instead: on a schedule, it syncs the core, PROVES
+# it compiles, and opens a pull request. The engine still updates itself, but a
+# human sees the diff and CI verifies it as a normal change.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays, 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: core-sync
+  cancel-in-progress: false
+
+env:
+  NDK_VERSION: "26.3.11579264"
+  ANDROID_API: "26"
+  RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
+
+jobs:
+  sync:
+    name: Sync and verify the engine
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Sync Aether core
+        id: sync
+        run: bash scripts/sync-core.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AETHER_REPO: CluvexStudio/Aether
+
+      - name: Anything to do?
+        id: check
+        run: |
+          set -euo pipefail
+          if [ ! -f native/.core-sync-state ]; then
+            echo "Core already current - nothing to propose."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$(git status --porcelain native/aether README.md README.fa.md)" ]; then
+            echo "Core already current - nothing to propose."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "core=$(tr -d '[:space:]' < native/aether/CORE_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Android SDK
+        if: steps.check.outputs.changed == 'true'
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Set up Rust (Android targets)
+        if: steps.check.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.RUST_TARGETS }}
+
+      - name: Install cargo-ndk
+        if: steps.check.outputs.changed == 'true'
+        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+
+      # The whole point of this workflow: an upstream core that does not compile
+      # never becomes a pull request, and definitely never reaches a release.
+      # Upstream has broken this before (core 1.4.0: E0063 on H2TunnelConfig,
+      # E0061 on wireguard::verify_endpoint_keep_session), and no textual merge
+      # can promise otherwise.
+      - name: Prove the new engine compiles
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          bash scripts/fetch-natives.sh
+          bash scripts/build-natives.sh aether
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+
+      - name: Open a pull request
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CORE: ${{ steps.check.outputs.core }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/core-v${CORE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add native/aether README.md README.fa.md
+          git commit -m "chore: upgrade Aether core to v${CORE}"
+          git push --force-with-lease origin "$BRANCH"
+          if gh pr view "$BRANCH" >/dev/null 2>&1; then
+            echo "A pull request for ${BRANCH} is already open; pushed the update to it."
+            exit 0
+          fi
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "$BRANCH" \
+            --title "chore: upgrade Aether core to v${CORE}" \
+            --body "Automated engine sync from CluvexStudio/Aether. Vendored core moved to v${CORE} with this app's engine patches preserved, libaether.so was cross-compiled from this exact tree before the PR was opened, and the 1.2.2 changelog in both READMEs was updated by scripts/sync-core.sh. The build workflow attaches installable APKs to this PR - test the tunnel on a real link before merging."
