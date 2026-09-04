@@ -36,7 +36,7 @@ class HostnameTest {
     @Test
     fun nonAsciiAndControlBytesAreRefused() {
         assertFalse(Hostname.isRepresentable("exämple.com"))
-        assertFalse(Hostname.isRepresentable("example.com"))
+        assertFalse(Hostname.isRepresentable("example\u0001.com"))
         assertFalse(Hostname.isRepresentable("exa mple.com"))
         assertFalse(Hostname.isRepresentable("example.com\r\nHost: evil"))
     }
