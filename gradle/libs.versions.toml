@@ -5,15 +5,20 @@
 # which is how you end up with lifecycle 2.11.0 in one place and 2.10.0 in
 # another. Bump a line here and the whole project moves with it.
 #
-# NOTE: the versions below are exactly the ones this project already builds
-# with. This file changes WHERE they live, not WHAT they are - a build-system
-# rewrite is the wrong moment to also chase dependency upgrades.
+# NOTE: every version below is a STABLE release, audited against upstream on
+# 2026-09-04. Pre-release lines are deliberately NOT used, even where they are
+# newer: Kotlin 2.4.20 (RC), AGP 9.4 (alpha, and it would force Gradle 9.6.0),
+# lifecycle 2.12 (alpha) and Compose 1.13 (alpha) all stay off this list.
 # ---------------------------------------------------------------------------
 
 [versions]
-# AGP 9.3 requires Gradle 9.5.0 (see gradle/wrapper/gradle-wrapper.properties)
-# and JDK 17, and supports up to API 37.
-agp = "9.3.0"
+# AGP 9.3 requires Gradle >= 9.5.0 (see gradle/wrapper/gradle-wrapper.properties)
+# and JDK 17, and supports up to API 37 - which is what compileSdk/targetSdk are.
+# 9.3.2 is the current patch of that line: it fixes the lint crash on JDK 17
+# (NoSuchMethodError java.util.List.removeLast() in the bundled JavaDocParser)
+# that 9.3.0 shipped with. Do not jump to 9.4: it is still in alpha and raises
+# the minimum Gradle to 9.6.0.
+agp = "9.3.2"
 kotlin = "2.4.10"
 composeBom = "2026.08.00"
 androidxCore = "1.19.0"
