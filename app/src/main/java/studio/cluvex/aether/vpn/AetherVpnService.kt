@@ -14,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import studio.cluvex.aether.AetherApp
 import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
@@ -43,6 +44,9 @@ import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.widget.AetherWidgetProvider
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Socket
 
 /**
  * The heart of the app. On connect it:
@@ -90,38 +94,68 @@ class AetherVpnService : VpnService() {
     private var probeFailures = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_DISCONNECT -> {
-                // STRICT KILL SWITCH (1.2.4): a manual disconnect must not
-                // open a leak window. With strict mode on, the first
-                // disconnect engages lockdown instead; disconnecting FROM
-                // lockdown lifts it. The lockdown branch requires a LIVE
-                // session: the error notification keeps its Disconnect action
-                // even after a failed connect, and engaging a device-wide
-                // blackhole from that dead end would strand the user offline.
-                val last = lastProfile
-                when {
-                    lockdownTunActive -> stopEverything()
-                    runJob?.isActive == true && last != null && last.strictKillSwitch ->
-                        enterLockdown(last)
-                    else -> stopEverything()
-                }
-                return START_NOT_STICKY
+        // FOREGROUND-SERVICE CONTRACT — DO NOT MOVE THIS BELOW THE `when`.
+        //
+        // Every path into this service arrives via
+        // ContextCompat.startForegroundService() (see AetherController), and the
+        // platform then REQUIRES a startForeground() call within ~5 s. Miss it
+        // and the service is killed with ForegroundServiceDidNotStartInTime
+        // Exception — an ANR on API 26-30 and an outright crash from API 31.
+        //
+        // The ACTION_DISCONNECT branch used to return without ever promoting
+        // the service. That is fine while a session is live (we are already
+        // foreground), and a CRASH in every case where we are not: the
+        // notification's Disconnect action after a failed connect, a Quick
+        // Settings tap, a widget toggle, or the kill-switch notification's
+        // Disconnect after the service had been demoted. So promote
+        // unconditionally, then decide what the intent meant.
+        //
+        // currentNotification() (not buildNotification()) is used so promoting
+        // never blanks the live speed card that is already on screen.
+        startForeground(NOTIF_ID, currentNotification(getString(R.string.state_launching)))
+
+        val action = intent?.action
+        if (action == ACTION_DISCONNECT) {
+            // STRICT KILL SWITCH (1.2.4): a manual disconnect must not
+            // open a leak window. With strict mode on, the first
+            // disconnect engages lockdown instead; disconnecting FROM
+            // lockdown lifts it. The lockdown branch requires a LIVE
+            // session: the error notification keeps its Disconnect action
+            // even after a failed connect, and engaging a device-wide
+            // blackhole from that dead end would strand the user offline.
+            val last = lastProfile
+            when {
+                lockdownTunActive -> stopEverything()
+                runJob?.isActive == true && last != null && last.strictKillSwitch ->
+                    enterLockdown(last)
+                else -> stopEverything()
             }
-            else -> {
-                // A null intent means the SYSTEM restarted us after the process
-                // was killed (START_STICKY). There is no payload then, and
-                // decoding null used to yield a DEFAULT profile — so the tunnel
-                // silently came back up as AUTO/BALANCED with the kill switch,
-                // split tunneling and every other user setting reset. Flag that
-                // case so the session is rebuilt from the persisted profile.
-                val restored = intent == null
-                val profile = ProfileCodec.decode(intent?.getStringExtra(EXTRA_PROFILE))
-                startForeground(NOTIF_ID, buildNotification(getString(R.string.state_launching)))
-                startTunnel(profile, restored)
-            }
+            return START_NOT_STICKY
         }
-        return START_STICKY
+
+        // A null intent means the SYSTEM restarted us after the process was
+        // killed (START_STICKY). There is no payload then, and decoding null
+        // used to yield a DEFAULT profile — so the tunnel silently came back up
+        // as AUTO/PRECISE with the kill switch, split tunneling and every other
+        // user setting reset. Flag that case so the session is rebuilt from the
+        // persisted profile.
+        if (intent == null || action == ACTION_CONNECT) {
+            val restored = intent == null
+            val profile = ProfileCodec.decode(intent?.getStringExtra(EXTRA_PROFILE))
+            startTunnel(profile, restored)
+            return START_STICKY
+        }
+
+        // ACTION HYGIENE: anything else used to fall into the connect branch and
+        // bring a tunnel UP with a default profile — a stray or malformed intent
+        // could start the VPN with settings the user never chose. An action we do
+        // not recognise is a bug on the sender's side; say so and stand down.
+        DiagnosticsLog.w(TAG, "Ignoring service intent with unknown action: $action")
+        if (runJob?.isActive != true && !lockdownTunActive) {
+            stopForegroundCompat()
+            stopSelf()
+        }
+        return START_NOT_STICKY
     }
 
     private fun startTunnel(profile: ConnectionProfile, restored: Boolean = false) {
@@ -250,12 +284,11 @@ class AetherVpnService : VpnService() {
      * or Gool).
      *
      * 1.2.2 "MASQUE hangs forever" FIX: a hand-picked protocol used to get ONE
-     * attempt with the full scan budget of the selected scan mode — up to 150 s
-     * on Balanced and 300 s on Thorough — with no second chance. On a network
-     * where QUIC/UDP is throttled that means the user stares at "Connecting"
-     * for minutes and then just fails, while Smart mode (which walks a ladder
-     * of shorter, hardened attempts) connects in seconds. So the chosen
-     * protocol now gets:
+     * attempt with the full scan budget of the selected scan mode — with no
+     * second chance. On a network where QUIC/UDP is throttled that means the
+     * user stares at "Connecting" for minutes and then just fails, while Smart
+     * mode (which walks a ladder of shorter, hardened attempts) connects in
+     * seconds. So the chosen protocol now gets:
      *   1. a first pass exactly as configured, on a capped budget, and
      *   2. if that fails, the SAME protocol again with anti-DPI hardening
      *      (obfuscation on, plus HTTP/2 + TLS fragmentation + ECH for MASQUE)
@@ -382,8 +415,8 @@ class AetherVpnService : VpnService() {
             // startSync is ground truth: in proxy mode these listeners ARE the
             // product, so a bind failure must fail the connection loudly
             // instead of claiming "Local proxy ready" over dead ports (the old
-            // fire-and-forget start swallowed EADDRINUSE and still reported
-            // 1080/8118 as ready — external apps then couldn't connect).
+            // fire-and-forget start swallowed EADDRINUSE and still reported the
+            // ports as ready — external apps then couldn't connect).
             val shareReady = ShareBridge.startSync(localOnly = !profile.lanShare)
             if (!shareReady) {
                 DiagnosticsLog.e(TAG, "Proxy mode: the fixed local proxy ports could not be opened (see errors above).")
@@ -769,20 +802,32 @@ class AetherVpnService : VpnService() {
         return false
     }
 
-    /** Single TCP connect to [target] ("host:port") THROUGH the engine's local SOCKS5 listener. */
-    private fun probeTunnelOnce(target: String): Boolean = runCatching {
-        val proxy = java.net.Proxy(
-            java.net.Proxy.Type.SOCKS,
-            java.net.InetSocketAddress(SOCKS_HOST, SOCKS_PORT),
-        )
-        java.net.Socket(proxy).use {
-            it.connect(
-                java.net.InetSocketAddress(target.substringBefore(':'), target.substringAfter(':').toInt()),
-                PROBE_TIMEOUT_MS,
-            )
+    /**
+     * Single TCP connect to [target] ("host:port") THROUGH the engine's local
+     * SOCKS5 listener.
+     *
+     * DISCONNECT-LATENCY FIX: this is a BLOCKING `Socket.connect` with an 8 s
+     * timeout, and coroutine cancellation cannot interrupt a blocking call. A
+     * disconnect tapped while the watchdog happened to be mid-probe therefore
+     * sat on "Disconnecting…" until the probe timed out on its own — the exact
+     * same defect [AetherProcess.awaitExit] already fixes, so it gets the exact
+     * same cure: `runInterruptible` maps cancellation onto a real thread
+     * interrupt, so the connect aborts immediately.
+     *
+     * CancellationException is deliberately NOT swallowed: a cancelled
+     * supervisor must unwind, not report "tunnel dead" and trigger a restart of
+     * an engine that is already being torn down.
+     */
+    private suspend fun probeTunnelOnce(target: String): Boolean =
+        runInterruptible(Dispatchers.IO) {
+            runCatching {
+                val host = target.substringBefore(':')
+                val port = target.substringAfter(':').toInt()
+                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(SOCKS_HOST, SOCKS_PORT))
+                Socket(proxy).use { it.connect(InetSocketAddress(host, port), PROBE_TIMEOUT_MS) }
+                true
+            }.getOrDefault(false)
         }
-        true
-    }.getOrDefault(false)
 
     /**
      * KILL SWITCH lockdown (1.2.4): stop the engine and the forwarder but
@@ -923,6 +968,24 @@ class AetherVpnService : VpnService() {
     }
 
     /**
+     * The notification that belongs on screen RIGHT NOW.
+     *
+     * While the tunnel is up and the meter has a reading, the speed card IS the
+     * status; rebuilding the plain text notification instead would blank the
+     * numbers for a second. Shared by [updateNotification] and by the
+     * startForeground() call in [onStartCommand], so promoting the service can
+     * never wipe a live reading either.
+     */
+    private fun currentNotification(text: String): android.app.Notification {
+        val sample = TrafficMonitor.sample.value
+        return if (sample.live && AetherController.state.value.isConnected) {
+            TrafficNotification.build(this, sample)
+        } else {
+            buildNotification(text)
+        }
+    }
+
+    /**
      * Starts the 1-second speed meter and pipes every sample into the ongoing
      * notification. Idempotent, so a reconnect cannot end up with two writers.
      *
@@ -956,17 +1019,7 @@ class AetherVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(android.app.NotificationManager::class.java)
-        // While the tunnel is up and the meter has a reading, the speed card IS
-        // the status — rebuilding the plain text notification here would blank
-        // the numbers for a second on every state-change repaint.
-        val sample = TrafficMonitor.sample.value
-        val notification =
-            if (sample.live && AetherController.state.value.isConnected) {
-                TrafficNotification.build(this, sample)
-            } else {
-                buildNotification(text)
-            }
-        manager.notify(NOTIF_ID, notification)
+        manager.notify(NOTIF_ID, currentNotification(text))
         // Keep the Quick Settings tile in sync with every state transition.
         AetherTileService.requestUpdate(this)
         // Keep the home-screen widget (feature merge) in sync too.
