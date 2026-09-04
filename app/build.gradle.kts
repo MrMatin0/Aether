@@ -182,8 +182,18 @@ android {
 
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
-        val githubRepo = System.getenv("GITHUB_REPOSITORY")
-            ?: (project.findProperty("githubRepo") as? String ?: "")
+        // Same value, same precedence as before (env first, then the Gradle
+        // property, then empty), but read through the provider API.
+        //
+        // Gradle 9.6 deprecated resolving findProperty()/property() through the
+        // PROJECT HIERARCHY and removes it in Gradle 10. `githubRepo` is set in
+        // the root gradle.properties or with -PgithubRepo=..., and this is the
+        // :app project, so `project.findProperty("githubRepo")` was exactly that
+        // deprecated lookup and warned on every configuration under Gradle 9.7.
+        // providers.gradleProperty reads Gradle properties directly instead.
+        val githubRepo = project.providers.environmentVariable("GITHUB_REPOSITORY")
+            .orElse(project.providers.gradleProperty("githubRepo"))
+            .getOrElse("")
         val releasesUrl =
             if (githubRepo.isNotBlank()) "https://github.com/$githubRepo/releases/latest" else ""
         buildConfigField("String", "RELEASES_URL", "\"$releasesUrl\"")
