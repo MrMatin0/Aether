@@ -4,22 +4,50 @@ import android.util.Log
 import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Runs the native `aether` engine (shipped as libaether.so) as a child
  * process. On Android an executable packaged in jniLibs is extracted to
  * nativeLibraryDir with the exec bit set, which is exactly what we run.
+ *
+ * THREAD SAFETY (this is not decoration — see below): [start] runs on the
+ * connect coroutine, [isAlive] and [awaitExit] on the supervisor coroutine,
+ * [stop] on the teardown coroutine or straight off the watchdog, and the
+ * log-drain thread holds its own reference. All of those are different threads.
  */
 class AetherProcess(
     private val nativeLibDir: String,
     private val workingDir: File,
 ) {
+    /**
+     * The live child process, or null.
+     *
+     * MUST stay @Volatile. Without it there is no happens-before edge between
+     * the connect coroutine's write and the supervisor / teardown threads'
+     * reads, so the JMM permits [stop] to observe a STALE null and return
+     * without killing anything. The engine then keeps running — orphaned,
+     * holding the local SOCKS5 listener on 127.0.0.1:1819, and invisible to
+     * both isAlive() and a later stop(). That is precisely the "local port is
+     * still busy" state the protocol-switch path downstream has to work
+     * around, so the fix belongs here rather than in another retry loop.
+     */
+    @Volatile
     private var process: Process? = null
 
-    fun start(profile: ConnectionProfile) {
+    /**
+     * Serialises [start] against [stop]. Deliberately NOT held across
+     * [awaitExit]: that parks for up to the whole watchdog interval, and
+     * blocking a disconnect behind it is the latency bug this class already
+     * fixed once.
+     */
+    private val lifecycleLock = Any()
+
+    fun start(profile: ConnectionProfile) = synchronized(lifecycleLock) {
         // Reentrancy guard: spawning over a live engine would orphan it — the
         // old process keeps running (holding port 1819) but is invisible to
-        // isAlive()/stop().
+        // isAlive()/stop(). Checked under the lock so two concurrent connects
+        // cannot both pass the check and both spawn.
         check(process?.isAlive != true) { "Engine is already running" }
         val bin = File(nativeLibDir, "libaether.so")
         if (!bin.exists()) {
@@ -46,10 +74,10 @@ class AetherProcess(
             try {
                 proc.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach {
-                        // SECURITY FIX: the engine's stdout (endpoints, exit
-                        // IPs, config echo) must not be mirrored to Logcat in
-                        // release builds — Logcat is world-readable via adb and
-                        // ends up in bug reports. The in-app diagnostics panel
+                        // SECURITY: the engine's stdout (endpoints, exit IPs,
+                        // config echo) must not be mirrored to Logcat in release
+                        // builds — Logcat is world-readable via adb and ends up
+                        // in bug reports. The in-app diagnostics panel
                         // (app-private file) still receives every line below.
                         if (BuildConfig.DEBUG) Log.i("aether-engine", it)
                         DiagnosticsLog.d("engine", it)
@@ -81,23 +109,24 @@ class AetherProcess(
      *
      * The bounded overload is used so the supervisor still re-checks its own
      * cancellation state periodically.
+     *
+     * DISCONNECT-LATENCY ROOT CAUSE (fixed): `Process.waitFor` is a BLOCKING
+     * java call. Coroutine cancellation cannot interrupt a blocking call, so
+     * when the user tapped disconnect the service sat inside this wait until
+     * the whole window expired — which is exactly the 30-50 s
+     * "Disconnecting…" freeze. `runInterruptible` maps cancellation onto a real
+     * thread interrupt, so `waitFor` throws immediately and the teardown
+     * continues within milliseconds — while still costing zero polling when
+     * idle.
+     *
+     * CancellationException is rethrown, not mapped to "timeout": a cancelled
+     * caller must unwind, and "we were cancelled" must stay distinguishable
+     * from "the engine outlived the window".
      */
     suspend fun awaitExit(timeoutMs: Long): Boolean =
-        // DISCONNECT-LATENCY ROOT CAUSE (fixed): `Process.waitFor` is a
-        // BLOCKING java call. Coroutine cancellation cannot interrupt a
-        // blocking call, so when the user tapped disconnect the service
-        // sat inside this wait until the whole 60 s window expired — which
-        // is exactly the 30–50 s "Disconnecting…" freeze. `runInterruptible`
-        // maps cancellation onto a real thread interrupt, so `waitFor`
-        // throws immediately and the teardown continues within
-        // milliseconds — while still costing zero polling when idle.
-        //
-        // CancellationException is rethrown, not mapped to "timeout": a
-        // cancelled caller must unwind, and "we were cancelled" must stay
-        // distinguishable from "the engine outlived the window".
         try {
             kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
-                process?.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+                process?.waitFor(timeoutMs, TimeUnit.MILLISECONDS) ?: true
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -118,8 +147,8 @@ class AetherProcess(
      * hung for tens of seconds and then had to retry. We now wait for the
      * process to actually exit and escalate to SIGKILL if it does not.
      */
-    fun stop() {
-        val proc = process ?: return
+    fun stop() = synchronized(lifecycleLock) {
+        val proc = process ?: return@synchronized
         process = null
         runCatching {
             proc.destroy()
@@ -128,13 +157,14 @@ class AetherProcess(
             // grey, and the next connect independently waits for the local
             // proxy port to be released, so nothing depends on a long wait
             // here.
-            if (!proc.waitFor(GRACEFUL_EXIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (!proc.waitFor(GRACEFUL_EXIT_MS, TimeUnit.MILLISECONDS)) {
                 proc.destroyForcibly()
                 // Keep the KDoc's promise: confirm the reaping after the
                 // escalation too, so port 1819 is free when this returns.
-                proc.waitFor(FORCE_EXIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                proc.waitFor(FORCE_EXIT_MS, TimeUnit.MILLISECONDS)
             }
         }
+        Unit
     }
 
     private companion object {

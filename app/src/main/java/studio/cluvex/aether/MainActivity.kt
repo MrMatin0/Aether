@@ -44,13 +44,16 @@ import studio.cluvex.aether.ui.OnboardingScreen
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
 
+/**
+ * NOTE: declared with `android:launchMode="singleTop"` in the manifest, and
+ * [onNewIntent] depends on that. Under the default "standard" mode the system
+ * builds a fresh instance for every delivered Intent and onNewIntent is never
+ * called, which silently disabled the whole connect-on-launch path.
+ */
 class MainActivity : ComponentActivity() {
     private lateinit var profileStore: ProfileStore
     private lateinit var onboardingStore: OnboardingStore
     private var pendingProfile: ConnectionProfile? = null
-
-    /** One prompt per process. See [maybeRequestNotificationPermission]. */
-    private var notificationPromptShown = false
 
     private val uiProfile = MutableStateFlow<ConnectionProfile?>(null)
     private val profileSaves = MutableSharedFlow<ConnectionProfile>(
@@ -103,8 +106,15 @@ class MainActivity : ComponentActivity() {
             if (onboardingStore.completed.first()) maybeRequestNotificationPermission()
         }
 
-        if (savedInstanceState == null && File(filesDir, AetherApp.CRASH_FILE).exists()) {
-            startActivity(Intent(this, CrashReportActivity::class.java))
+        // Off the main thread: this is flash I/O on the cold-start critical
+        // path, and a StrictMode disk-read violation on every launch.
+        if (savedInstanceState == null) {
+            lifecycleScope.launch {
+                val hasCrash = withContext(Dispatchers.IO) {
+                    runCatching { File(filesDir, AetherApp.CRASH_FILE).exists() }.getOrDefault(false)
+                }
+                if (hasCrash) startActivity(Intent(this@MainActivity, CrashReportActivity::class.java))
+            }
         }
 
         val launchedToConnect =
@@ -247,9 +257,12 @@ class MainActivity : ComponentActivity() {
      * permanently denied with no in-app way back. Asking after onboarding costs
      * nothing and turns a reflex into an answer.
      *
-     * It is also guarded twice now: not re-asked when already granted (onCreate
-     * runs again on every rotation, and firing a launcher for a permission the
-     * app already holds is pure noise), and not more than once per process.
+     * It is also guarded twice: not re-asked when already granted, and not more
+     * than once per PROCESS. That second guard used to be an INSTANCE field,
+     * which does not survive an activity recreation — and onCreate runs again on
+     * every configuration change the manifest does not swallow, so a rotation
+     * re-armed the prompt and walked the user straight into the two-dismissal
+     * permanent denial this whole comment exists to prevent.
      */
     private fun maybeRequestNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -267,5 +280,12 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_CONNECT_ON_LAUNCH = "studio.cluvex.aether.CONNECT_ON_LAUNCH"
+
+        /**
+         * One notification prompt per PROCESS. Lives here, not on the instance:
+         * an activity is recreated far more often than a process is started.
+         */
+        @Volatile
+        private var notificationPromptShown = false
     }
 }

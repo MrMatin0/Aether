@@ -2,6 +2,7 @@ package studio.cluvex.aether.data
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import studio.cluvex.aether.core.DiagnosticsLog
@@ -29,7 +30,7 @@ import javax.crypto.spec.GCMParameterSpec
  * Keystore and marked non-exportable: the raw key never enters the app's
  * address space, and the ciphertext alone is useless on another device.
  *
- * Layout: Base64( iv(12) || ciphertext||tag ).
+ * Layout: Base64( iv(12) || ciphertext||tag(16) ).
  */
 class SecretStore(context: Context) {
 
@@ -41,7 +42,18 @@ class SecretStore(context: Context) {
         val stored = prefs.getString(name, null) ?: return ""
         return try {
             val blob = Base64.decode(stored, Base64.NO_WRAP)
-            if (blob.size <= IV_LEN) return ""
+            // LENGTH GUARD: the old check was `blob.size <= IV_LEN`, which only
+            // demanded the 12-byte IV. An AES-GCM sealed value is IV + at least
+            // one ciphertext byte + a 16-byte tag, so anything shorter than
+            // IV_LEN + TAG_LEN is structurally impossible and was previously
+            // handed to doFinal() just to come back as an AEADBadTagException
+            // — i.e. a truncated blob took the "key is permanently broken" path
+            // instead of the "this is not a sealed value" path.
+            if (blob.size <= IV_LEN + TAG_LEN) {
+                DiagnosticsLog.w("secrets", "discarding malformed sealed value for $name")
+                prefs.edit().remove(name).apply()
+                return ""
+            }
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(
                 Cipher.DECRYPT_MODE,
@@ -50,11 +62,15 @@ class SecretStore(context: Context) {
             )
             String(cipher.doFinal(blob.copyOfRange(IV_LEN, blob.size)), Charsets.UTF_8)
         } catch (e: AEADBadTagException) {
-            // Key invalidated or restored onto another device: the ciphertext
-            // is PERMANENTLY undecryptable for this key. Drop the unusable
-            // blob instead of keeping a value we can never read again.
-            prefs.edit().remove(name).apply()
-            ""
+            dropUndecryptable(name, e)
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            // Same category as a bad tag, different exception and thrown from
+            // init() rather than doFinal(): the key is GONE (screen lock reset,
+            // biometrics re-enrolled, restore onto another device). It used to
+            // land in the generic "transient failure" branch below, so an
+            // unreadable blob was retained forever and every read logged the
+            // same error again.
+            dropUndecryptable(name, e)
         } catch (e: Exception) {
             // Transient Keystore/TEE failure (early-boot contention, provider
             // hiccup): keep the ciphertext — a later read can still succeed.
@@ -65,19 +81,52 @@ class SecretStore(context: Context) {
         }
     }
 
-    /** Encrypts and stores [value]; a blank value clears the entry. */
-    fun write(name: String, value: String) {
+    /**
+     * The ciphertext is PERMANENTLY undecryptable for this key, so keeping it
+     * only guarantees the same failure on every future read.
+     */
+    private fun dropUndecryptable(name: String, cause: Exception): String {
+        DiagnosticsLog.w(
+            "secrets",
+            "$name is permanently undecryptable (${cause::class.java.simpleName}) — clearing it; " +
+                "re-enter the credential in Settings.",
+        )
+        prefs.edit().remove(name).apply()
+        return ""
+    }
+
+    /**
+     * Encrypts and stores [value]; a blank value clears the entry. Returns
+     * whether the value is now persisted as requested.
+     *
+     * SILENT-LOSS FIX: this used to be a bare `runCatching { … }` with no
+     * logging and no return value. When the Keystore op failed — which does
+     * happen: TEE contention during early boot, a provider hiccup, a device
+     * whose keystore is in a bad state — the Access service-token secret was
+     * simply never written, while Settings had already reported "saved". The
+     * user then discovers it at the next connect, as an authentication failure
+     * with no explanation. A write that did not happen has to say so.
+     */
+    fun write(name: String, value: String): Boolean {
         if (value.isBlank()) {
             prefs.edit().remove(name).apply()
-            return
+            return true
         }
-        runCatching {
+        return try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key())
             val blob = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
             prefs.edit()
                 .putString(name, Base64.encodeToString(blob, Base64.NO_WRAP))
                 .apply()
+            true
+        } catch (e: Exception) {
+            DiagnosticsLog.e(
+                "secrets",
+                "could not seal $name (${e::class.java.simpleName}: ${e.message}) — " +
+                    "the credential was NOT saved.",
+            )
+            false
         }
     }
 
@@ -114,6 +163,7 @@ class SecretStore(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_LEN = 12
         private const val TAG_BITS = 128
+        private const val TAG_LEN = TAG_BITS / 8
 
         /**
          * Guards Keystore access across ALL SecretStore instances. Without it,
