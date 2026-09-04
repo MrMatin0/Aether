@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Inet4Address
@@ -11,6 +12,8 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -31,9 +34,28 @@ import kotlin.concurrent.thread
  * the TUN via addDisallowedApplication(), so proxied traffic always leaves via
  * the engine and never re-enters the VPN.
  *
- * Security note: both listeners accept connections from ANY device on the
- * local network while sharing is enabled. The UI warns the user accordingly
- * and sharing is OFF by default.
+ * ### THREAT MODEL (read before touching anything below)
+ *
+ * While sharing is on, both listeners accept connections from ANY device on the
+ * local network, unauthenticated, and every byte of the request is chosen by
+ * that device. That makes this the app's largest untrusted-input surface, so
+ * three properties are load-bearing rather than nice to have:
+ *
+ *  - **Bounded resources.** Connections are capped ([MAX_CONCURRENT_CLIENTS]).
+ *    Before that cap existed, a peer could open sockets in a loop and each one
+ *    got a raw Thread (plus a second one for the reverse relay leg), so a
+ *    trivial loop from any laptop on the network could exhaust the process's
+ *    thread stacks and take the tunnel down with it.
+ *  - **Bounded parsing.** The request line and headers are size-capped
+ *    ([MAX_HEADER_BYTES]) and the target is parsed by [HostPort], which refuses
+ *    what it cannot forward faithfully rather than guessing.
+ *  - **No smuggling.** Hop-by-hop headers are stripped per RFC 7230 and a
+ *    chunked request is refused outright, because this proxy does not dechunk
+ *    and forwarding a body it does not understand desynchronises the upstream
+ *    connection.
+ *
+ * The UI warns the user that sharing exposes the tunnel, and sharing is OFF by
+ * default.
  */
 object ShareBridge {
 
@@ -97,6 +119,36 @@ object ShareBridge {
     /** Socket buffer both legs of a relayed connection ask the kernel for. */
     private const val SOCKET_BUFFER_BYTES = 256 * 1024
 
+    /**
+     * Ceiling on simultaneously served proxy clients.
+     *
+     * Each accepted connection costs two threads (its handler plus the reverse
+     * relay leg) and two sockets. Without a ceiling, anything on the LAN could
+     * connect in a loop until the process died of OutOfMemoryError while trying
+     * to allocate a thread stack — and a VPN client dying is not a graceful
+     * degradation, it is a leak. 128 clients is far more than the "a laptop and
+     * a tablet" case this feature exists for, and excess is refused with a
+     * proper status line rather than dropped on the floor.
+     */
+    private const val MAX_CONCURRENT_CLIENTS = 128
+
+    /** How often a refusal is worth a log line, so a flood cannot spam the log. */
+    private const val OVERLOAD_LOG_INTERVAL_MS = 5_000L
+
+    /** Hop-by-hop headers, per RFC 7230 §6.1, plus the de-facto proxy ones. */
+    private val HOP_BY_HOP_HEADERS = setOf(
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    )
+
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
 
@@ -136,8 +188,22 @@ object ShareBridge {
      * asynchronous stop can never close the listeners of a NEWER session —
      * the race that used to fail rebinding with EADDRINUSE or leave
      * "sharing ON" with already-dead sockets after a quick reconnect.
+     *
+     * ANR FIX: this used to be a plain Int bumped inside `synchronized(this)`,
+     * which meant [stop] had to take the monitor ON ITS CALLER'S THREAD just to
+     * increment it. [startSync] holds that monitor for the entire bind phase,
+     * and [bindWithRetry] sleeps up to 10 x 300 ms PER PORT — so a disconnect
+     * tapped while a bind was retrying blocked the UI thread for up to ~6 s,
+     * which is an ANR, not a slow frame. An atomic counter needs no monitor, so
+     * the caller returns immediately and only the background closer contends.
      */
-    private var session = 0
+    private val session = AtomicInteger(0)
+
+    /** Currently served proxy clients; bounded by [MAX_CONCURRENT_CLIENTS]. */
+    private val liveClients = AtomicInteger(0)
+
+    /** Timestamp of the last "at capacity" log line, for rate limiting. */
+    private val lastOverloadLogMs = AtomicLong(0L)
 
     /** Bind address for the current session: loopback-only or all interfaces. */
     @Volatile
@@ -162,7 +228,7 @@ object ShareBridge {
      * Unlike the old fire-and-forget start, callers such as the VpnService can
      * use the return value as ground truth instead of assuming success — in
      * proxy mode these listeners ARE the product, so a swallowed bind failure
-     * meant "connected" with nothing listening on 1080/8118.
+     * meant "connected" with nothing listening on the share ports.
      */
     fun startSync(localOnly: Boolean = false): Boolean = synchronized(this) {
         // Already up with BOTH listeners healthy? Nothing to do. (The old check
@@ -175,7 +241,7 @@ object ShareBridge {
 
         // New session: invalidates any in-flight async [stop] and clears
         // leftovers so rebinding is deterministic.
-        session++
+        val mySession = session.incrementAndGet()
         closeServers()
         uploadBytesCounter.set(0L)
         downloadBytesCounter.set(0L)
@@ -209,6 +275,17 @@ object ShareBridge {
             return@synchronized false
         }
 
+        // A stop() delivered WHILE we were retrying a bind has already bumped
+        // the session id. Honour it instead of leaving listeners nobody asked
+        // for: the bind phase can take seconds, which is plenty of time for the
+        // user to change their mind.
+        if (session.get() != mySession) {
+            DiagnosticsLog.i(TAG, "Sharing was stopped while binding — closing the fresh listeners.")
+            closeServers()
+            _active.value = false
+            return@synchronized false
+        }
+
         socksServer?.let { server -> acceptLoop("share-socks", server) { relayToLocalSocks(it) } }
         httpServer?.let { server -> acceptLoop("share-http", server) { serveHttpClient(it) } }
         _active.value = true
@@ -221,19 +298,23 @@ object ShareBridge {
         true
     }
 
-    /** Turn sharing off. Safe to call from any thread. */
+    /**
+     * Turn sharing off. Safe to call from any thread, INCLUDING the UI thread:
+     * it takes no lock and does no I/O on the caller (see [session]).
+     */
     fun stop() {
-        // Bump the session id FIRST; the flag flip happens inside the guarded
-        // section below. Flipping _active outside the lock raced startSync:
-        // stop() -> false, startSync (still holding the monitor) finished and
-        // set it back to true, then the stop thread matched its session id,
-        // killed the FRESH listeners — leaving active==true over dead ports.
-        val stopSession = synchronized(this) { ++session }
+        // Bump the session id FIRST and WITHOUT the monitor: the flag flip and
+        // the socket closing happen on the background thread below. Flipping
+        // _active on the caller raced startSync (stop -> false, startSync still
+        // holding the monitor finished and set it back to true, then the stop
+        // thread matched its session id and killed the FRESH listeners, leaving
+        // active == true over dead ports).
+        val stopSession = session.incrementAndGet()
         thread(name = "share-stop", isDaemon = true) {
             synchronized(this) {
                 // Only close if no NEWER session started meanwhile: a stale
                 // async stop must never kill a fresh session's listeners.
-                if (session == stopSession) {
+                if (session.get() == stopSession) {
                     _active.value = false
                     val hadServers = socksServer != null || httpServer != null
                     closeServers()
@@ -292,7 +373,7 @@ object ShareBridge {
                 return bind(port)
             } catch (e: Exception) {
                 lastError = e
-                if (attempt < attempts - 1) Thread.sleep(delayMs)
+                if (attempt < attempts - 1) runCatching { Thread.sleep(delayMs) }
             }
         }
         DiagnosticsLog.e(
@@ -352,6 +433,18 @@ object ShareBridge {
                     runCatching { Thread.sleep(200) }
                     continue
                 }
+
+                // RESOURCE CAP (increment-then-check, so two accept loops can
+                // never both slip past the ceiling): refuse cleanly instead of
+                // letting an unbounded number of peers each take two threads.
+                if (liveClients.incrementAndGet() > MAX_CONCURRENT_CLIENTS) {
+                    liveClients.decrementAndGet()
+                    logOverload(name)
+                    runCatching { respondError(client, "503 Service Unavailable") }
+                    runCatching { client.close() }
+                    continue
+                }
+
                 thread(name = "$name-conn", isDaemon = true) {
                     try {
                         tune(client)
@@ -364,10 +457,23 @@ object ShareBridge {
                         // Per-connection errors are non-fatal by design.
                     } finally {
                         runCatching { client.close() }
+                        liveClients.decrementAndGet()
                     }
                 }
             }
         }
+    }
+
+    /** Rate-limited "at capacity" note, so a connection flood cannot spam the log. */
+    private fun logOverload(name: String) {
+        val now = System.currentTimeMillis()
+        val last = lastOverloadLogMs.get()
+        if (now - last < OVERLOAD_LOG_INTERVAL_MS) return
+        if (!lastOverloadLogMs.compareAndSet(last, now)) return
+        DiagnosticsLog.w(
+            TAG,
+            "$name at capacity ($MAX_CONCURRENT_CLIENTS live clients) — refusing new connections.",
+        )
     }
 
     /** Dials the engine's loopback SOCKS5 with the standard relay tuning. */
@@ -390,22 +496,60 @@ object ShareBridge {
         }
     }
 
-    /** Minimal HTTP proxy: CONNECT tunnels + absolute-form plain requests. */
+    /**
+     * Minimal HTTP proxy: CONNECT tunnels + absolute-form plain requests.
+     *
+     * Everything read here comes from an unauthenticated peer on the local
+     * network, so the parse is deliberately strict and every rejection answers
+     * with a status line rather than dropping the socket — a client that gets a
+     * 400 fixes its request, a client that gets silence retries forever.
+     */
     private fun serveHttpClient(client: Socket) {
         val input = client.getInputStream()
-        val header = readHeaderBlock(input) ?: return
+        val header = readHeaderBlock(input) ?: run {
+            respondError(client, "400 Bad Request")
+            return
+        }
         val lines = header.toString(Charsets.ISO_8859_1.name()).split("\r\n")
         val requestLine = lines.firstOrNull().orEmpty()
-        val parts = requestLine.split(" ")
-        if (parts.size < 3) return
-
+        // Exactly three tokens: METHOD SP TARGET SP VERSION. A request line with
+        // extra spaces is ambiguous and is precisely how request smuggling gets
+        // started, so it is refused rather than "best effort" parsed.
+        val parts = requestLine.split(' ')
+        if (parts.size != 3) {
+            respondError(client, "400 Bad Request")
+            return
+        }
         val method = parts[0]
         val target = parts[1]
+        val version = parts[2]
+        if (!version.startsWith("HTTP/1.")) {
+            respondError(client, "505 HTTP Version Not Supported")
+            return
+        }
+
+        // Headers only, up to the blank line that ends the block.
+        val headers = lines.drop(1).takeWhile { it.isNotEmpty() }
+
+        // SMUGGLING GUARD: this proxy relays the body as an opaque byte stream,
+        // so it cannot dechunk. Forwarding Transfer-Encoding verbatim while
+        // appending our own `Connection: close` (which is what the old rebuild
+        // did) leaves the upstream reading a framing we are not honouring — the
+        // textbook desync. Refuse it instead of half-supporting it.
+        if (headers.any { headerName(it) == "transfer-encoding" }) {
+            respondError(client, "501 Not Implemented")
+            return
+        }
 
         if (method.equals("CONNECT", ignoreCase = true)) {
-            val host = target.substringBeforeLast(':')
-            val port = target.substringAfterLast(':').toIntOrNull() ?: 443
-            val upstream = socksOpen(host, port) ?: run {
+            // CONNECT authority-form. Parsed by HostPort so a missing port, a
+            // bracketed IPv6 literal and an out-of-range port are all handled
+            // instead of being mangled by substringBeforeLast(':').
+            val dest = HostPort.parse(target, 443) ?: run {
+                respondError(client, "400 Bad Request")
+                return
+            }
+            val upstream = socksOpen(dest.host, dest.port) ?: run {
                 respondError(client, "502 Bad Gateway")
                 return
             }
@@ -419,32 +563,34 @@ object ShareBridge {
         }
 
         // Plain HTTP with an absolute URI, e.g. "GET http://example.com/x HTTP/1.1".
-        val url = target.removePrefix("http://")
-        if (url == target) { // https:// or malformed — TLS must use CONNECT
+        if (!target.startsWith("http://", ignoreCase = true)) {
+            // https:// must use CONNECT; anything else is not absolute-form.
             respondError(client, "400 Bad Request")
             return
         }
-        val hostPort = url.substringBefore('/')
-        val path = "/" + url.substringAfter('/', "")
-        val host = hostPort.substringBefore(':')
-        val port = hostPort.substringAfter(':', "80").toIntOrNull() ?: 80
+        val withoutScheme = target.substring("http://".length)
+        val slash = withoutScheme.indexOf('/')
+        val authority = if (slash < 0) withoutScheme else withoutScheme.substring(0, slash)
+        val path = if (slash < 0) "/" else withoutScheme.substring(slash)
+        // Strip any userinfo: it is not part of the host and must never end up
+        // in the SOCKS5 address field.
+        val dest = HostPort.parse(authority.substringAfterLast('@'), 80) ?: run {
+            respondError(client, "400 Bad Request")
+            return
+        }
 
-        val upstream = socksOpen(host, port) ?: run {
+        val upstream = socksOpen(dest.host, dest.port) ?: run {
             respondError(client, "502 Bad Gateway")
             return
         }
         try {
             val rebuilt = buildString {
-                append("$method $path ${parts[2]}\r\n")
-                lines.drop(1).forEach { line ->
-                    if (line.isEmpty()) return@forEach
-                    val lower = line.lowercase()
-                    if (lower.startsWith("proxy-connection:") ||
-                        lower.startsWith("proxy-authorization:") ||
-                        lower.startsWith("connection:")
-                    ) {
-                        return@forEach
-                    }
+                append(method).append(' ').append(path).append(' ').append(version).append("\r\n")
+                headers.forEach { line ->
+                    val name = headerName(line)
+                    // A line with no colon is not a header; forwarding it would
+                    // splice peer-chosen text into the upstream request.
+                    if (name.isEmpty() || name in HOP_BY_HOP_HEADERS) return@forEach
                     append(line).append("\r\n")
                 }
                 append("Connection: close\r\n\r\n")
@@ -457,8 +603,29 @@ object ShareBridge {
         }
     }
 
+    /** Lower-cased field name of a header line, or "" when the line has none. */
+    private fun headerName(line: String): String {
+        val colon = line.indexOf(':')
+        if (colon <= 0) return ""
+        return line.substring(0, colon).trim().lowercase(Locale.US)
+    }
+
     /** Opens a TCP stream to host:port THROUGH the engine's SOCKS5 proxy. */
     private fun socksOpen(host: String, port: Int): Socket? {
+        // REPRESENTABILITY GUARD: ATYP=0x03 carries the host length in ONE byte
+        // and the port in two. `write(size)` keeps only the low 8 bits, so an
+        // over-long or non-ASCII name used to be TRUNCATED onto the wire and the
+        // proxy then read the rest of the name as the port — reported back as a
+        // plain "CONNECT rejected", which blames the wrong component. The port
+        // is already bounded by HostPort; the host is checked here.
+        val hostBytes = host.toByteArray(Charsets.US_ASCII)
+        if (hostBytes.isEmpty() || hostBytes.size > Hostname.MAX_WIRE_LENGTH ||
+            !Hostname.isRepresentable(host)
+        ) {
+            DiagnosticsLog.w(TAG, "Refusing unrepresentable SOCKS5 host (${host.length} chars)")
+            return null
+        }
+
         val socket = dialEngine()
         return try {
             socket.soTimeout = DIAL_TIMEOUT_MS
@@ -470,11 +637,10 @@ object ShareBridge {
             out.flush()
             val greet = inp.readExact(2)
             if (greet == null || greet[0] != 5.toByte() || greet[1] != 0.toByte()) {
-                throw IllegalStateException("SOCKS5 greeting failed")
+                throw IOException("SOCKS5 greeting failed")
             }
 
             // CONNECT with a DOMAIN address -> DNS resolves inside the tunnel.
-            val hostBytes = host.toByteArray(Charsets.ISO_8859_1)
             val request = ByteArrayOutputStream().apply {
                 write(byteArrayOf(0x05, 0x01, 0x00, 0x03))
                 write(hostBytes.size)
@@ -485,16 +651,18 @@ object ShareBridge {
             out.write(request.toByteArray())
             out.flush()
 
-            val reply = inp.readExact(4) ?: throw IllegalStateException("SOCKS5 reply truncated")
-            if (reply[1] != 0.toByte()) throw IllegalStateException("SOCKS5 connect refused (${reply[1]})")
+            val reply = inp.readExact(4) ?: throw IOException("SOCKS5 reply truncated")
+            if (reply[1] != 0.toByte()) throw IOException("SOCKS5 connect refused (${reply[1]})")
             val remaining = when (reply[3].toInt()) {
                 0x01 -> 4 + 2
-                0x03 -> (inp.readExact(1)?.get(0)?.toInt()?.and(0xFF)
-                    ?: throw IllegalStateException("SOCKS5 reply truncated")) + 2
+                0x03 -> (
+                    inp.readExact(1)?.get(0)?.toInt()?.and(0xFF)
+                        ?: throw IOException("SOCKS5 reply truncated")
+                    ) + 2
                 0x04 -> 16 + 2
-                else -> throw IllegalStateException("Bad SOCKS5 address type")
+                else -> throw IOException("Bad SOCKS5 address type")
             }
-            inp.readExact(remaining) ?: throw IllegalStateException("SOCKS5 reply truncated")
+            inp.readExact(remaining) ?: throw IOException("SOCKS5 reply truncated")
 
             // Handshake done: swap the tight dial timeout for the session idle
             // timeout (never 0 — a dead peer must not pin this socket's relay
