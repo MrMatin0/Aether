@@ -5,26 +5,41 @@
 # which is how you end up with lifecycle 2.11.0 in one place and 2.10.0 in
 # another. Bump a line here and the whole project moves with it.
 #
-# NOTE: every version below is a STABLE release, audited against upstream on
-# 2026-09-04. Pre-release lines are deliberately NOT used, even where they are
-# newer: Kotlin 2.4.20 (RC), AGP 9.4 (alpha, and it would force Gradle 9.6.0),
-# lifecycle 2.12 (alpha) and Compose 1.13 (alpha) all stay off this list.
+# THIS PROJECT DELIBERATELY TRACKS PRE-RELEASE LINES (audited 2026-09-04).
+# Where an alpha/beta/RC newer than the latest stable exists, it is used. That
+# is a choice, and it has a cost: alpha APIs are allowed to change under you,
+# most of all Compose Material3 1.5.x. If a build ever has to be made boring
+# again, the stable equivalents are: agp 9.3.2, kotlin 2.4.10,
+# androidx.compose:compose-bom 2026.08.00, androidxLifecycle 2.11.0,
+# androidxDatastore 1.2.1, Gradle 9.5.1.
 # ---------------------------------------------------------------------------
 
 [versions]
-# AGP 9.3 requires Gradle >= 9.5.0 (see gradle/wrapper/gradle-wrapper.properties)
-# and JDK 17, and supports up to API 37 - which is what compileSdk/targetSdk are.
-# 9.3.2 is the current patch of that line: it fixes the lint crash on JDK 17
-# (NoSuchMethodError java.util.List.removeLast() in the bundled JavaDocParser)
-# that 9.3.0 shipped with. Do not jump to 9.4: it is still in alpha and raises
-# the minimum Gradle to 9.6.0.
-agp = "9.3.2"
-kotlin = "2.4.10"
+# AGP 9.4 requires Gradle >= 9.6.0 (see gradle/wrapper/gradle-wrapper.properties)
+# and JDK 17, and still supports up to API 37 - which is what compileSdk and
+# targetSdk are, so they do not move.
+#
+# Two AGP 9.4 behaviour changes were checked against this project and are both
+# no-ops here: the new Variant API becomes mandatory in AGP 10 (:app already
+# uses androidComponents.onVariants, so no android.newDsl.optOut is needed),
+# and the new strict 1:1 flavor-dimension parity check only applies to dynamic
+# feature modules, of which there are none.
+agp = "9.4.0-alpha04"
+# Kotlin RC. EAP/RC builds are published to Maven Central, which pluginManagement
+# in settings.gradle.kts already declares, so no extra repository is needed.
+# This version is what AGP's built-in Kotlin AND the Compose compiler plugin
+# both use - they must stay on the same number.
+kotlin = "2.4.20-RC3"
+# NOTE the artifact name below is compose-bom-ALPHA, not compose-bom: the alpha
+# BOM is a snapshot of the newest alpha/beta/RC/stable of every Compose library,
+# so this line is what pulls in Compose UI 1.13.x and Material3 1.5.x previews.
 composeBom = "2026.08.00"
 androidxCore = "1.19.0"
 androidxActivity = "1.13.0"
-androidxLifecycle = "2.11.0"
-androidxDatastore = "1.2.1"
+androidxLifecycle = "2.12.0-alpha02"
+androidxDatastore = "1.3.0-alpha10"
+# 1.11.0 is both the newest release and the version JetBrains lists as the one
+# compatible with Kotlin 2.4.20-RC. Do not move it independently of kotlin.
 coroutines = "1.11.0"
 # AGP runs local unit tests on JUnit 4 by default, and kotlin-test-junit is
 # built against that same line.
@@ -33,12 +48,14 @@ junit = "4.13.2"
 [libraries]
 # The BOM pins every androidx.compose.* artifact below, so those carry no
 # version of their own on purpose.
-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-bom = { module = "androidx.compose:compose-bom-alpha", version.ref = "composeBom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
 compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 compose-material3 = { module = "androidx.compose.material3:material3" }
+# Frozen upstream at 1.7.8 and shipped at that version by every BOM, alpha
+# included. Nothing to bump here.
 compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
