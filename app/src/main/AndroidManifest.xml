@@ -50,9 +50,23 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AetherMobile">
 
+        <!--
+          launchMode="singleTop" is REQUIRED, not cosmetic.
+
+          MainActivity overrides onNewIntent() and routes it into
+          handleConnectOnLaunch() — that is how the home-screen widget, the
+          Quick Settings tile and the notification deliver
+          EXTRA_CONNECT_ON_LAUNCH to an app that is already running. With the
+          default "standard" mode the system NEVER calls onNewIntent: it creates
+          a brand-new MainActivity instance for every delivery instead. So the
+          connect-on-launch handler was unreachable on that path, and each tap
+          stacked another activity (another back-stack entry, another Compose
+          tree, another profile collector) on top of the live one.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
             android:theme="@style/Theme.AetherMobile"
             android:windowSoftInputMode="adjustResize">
