@@ -1,9 +1,5 @@
 package studio.cluvex.aether.core
 
-import android.util.Log
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -11,6 +7,9 @@ import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class LogLevel { DEBUG, INFO, WARN, ERROR }
 
@@ -61,6 +60,13 @@ data class ComponentCheck(
  * memory-only log is wiped by that death, so the user "sees no log after a
  * crash". We therefore mirror every line to a file on disk as it is written and
  * reload it on next launch, so the crashing session is always inspectable.
+ *
+ * BECAUSE OF THAT, this class's OWN failure modes are load-bearing: a logger
+ * that dies quietly during an incident destroys the only record of the
+ * incident. Both worker threads below are therefore written to be unkillable,
+ * and the write queue is bounded so the logger can never be the thing that
+ * exhausts memory. See [ensurePublisher], [ensureWriter] and
+ * [MAX_PENDING_WRITES].
  */
 object DiagnosticsLog {
     private const val MAX_LINES = 800
@@ -90,6 +96,20 @@ object DiagnosticsLog {
     private const val UI_PUBLISH_INTERVAL_MS = 200L
     private const val MAX_FILE_BYTES = 512L * 1024L
 
+    /**
+     * Ceiling on lines waiting to reach the disk.
+     *
+     * OOM FIX: this queue used to be UNBOUNDED. Two ordinary situations grow it
+     * without limit: [init] has not run yet (so the writer thread parks and
+     * nothing drains), and the append keeps failing (full storage, revoked
+     * directory) — in which case [logBlocking] hands every line it could not
+     * write straight BACK to the queue. That turns the logger into the thing
+     * that kills the process, during the exact failure it was trying to record.
+     *
+     * 8192 lines is far more than one session's worth of pending writes.
+     */
+    private const val MAX_PENDING_WRITES = 8192
+
     /** Bounded in-memory ring buffer. Guarded by [bufferLock]. */
     private val buffer = ArrayDeque<LogLine>(MAX_LINES)
     private val bufferLock = Any()
@@ -98,7 +118,10 @@ object DiagnosticsLog {
     private val dirty = AtomicBoolean(false)
 
     /** Off-thread disk writer: never blocks a caller on flash I/O. */
-    private val pendingWrites = LinkedBlockingQueue<String>()
+    private val pendingWrites = LinkedBlockingQueue<String>(MAX_PENDING_WRITES)
+
+    /** True once an overflow has been recorded, so the marker is only added once. */
+    private val overflowed = AtomicBoolean(false)
 
     @Volatile
     private var writerStarted = false
@@ -166,8 +189,28 @@ object DiagnosticsLog {
         dirty.set(true)
         ensurePublisher()
         // Queue for the writer thread instead of touching the disk inline.
-        pendingWrites.offer(line.format())
+        enqueueWrite(line.format())
         ensureWriter()
+    }
+
+    /**
+     * Queues one formatted line for the disk writer, making room by dropping the
+     * OLDEST pending line when the queue is full.
+     *
+     * Dropping the oldest rather than the newest is deliberate: the reason this
+     * queue ever backs up is that something is going wrong, and the lines that
+     * explain what are the ones being written right now.
+     */
+    private fun enqueueWrite(formatted: String) {
+        if (pendingWrites.offer(formatted)) return
+        // Make room and note the loss exactly once, so the on-disk log cannot
+        // silently pretend to be complete.
+        pendingWrites.poll()
+        if (overflowed.compareAndSet(false, true)) {
+            pendingWrites.offer("—— log write queue overflowed; older lines were dropped ——")
+            pendingWrites.poll()
+        }
+        pendingWrites.offer(formatted)
     }
 
     /** Publishes at most one immutable snapshot per [UI_PUBLISH_INTERVAL_MS]. */
@@ -178,10 +221,26 @@ object DiagnosticsLog {
             publisherStarted = true
         }
         thread(name = "log-publisher", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            // UNKILLABLE BY DESIGN: this loop used to be a bare `while (true)`
+            // around Thread.sleep with no catch at all, so ONE
+            // InterruptedException (or any unexpected throw) retired the
+            // publisher for the rest of the process — and a dead publisher means
+            // the diagnostics panel freezes on whatever snapshot it last saw,
+            // which is worst exactly when the user is watching it to understand
+            // a failure.
             while (true) {
-                Thread.sleep(UI_PUBLISH_INTERVAL_MS)
-                if (!dirty.compareAndSet(true, false)) continue
-                _lines.value = synchronized(bufferLock) { buffer.toList() }
+                try {
+                    Thread.sleep(UI_PUBLISH_INTERVAL_MS)
+                    if (!dirty.compareAndSet(true, false)) continue
+                    _lines.value = synchronized(bufferLock) { buffer.toList() }
+                } catch (_: InterruptedException) {
+                    // Nothing interrupts this thread on purpose; clear the flag
+                    // and keep publishing rather than going silent.
+                    Thread.interrupted()
+                } catch (_: Throwable) {
+                    // A snapshot that could not be published is not worth the
+                    // panel going dark for the rest of the session.
+                }
             }
         }
     }
@@ -200,23 +259,36 @@ object DiagnosticsLog {
         }
         thread(name = "log-writer", isDaemon = true, priority = Thread.MIN_PRIORITY) {
             val batch = ArrayList<String>(64)
+            // Same reasoning as the publisher, with higher stakes: if this
+            // thread dies, NOTHING is ever persisted again — including the FATAL
+            // line written by the crash handler, which is the whole point of
+            // having an on-disk log.
             while (true) {
-                batch.clear()
-                // Block for the first line, then sweep up whatever else queued.
-                batch.add(pendingWrites.take())
-                pendingWrites.drainTo(batch, 256)
-                var file = logFile
-                while (file == null) {
-                    // init() has not run yet. Waiting beats the old behaviour,
-                    // which dropped the whole drained batch on the floor.
-                    Thread.sleep(200)
-                    file = logFile
-                }
-                synchronized(fileLock) {
-                    runCatching {
-                        file.appendText(batch.joinToString("\n", postfix = "\n"))
-                        if (file.length() > MAX_FILE_BYTES) trimFile(file)
+                try {
+                    batch.clear()
+                    // Block for the first line, then sweep up whatever queued.
+                    batch.add(pendingWrites.take())
+                    pendingWrites.drainTo(batch, 256)
+                    var file = logFile
+                    while (file == null) {
+                        // init() has not run yet. Waiting beats the old
+                        // behaviour, which dropped the whole drained batch.
+                        Thread.sleep(200)
+                        file = logFile
                     }
+                    val target = file
+                    synchronized(fileLock) {
+                        runCatching {
+                            target.appendText(batch.joinToString("\n", postfix = "\n"))
+                            if (target.length() > MAX_FILE_BYTES) trimFile(target)
+                        }
+                    }
+                } catch (_: InterruptedException) {
+                    Thread.interrupted()
+                } catch (_: Throwable) {
+                    // Never let one bad batch end the writer. Back off a little
+                    // so a persistent failure cannot spin a core.
+                    runCatching { Thread.sleep(200) }
                 }
             }
         }
@@ -266,7 +338,7 @@ object DiagnosticsLog {
         // write back to the writer thread instead of dropping it.
         val file = logFile
         if (file == null) {
-            pendingWrites.offer(line.format())
+            enqueueWrite(line.format())
             ensureWriter()
             return
         }
@@ -280,7 +352,10 @@ object DiagnosticsLog {
             }
         }.isSuccess
         if (!written) {
-            pending.forEach { pendingWrites.offer(it) }
+            // Bounded re-queue (see MAX_PENDING_WRITES): a store that keeps
+            // failing used to grow this queue without limit, one full drain per
+            // crash-handler call.
+            pending.forEach { enqueueWrite(it) }
             ensureWriter()
         }
     }
