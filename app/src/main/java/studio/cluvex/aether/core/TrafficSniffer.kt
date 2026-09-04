@@ -1,20 +1,27 @@
 package studio.cluvex.aether.core
 
-import java.util.Locale
-
 /**
  * Extracts the target domain from the first payload of a flow: TLS SNI on
  * port 443, HTTP Host header on port 80. Merged into Aether; used by the
  * userspace tunnel bridge for flow attribution.
+ *
+ * EVERYTHING THIS RETURNS IS PEER-CONTROLLED. The value goes on to be written
+ * into a SOCKS5 ATYP=0x03 request (one-byte length field) and cached in
+ * [DnsMap], so it is validated by [Hostname] before it leaves this class rather
+ * than trusted by every consumer downstream. See Hostname's KDoc for what an
+ * unvalidated name does to that request.
  */
 object TrafficSniffer {
     fun sniffDomain(data: ByteArray, port: Int): String? {
         if (data.isEmpty()) return null
-        return when (port) {
+        val raw = when (port) {
             443 -> sniffSni(data)
             80 -> sniffHttpHost(data)
             else -> null
         }
+        // Single choke point: a name that cannot be encoded faithfully is worth
+        // exactly nothing to a router and is actively dangerous on the wire.
+        return Hostname.sanitize(raw)
     }
 
     private fun sniffSni(data: ByteArray): String? {
@@ -82,10 +89,9 @@ object TrafficSniffer {
                             val nameLen = ((data[p + 1].toInt() and 0xFF) shl 8) or (data[p + 2].toInt() and 0xFF)
                             p += 3
                             if (nameType == 0x00.toByte() && nameLen > 0 && p + nameLen <= extEnd) {
-                                // Lower-cased like the HTTP Host path, so both
-                                // sniffers hand the routing engine the same
-                                // shape of value.
-                                return String(data, p, nameLen).lowercase(Locale.ROOT)
+                                // Returned raw; sniffDomain() normalises and
+                                // validates it in one place for both sniffers.
+                                return String(data, p, nameLen, Charsets.ISO_8859_1)
                             }
                         }
                     }
@@ -99,7 +105,7 @@ object TrafficSniffer {
 
     private fun sniffHttpHost(data: ByteArray): String? {
         try {
-            val text = String(data, 0, minOf(data.size, 2048))
+            val text = String(data, 0, minOf(data.size, 2048), Charsets.ISO_8859_1)
             for (line in text.split("\r\n")) {
                 // The header block ends at the first empty line. Scanning past
                 // it meant a request BODY line that happens to start with
@@ -107,10 +113,12 @@ object TrafficSniffer {
                 // was sniffed as the destination domain.
                 if (line.isEmpty()) break
                 if (line.startsWith("Host:", ignoreCase = true)) {
-                    return line.substring(5).trim()
-                        .substringBefore(':')
-                        .lowercase(Locale.ROOT)
-                        .takeIf { it.isNotEmpty() }
+                    // A Host header may carry a port, and a bracketed IPv6
+                    // literal carries colons of its own — strip a trailing
+                    // ":port" only, and leave a bare literal for Hostname to
+                    // reject rather than mangling it into a wrong host.
+                    val value = line.substring(5).trim()
+                    return HostPort.parse(value, 80)?.host ?: value
                 }
             }
         } catch (_: Exception) {}
