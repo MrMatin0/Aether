@@ -3,6 +3,7 @@ package studio.cluvex.aether.core
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -38,6 +39,9 @@ data class IpEndpoint(val ip: String, val countryCode: String?, val viaTunnel: B
  * Because the app package is excluded from the VPN (addDisallowedApplication),
  * a direct socket bypasses the tunnel (→ operator/real IP) while a socket routed
  * through 127.0.0.1:1819 exits via the connected server (→ server IP).
+ *
+ * A raw socket also means no HTTP client is doing the safety work for us, so
+ * every read here is explicitly BOUNDED — see [MAX_RESPONSE_BYTES].
  */
 object NetProbe {
 
@@ -66,6 +70,20 @@ object NetProbe {
         GeoProvider("www.cloudflare.com", 443, "/cdn-cgi/trace", tls = true, hostIsDomain = true),
         GeoProvider("1.1.1.1", 80, "/cdn-cgi/trace", tls = false, hostIsDomain = false),
     )
+
+    /**
+     * Hard ceiling on a geolocation response.
+     *
+     * OOM FIX: this used to be `socket.getInputStream().readBytes()`, i.e. read
+     * until EOF with no limit whatsoever. Two of the three providers above are
+     * probed over PLAIN HTTP, on networks whose hostility is the entire reason
+     * this app exists — so "the endpoint sends a well-behaved 200 bytes of JSON"
+     * is an assumption an on-path attacker gets to break for free, and a broken
+     * or malicious endpoint could stream until the process died allocating.
+     * The real payloads are a few hundred bytes; 64 KB is already absurdly
+     * generous, and anything past it is discarded rather than buffered.
+     */
+    private const val MAX_RESPONSE_BYTES = 64 * 1024
 
     // ---- Public: geolocation --------------------------------------------
 
@@ -402,7 +420,7 @@ object NetProbe {
                 // expected the port — reported back as a plain "CONNECT
                 // rejected", which is a lie about whose fault it was. Refuse an
                 // unrepresentable host here instead.
-                if (host.isEmpty() || host.size > 255) {
+                if (host.isEmpty() || host.size > Hostname.MAX_WIRE_LENGTH) {
                     throw IOException("SOCKS5 domain not representable: ${host.size} bytes")
                 }
                 req.write(0x03)
@@ -457,7 +475,28 @@ object NetProbe {
             write(request.toByteArray(Charsets.US_ASCII))
             flush()
         }
-        return socket.getInputStream().readBytes().toString(Charsets.UTF_8)
+        return readBounded(socket.getInputStream(), MAX_RESPONSE_BYTES).toString(Charsets.UTF_8)
+    }
+
+    /**
+     * Reads at most [limit] bytes and STOPS, leaving whatever the peer still
+     * wants to send unread (the socket is closed by the caller immediately
+     * afterwards, which tears the connection down).
+     *
+     * This replaces `readBytes()`, whose contract is "read until EOF" — i.e. an
+     * unbounded allocation driven entirely by a remote peer. See
+     * [MAX_RESPONSE_BYTES] for why that matters on this app's networks.
+     */
+    private fun readBounded(input: InputStream, limit: Int): ByteArray {
+        val out = ByteArrayOutputStream(minOf(limit, 8 * 1024))
+        val chunk = ByteArray(8 * 1024)
+        while (out.size() < limit) {
+            val want = minOf(chunk.size, limit - out.size())
+            val read = input.read(chunk, 0, want)
+            if (read < 0) break
+            out.write(chunk, 0, read)
+        }
+        return out.toByteArray()
     }
 
     private fun parseIpInfo(response: String): IpInfo? {
