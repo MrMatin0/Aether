@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
