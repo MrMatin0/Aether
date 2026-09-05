@@ -1,47 +1,44 @@
 package studio.cluvex.aether.ui
 
-import androidx.compose.foundation.Canvas
+import android.os.SystemClock
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
+import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
-/** Connection overview. Its shortcuts only navigate; they cannot toggle the VPN. */
+/** Status, evidence, then configuration. No decorative control toggles the VPN. */
 @Composable
 internal fun ConnectionHome(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    connectedSince: Long?,
-    ipInfo: IpEndpoint?,
-    ipLoading: Boolean,
-    scrollState: ScrollState,
-    onOpenEngine: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
+    state: ConnectionState, profile: ConnectionProfile, connectedSince: Long?,
+    ipInfo: IpEndpoint?, ipLoading: Boolean, scrollState: ScrollState,
+    onOpenEngine: () -> Unit, onOpenDiagnostics: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
     val tone = when {
@@ -56,154 +53,116 @@ internal fun ConnectionHome(
         state.isBusy -> accents.workingWash
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    Column(
-        Modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Spacer(Modifier.height(14.dp))
-        ConnectionSummary(state, profile, tone, wash)
-        PassageMark(tone)
+    // The busy interval survives tab changes, but a new attempt gets a fresh clock.
+    val busy = connectionStep(state) != null
+    val started = rememberSaveable(busy) { SystemClock.elapsedRealtime() }
+    Column(Modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 24.dp)) {
+        Spacer(Modifier.height(24.dp))
+        Surface(color = wash, contentColor = tone, shape = MaterialTheme.shapes.small) {
+            Row(
+                Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(connectionStatusLabel(state)), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(connectionTitle(state), style = MaterialTheme.typography.displaySmall)
+        Spacer(Modifier.height(12.dp))
+        Text(connectionHint(state, profile), style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(28.dp))
         val step = connectionStep(state)
         if (step != null) {
             ConnectionSteps(step)
-        } else if (state !is ConnectionState.Disconnecting) {
-            Text(
-                stringResource(R.string.passage_route),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelMedium,
-            )
+            ConnectingClock(started)
+            Spacer(Modifier.height(24.dp))
         }
-        Spacer(Modifier.height(22.dp))
-        EngineShortcut(profile = profile, onClick = onOpenEngine)
-        when (state) {
-            is ConnectionState.Connected -> SessionLedger(connectedSince, ipInfo, ipLoading)
-            is ConnectionState.Idle -> {
-                Spacer(Modifier.height(24.dp))
-                Text(
-                    stringResource(R.string.passage_privacy),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+        if (state is ConnectionState.Connected) {
+            SessionLedger(connectedSince, ipInfo, ipLoading)
+            Spacer(Modifier.height(32.dp))
+        }
+        if (state is ConnectionState.Error) {
+            FilledTonalButton(onClick = onOpenDiagnostics, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.passage_see_error))
+                Spacer(Modifier.width(8.dp))
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
             }
-            is ConnectionState.Error -> TextButton(
-                onClick = onOpenDiagnostics,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            ) { Text(stringResource(R.string.passage_see_error)) }
-            else -> Unit
+            Spacer(Modifier.height(24.dp))
+        }
+        Surface(
+            onClick = onOpenEngine, color = MaterialTheme.colorScheme.surface,
+            shape = MaterialTheme.shapes.medium,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Tune, null, tint = accents.brand)
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.page_engine_title), style = MaterialTheme.typography.titleMedium)
+                    Text(scanLabel(profile.scanMode), style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
+            }
         }
         Spacer(Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun ConnectionSummary(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    tone: Color,
-    wash: Color,
-) {
-    Column(
-        Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Surface(color = wash, contentColor = tone, shape = RoundedCornerShape(24.dp)) {
-            Text(
-                text = stringResource(when {
-                    state.isConnected -> R.string.passage_verified
-                    state is ConnectionState.Error -> R.string.pill_failed
-                    state.isBusy -> R.string.pill_working
-                    else -> R.string.pill_off
-                }),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-            )
+        Text(stringResource(R.string.passage_route), style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state is ConnectionState.Idle) {
+            Spacer(Modifier.height(12.dp))
+            Text(stringResource(R.string.passage_privacy), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Spacer(Modifier.height(14.dp))
-        Text(connectionTitle(state), style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            connectionHint(state, profile),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        Spacer(Modifier.height(32.dp))
     }
 }
 
-@Composable
-private fun EngineShortcut(profile: ConnectionProfile, onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-        shape = RoundedCornerShape(16.dp),
-    ) {
-        Icon(Icons.Rounded.Tune, null)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-            Text(stringResource(R.string.page_engine_title), style = MaterialTheme.typography.titleSmall)
-            Text(scanLabel(profile.scanMode), style = MaterialTheme.typography.bodySmall)
-        }
-        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
-    }
-}
-
-/** Null means there is no forward connection pipeline to display. */
 internal fun connectionStep(state: ConnectionState): Int? = when (state) {
     is ConnectionState.Launching -> 0
     is ConnectionState.Connecting, is ConnectionState.Reconnecting -> 1
     is ConnectionState.Verifying -> 2
-    is ConnectionState.Idle, is ConnectionState.Connected,
-    is ConnectionState.Disconnecting, is ConnectionState.Error -> null
+    else -> null
 }
 
 @Composable
 private fun ConnectionSteps(active: Int) {
     val accents = LocalAetherAccents.current
     val labels = listOf(R.string.phase_engine, R.string.phase_tunnel, R.string.phase_verify, R.string.phase_ready)
-    Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
+    Column {
         labels.forEachIndexed { index, label ->
+            val current = index == active
             val color = when {
                 index < active -> accents.protected
-                index == active -> accents.working
+                current -> accents.working
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(if (index < active) "✓" else "${index + 1}", color = color, modifier = Modifier.width(32.dp))
-                Text(stringResource(label), color = color, modifier = Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (index < active) Icon(Icons.Rounded.Check, null, Modifier.size(24.dp), tint = color)
+                else Text("${index + 1}", Modifier.width(24.dp), color = color, fontFamily = AetherMono)
+                Spacer(Modifier.width(16.dp))
+                Text(stringResource(label), color = color,
+                    style = if (current) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium)
             }
         }
-        Text(
-            stringResource(R.string.passage_scan_note),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-        )
     }
 }
 
 @Composable
-private fun PassageMark(tone: Color) {
-    val line = MaterialTheme.colorScheme.outlineVariant
-    Canvas(Modifier.padding(vertical = 12.dp).size(220.dp, 140.dp)) {
-        val center = size.width / 2
-        val base = size.height * .86f
-        val top = size.height * .48f
-        repeat(4) { index ->
-            val radius = size.width * .32f - size.width * .059f * index
-            val path = Path().apply {
-                moveTo(center - radius, base)
-                lineTo(center - radius, top)
-                cubicTo(center - radius, top - radius * .55f, center - radius * .55f, top - radius, center, top - radius)
-                cubicTo(center + radius * .55f, top - radius, center + radius, top - radius * .55f, center + radius, top)
-                lineTo(center + radius, base)
-            }
-            drawPath(path, if (index < 2) line else tone, style = Stroke(1.4.dp.toPx()))
+private fun ConnectingClock(since: Long) {
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(since, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) { now = SystemClock.elapsedRealtime(); delay(1000L) }
         }
-        drawLine(line, Offset(size.width * .08f, base), Offset(size.width * .92f, base), 1.dp.toPx())
-        drawLine(tone, Offset(center, base + 3.dp.toPx()), Offset(center, size.height), 1.4.dp.toPx(), cap = StrokeCap.Round)
     }
+    Text(stringResource(R.string.busy_elapsed, formatSessionUptime(since, now)),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
 }
 
 @Composable
