@@ -25,6 +25,10 @@ pub use crate::prober::scan::ScanMode as WgScanMode;
 /// deep-verifying mode before that candidate is written off.
 const DEEP_PING_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The tunnel ping never sends IPv6 traffic, so loopback is all this needs to
+/// be: the real address comes from the edge.
+const PING_LOCAL_IPV6: &str = "::1";
+
 #[derive(Debug, Clone, Copy)]
 pub struct WgProbeResult {
     pub ip: IpAddr,
@@ -42,6 +46,68 @@ pub struct WgProbe {
     pub ports: Vec<u16>,
     pub ip: IpScan,
     pub excluded: HashSet<SocketAddr>,
+}
+
+/// The address space one scan is allowed to touch.
+///
+/// Assembling this used to be forty lines inlined at the top of the hunt, which
+/// buried the one decision it actually makes: pinned ranges replace the
+/// built-in ones outright.
+struct ScanSpace {
+    /// Ranges the user pinned in Settings, if any.
+    pinned: Option<Vec<String>>,
+    cidrs_v4: Vec<String>,
+    cidrs_v6: Vec<String>,
+    anchors_v4: Vec<Ipv4Addr>,
+    anchors_v6: Vec<Ipv6Addr>,
+}
+
+impl ScanSpace {
+    fn resolve() -> Self {
+        let pinned = pinned_cidrs_v4();
+
+        let cidrs_v4: Vec<String> = match &pinned {
+            Some(list) => list.clone(),
+            None => wireguard::wg_prefixes_v4()
+                .iter()
+                .map(|c| c.to_string())
+                .collect(),
+        };
+        let cidrs_v6: Vec<String> = wireguard::wg_prefixes_v6()
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+
+        // A pinned range means "scan exactly this", so the built-in seeds -
+        // which live outside it - are dropped instead of being tried first.
+        let mut anchors_v4: Vec<Ipv4Addr> = Vec::new();
+        let mut anchors_v6: Vec<Ipv6Addr> = Vec::new();
+        if pinned.is_none() {
+            anchors_v4 = wireguard::wg_seeds_v4()
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            anchors_v6 = wireguard::WG_SEEDS_V6
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+        }
+
+        Self {
+            pinned,
+            cidrs_v4,
+            cidrs_v6,
+            anchors_v4,
+            anchors_v6,
+        }
+    }
+
+    fn ranges_label(&self) -> String {
+        match &self.pinned {
+            Some(list) => format!(" ranges={}", list.join(",")),
+            None => String::new(),
+        }
+    }
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
@@ -62,52 +128,25 @@ pub async fn hunt_wg_endpoints(
     want: usize,
 ) -> Result<Vec<WgProbeResult>> {
     let want = want.max(1);
+
     let mut tuning = mode.tuning(Family::WireGuard);
     tuning.concurrency = crate::sysprofile::cap_concurrency(tuning.concurrency);
 
-    let ip = match scan::usable_ip(probe.ip).await {
-        Some(ip) => ip,
-        None => return Err(AetherError::NoCleanEndpoint),
+    let Some(ip) = scan::usable_ip(probe.ip).await else {
+        return Err(AetherError::NoCleanEndpoint);
     };
 
-    let ports = scan::dedup_ports(&probe.ports, 2408);
-    let pinned = pinned_cidrs_v4();
-    let cidrs_v4: Vec<String> = match &pinned {
-        Some(list) => list.clone(),
-        None => wireguard::wg_prefixes_v4()
-            .iter()
-            .map(|c| c.to_string())
-            .collect(),
-    };
-    let cidrs_v6: Vec<String> = wireguard::wg_prefixes_v6()
-        .iter()
-        .map(|c| c.to_string())
-        .collect();
-    // A pinned range means "scan exactly this", so the built-in seeds - which
-    // live outside it - are dropped instead of being tried first.
-    let anchors_v4: Vec<Ipv4Addr> = match pinned.is_some() {
-        true => Vec::new(),
-        false => wireguard::wg_seeds_v4()
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect(),
-    };
-    let anchors_v6: Vec<Ipv6Addr> = match pinned.is_some() {
-        true => Vec::new(),
-        false => wireguard::WG_SEEDS_V6
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect(),
-    };
+    let ports = scan::dedup_ports(&probe.ports, wireguard::WG_DEFAULT_PORT);
+    let space = ScanSpace::resolve();
 
     let targets = scan::build_targets(
         &scan::TargetPlan {
             ip,
             ports: &ports,
-            anchors_v4: &anchors_v4,
-            anchors_v6: &anchors_v6,
-            cidrs_v4: &cidrs_v4,
-            cidrs_v6: &cidrs_v6,
+            anchors_v4: &space.anchors_v4,
+            anchors_v6: &space.anchors_v6,
+            cidrs_v4: &space.cidrs_v4,
+            cidrs_v6: &space.cidrs_v6,
             excluded: &probe.excluded,
         },
         &tuning,
@@ -123,15 +162,11 @@ pub async fn hunt_wg_endpoints(
         tuning.concurrency,
         tuning.probe_timeout,
         tuning.budget,
-        if tuning.deep_verify {
-            " verify=real-http"
-        } else {
-            ""
+        match tuning.deep_verify {
+            true => " verify=real-http",
+            false => "",
         },
-        match &pinned {
-            Some(list) => format!(" ranges={}", list.join(",")),
-            None => String::new(),
-        },
+        space.ranges_label(),
     );
 
     let timeout = tuning.probe_timeout;
@@ -194,7 +229,7 @@ async fn verify_one_wg(
         Err(e) => {
             log::trace!("wg probe {ip}:{port} -> {e}");
             return None;
-        }
+        },
     };
 
     if !deep {
@@ -203,18 +238,19 @@ async fn verify_one_wg(
 
     let params = crate::tunnelping::WgPingParams {
         local_ipv4: probe.local_ipv4,
-        local_ipv6: "::1".parse().unwrap(),
+        local_ipv6: PING_LOCAL_IPV6.parse().expect("::1 is a valid address"),
         aethernoize: probe.aethernoize.clone(),
     };
+
     match crate::tunnelping::wg_http_ping_established(session, &params, DEEP_PING_TIMEOUT).await {
         Ok(http_rtt) => {
             log::info!("[+] {ip}:{port} carried a real http round trip in {http_rtt:?}");
             Some(http_rtt)
-        }
+        },
         Err(e) => {
             log::trace!("[-] {ip}:{port} failed the real http check: {e}");
             None
-        }
+        },
     }
 }
 
@@ -229,14 +265,12 @@ fn pinned_cidrs_v4() -> Option<Vec<String>> {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
         })?;
-    let list: Vec<String> = raw
-        .split(',')
-        .filter_map(scan::normalize_cidr_v4)
-        .collect();
-    if list.is_empty() {
-        None
-    } else {
-        Some(list)
+
+    let list: Vec<String> = raw.split(',').filter_map(scan::normalize_cidr_v4).collect();
+
+    match list.is_empty() {
+        true => None,
+        false => Some(list),
     }
 }
 
@@ -269,7 +303,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_range_replaces_the_built_in_seeds_instead_of_joining_them() {
+        std::env::remove_var("AETHER_SCAN_CIDRS");
+        std::env::set_var("AETHER_WG_CIDRS", "188.114.96.0/24");
+        let space = ScanSpace::resolve();
+        std::env::remove_var("AETHER_WG_CIDRS");
+
+        assert_eq!(space.cidrs_v4, vec!["188.114.96.0/24"]);
+        assert!(
+            space.anchors_v4.is_empty(),
+            "a seed outside the pinned range would be scanned first"
+        );
+        assert_eq!(space.ranges_label(), " ranges=188.114.96.0/24");
+    }
+
+    #[test]
+    fn without_a_pinned_range_the_built_in_catalog_is_scanned() {
+        std::env::remove_var("AETHER_WG_CIDRS");
+        std::env::remove_var("AETHER_SCAN_CIDRS");
+        let space = ScanSpace::resolve();
+
+        assert!(!space.cidrs_v4.is_empty());
+        assert!(!space.cidrs_v6.is_empty());
+        assert!(!space.anchors_v4.is_empty());
+        assert!(!space.anchors_v6.is_empty());
+        assert_eq!(space.ranges_label(), "");
+    }
+
+    #[test]
     fn the_default_wireguard_port_leads_the_scan() {
-        assert_eq!(scan::dedup_ports(&wireguard::WG_PORTS.to_vec(), 2408)[0], wireguard::WG_PORTS[0]);
+        assert_eq!(
+            scan::dedup_ports(&wireguard::WG_PORTS.to_vec(), wireguard::WG_DEFAULT_PORT)[0],
+            wireguard::WG_PORTS[0]
+        );
     }
 }
