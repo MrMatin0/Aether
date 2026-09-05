@@ -132,7 +132,7 @@ class TunnelPrimitivesTest {
      */
     @Test
     fun `socks5 domain reply is not resolved`() {
-        val reply = byteArrayOf(5, 0, 0, 3, 5) + "relay".toByteArray() + byteArrayOf(0x1F, 0x90)
+        val reply = byteArrayOf(5, 0, 0, 3, 5) + "relay".toByteArray() + byteArrayOf(0x1F, 0x90.toByte())
         val bound = Socks5.readReply(reply.inputStream())
         assertTrue(bound is Socks5.Bound.Hostname)
         assertEquals("relay", (bound as Socks5.Bound.Hostname).host)
@@ -200,7 +200,7 @@ class TunnelPrimitivesTest {
         Bytes.setShort(body, at, 1)     // QTYPE = A
         Bytes.setShort(body, at + 2, 1) // QCLASS = IN
         return ByteArray(12).also {
-            Bytes.setShort(it, 0, 0xBEEF)
+            Bytes.setShort(it, 0, 0xBEEF.toShort())
             Bytes.setShort(it, 2, 0x0100)
             Bytes.setShort(it, 4, 1)
         } + body
@@ -210,7 +210,7 @@ class TunnelPrimitivesTest {
     private fun dnsResponseWithCompressedAnswer(): ByteArray {
         val query = dnsQuery("cdn.example.com")
         val header = query.copyOfRange(0, 12)
-        Bytes.setShort(header, 2, 0x8180) // QR + RA
+        Bytes.setShort(header, 2, 0x8180.toShort()) // QR + RA
         Bytes.setShort(header, 6, 1)      // ANCOUNT
         val answer = byteArrayOf(
             0xC0.toByte(), 12,           // NAME -> offset 12
@@ -218,7 +218,7 @@ class TunnelPrimitivesTest {
             0, 1,                        // CLASS IN
             0, 0, 0, 60,                 // TTL
             0, 4,                        // RDLENGTH
-            93, 184, 216, 34             // RDATA
+            93, 184.toByte(), 216.toByte(), 34             // RDATA
         )
         return header + query.copyOfRange(12, query.size) + answer
     }
