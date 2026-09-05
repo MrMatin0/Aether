@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="passage_back">بازگشت به تنظیمات</string>
+    <string name="passage_verified">اتصال تأیید شد</string>
+    <string name="passage_ready">آمادهٔ اتصال هستیم.</string>
+    <string name="passage_connected">شما متصل هستید.</string>
+    <string name="passage_failed">راه دیگری امتحان کنیم.</string>
+    <string name="passage_start_hint">با یک لمس از طریق Cloudflare WARP متصل شوید.</string>
+    <string name="passage_connected_hint">تونل برقرار است. دسترسی به اینترنت تأیید شد.</string>
+    <string name="passage_route">گوشی شما · Cloudflare WARP · اینترنت</string>
+    <string name="passage_privacy">شبکهٔ خروجی WARP متعلق به کلادفلر است. مسیریابی محل خروج را تعیین می‌کند؛ انتخاب کشور خروجی در اِیتر ممکن نیست.</string>
+    <string name="passage_see_error">مشاهدهٔ جزئیات خطا</string>
+    <string name="passage_session">این نشست</string>
+    <string name="passage_details">جزئیات اتصال</string>
+    <string name="passage_scan_note">زمان جستجو به شبکه و حالت اسکن بستگی دارد. Ironclad ممکن است تا ۶ دقیقه طول بکشد.</string>
+</resources>

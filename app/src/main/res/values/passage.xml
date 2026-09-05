@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="passage_back">Back to settings</string>
+    <string name="passage_verified">Connection verified</string>
+    <string name="passage_ready">Ready when you are.</string>
+    <string name="passage_connected">You’re connected.</string>
+    <string name="passage_failed">Let’s try another way.</string>
+    <string name="passage_start_hint">One tap to connect through Cloudflare WARP.</string>
+    <string name="passage_connected_hint">Your tunnel is up. Internet access verified.</string>
+    <string name="passage_route">Your phone · Cloudflare WARP · Internet</string>
+    <string name="passage_privacy">Cloudflare operates the WARP exit network. Routing determines the exit location; Aether cannot choose a country.</string>
+    <string name="passage_see_error">See what happened</string>
+    <string name="passage_session">This session</string>
+    <string name="passage_details">Connection details</string>
+    <string name="passage_scan_note">Scan time depends on your network and scan mode. Ironclad can take up to 6 minutes.</string>
+</resources>
