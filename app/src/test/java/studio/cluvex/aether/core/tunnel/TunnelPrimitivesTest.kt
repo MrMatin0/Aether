@@ -200,7 +200,7 @@ class TunnelPrimitivesTest {
         Bytes.setShort(body, at, 1)     // QTYPE = A
         Bytes.setShort(body, at + 2, 1) // QCLASS = IN
         return ByteArray(12).also {
-            Bytes.setShort(it, 0, 0xBEEF.toShort())
+            Bytes.setShort(it, 0, 0xBEEF)
             Bytes.setShort(it, 2, 0x0100)
             Bytes.setShort(it, 4, 1)
         } + body
@@ -210,7 +210,7 @@ class TunnelPrimitivesTest {
     private fun dnsResponseWithCompressedAnswer(): ByteArray {
         val query = dnsQuery("cdn.example.com")
         val header = query.copyOfRange(0, 12)
-        Bytes.setShort(header, 2, 0x8180.toShort()) // QR + RA
+        Bytes.setShort(header, 2, 0x8180) // QR + RA
         Bytes.setShort(header, 6, 1)      // ANCOUNT
         val answer = byteArrayOf(
             0xC0.toByte(), 12,           // NAME -> offset 12
