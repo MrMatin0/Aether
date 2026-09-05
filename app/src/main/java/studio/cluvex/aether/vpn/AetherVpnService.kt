@@ -1,52 +1,38 @@
 package studio.cluvex.aether.vpn
 
-import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
-import android.os.Build
-import android.os.ParcelFileDescriptor
-import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runInterruptible
-import studio.cluvex.aether.AetherApp
-import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
-import studio.cluvex.aether.core.AetherProcess
+import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.core.Diagnostics
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.EngineMeta
-import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
-import studio.cluvex.aether.core.HevTunnel
-import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
-import studio.cluvex.aether.core.SocksTunBridge
-import studio.cluvex.aether.core.TrafficMonitor
-import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.data.SecretStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
-import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
-import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
-import studio.cluvex.aether.model.isConnected
-import studio.cluvex.aether.widget.AetherWidgetProvider
-import java.io.File
-import java.net.InetSocketAddress
-import java.net.Proxy
-import java.net.Socket
+import studio.cluvex.aether.vpn.session.ConnectionPlanner
+import studio.cluvex.aether.vpn.session.NativeStack
+import studio.cluvex.aether.vpn.session.TunnelHealth
+import studio.cluvex.aether.vpn.session.TunnelWatchdog
+import studio.cluvex.aether.vpn.session.VpnTunables
 
 /**
  * The heart of the app. On connect it:
@@ -56,42 +42,50 @@ import java.net.Socket
  *   4. starts the embedded hev-socks5-tunnel core (libhev-socks5-tunnel.so) to forward all
  *      traffic through the proxy — replacing the need for v2rayNG entirely,
  *   5. supervises both processes and auto-reconnects on failure.
+ *
+ * This class is now ONLY the session state machine: intent contract, connect
+ * flow, retry/kill-switch policy and teardown ORDER. The parts it used to carry
+ * itself live next door and can be read (and tested) on their own:
+ *
+ *  - [NativeStack]        — engine process, TUN fd, hev core, filter bridge, sharing
+ *  - TunFactory           — the TUN builders: routing, DNS, split tunneling
+ *  - [ConnectionPlanner]  — the attempt ladder for a hand-picked protocol
+ *  - [TunnelWatchdog]     — end-to-end health probing of a live tunnel
+ *  - [VpnNotifications]   — the shade, the speed card, the tile and the widgets
+ *  - [VpnTunables]        — every timeout and budget, with its reason
  */
 class AetherVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var tun: ParcelFileDescriptor? = null
-    private var engine: AetherProcess? = null
-    private var tunnelStarted: Boolean = false
+    private val natives = NativeStack(this)
+    private val notifications = VpnNotifications(this, scope)
+    private val watchdog = TunnelWatchdog()
+
+    @Volatile
     private var runJob: Job? = null
 
     /**
      * The teardown coroutine of the PREVIOUS session, if one is still
      * finishing. A new connect waits for it instead of racing it (1.2.2
-     * protocol-switch fix).
+     * protocol-switch fix), and teardowns are chained so a second disconnect
+     * can never orphan the first one's remaining work.
      */
+    @Volatile
     private var stopJob: Job? = null
 
     /**
-     * Repaints the ongoing notification with the live download/upload speed,
-     * once a second, for as long as the tunnel is up. Owned by the SESSION and
-     * not by the UI: the shade is exactly where the speed is needed while the
-     * app is closed.
+     * Last profile the service ran with (kill-switch decisions). Written by the
+     * session on an IO thread, read by `onStartCommand` on the main one — as are
+     * the two jobs above, which is what the @Volatile is for.
      */
-    private var trafficJob: Job? = null
-
-    /** Active userspace filter bridge (only when per-app blocking is on). */
-    private var tunBridge: SocksTunBridge? = null
-
-    /** Last profile the service ran with (kill-switch decisions). */
+    @Volatile
     private var lastProfile: ConnectionProfile? = null
 
     /** True while the kill-switch blackhole TUN is up. */
     @Volatile
     private var lockdownTunActive = false
 
-    /** Consecutive failed watchdog probes (1.2.4 stability watchdog). */
-    private var probeFailures = 0
+    // =============================================================== lifecycle
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // FOREGROUND-SERVICE CONTRACT — DO NOT MOVE THIS BELOW THE `when`.
@@ -110,9 +104,12 @@ class AetherVpnService : VpnService() {
         // Disconnect after the service had been demoted. So promote
         // unconditionally, then decide what the intent meant.
         //
-        // currentNotification() (not buildNotification()) is used so promoting
+        // notifications.current() (not the plain builder) is used so promoting
         // never blanks the live speed card that is already on screen.
-        startForeground(NOTIF_ID, currentNotification(getString(R.string.state_launching)))
+        startForeground(
+            VpnNotifications.NOTIF_ID,
+            notifications.current(getString(R.string.state_launching)),
+        )
 
         val action = intent?.action
         if (action == ACTION_DISCONNECT) {
@@ -152,11 +149,25 @@ class AetherVpnService : VpnService() {
         // not recognise is a bug on the sender's side; say so and stand down.
         DiagnosticsLog.w(TAG, "Ignoring service intent with unknown action: $action")
         if (runJob?.isActive != true && !lockdownTunActive) {
-            stopForegroundCompat()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
         return START_NOT_STICKY
     }
+
+    override fun onRevoke() {
+        stopEverything()
+        super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        runJob?.cancel()
+        cleanupNatives()
+        scope.coroutineContext[Job]?.cancel()
+        super.onDestroy()
+    }
+
+    // ================================================================= connect
 
     private fun startTunnel(profile: ConnectionProfile, restored: Boolean = false) {
         lastProfile = profile
@@ -177,7 +188,7 @@ class AetherVpnService : VpnService() {
                 // the new connect for as long as the old session's engine wait
                 // still had to run.
                 previousRun.cancel()
-                cleanupNativeOnly()
+                cleanupNatives()
                 previousRun.join()
             }
             previousStop?.join()
@@ -189,10 +200,58 @@ class AetherVpnService : VpnService() {
                 AetherController.setState(
                     ConnectionState.Error(e.message ?: getString(R.string.state_error)),
                 )
-                updateNotification(getString(R.string.state_error))
-                cleanupNativeOnly()
+                notifications.update(getString(R.string.state_error))
+                cleanupNatives()
             }
         }
+    }
+
+    private suspend fun connectFlow(requested: ConnectionProfile, restored: Boolean) {
+        DiagnosticsLog.clear()
+        // Hydrated AFTER the log is cleared, so its notes survive in the panel.
+        val profile = hydrate(requested, restored).also { lastProfile = it }
+        // STALE-CIRCLES ROOT-CAUSE FIX: the four self-test circles were only
+        // reset inside Diagnostics.run(), which starts AFTER the engine has
+        // launched AND finished its endpoint scan — so on a reconnect the
+        // previous session's green circles sat on screen for the entire scan
+        // and appeared to "reset late". Reset them the INSTANT a new connect
+        // starts, so the panel always reflects the current attempt on time.
+        Diagnostics.resetChecks()
+        EngineMeta.reset()
+        DiagnosticsLog.i(
+            TAG,
+            "Connect requested — protocol=${profile.protocol} scan=${profile.scanMode} ip=${profile.ipVersion}",
+        )
+
+        val resolved: ConnectionProfile =
+            if (profile.protocol == Protocol.AUTO) {
+                connectSmartAuto(profile)
+            } else {
+                // An explicitly chosen protocol keeps that protocol; the
+                // engine still selects its own endpoint.
+                AetherController.setState(ConnectionState.Launching)
+                runLadder(
+                    ConnectionPlanner.manualProtocol(profile),
+                    getString(R.string.err_protocol_failed),
+                )
+            }
+
+        // Desktop-parity info row (1.2.4): publish the protocol that actually
+        // won (Smart Auto resolves AUTO to a concrete protocol). The endpoint
+        // arrives through EngineMeta's engine-log parser; for a pinned peer we
+        // already know it here (no selection line is logged).
+        EngineMeta.setProtocol(resolved.protocol.name)
+        if (resolved.manualPeer.isNotBlank()) EngineMeta.setEndpoint(resolved.manualPeer)
+
+        // LIVE SPEED IN THE SHADE: the meter starts BEFORE the Connected
+        // transition, so the first notification the user pulls down already
+        // carries a reading instead of a bare "Connected".
+        notifications.startTrafficMeter()
+        AetherController.setState(ConnectionState.Connected(VpnTunables.SOCKS_ENDPOINT))
+        notifications.update(getString(R.string.state_connected))
+        DiagnosticsLog.i(TAG, "All checks passed — tunnel is ready.")
+
+        superviseEngine(resolved)
     }
 
     /**
@@ -211,56 +270,14 @@ class AetherVpnService : VpnService() {
             // ProfileStore already unseals the Zero Trust secrets itself.
             val saved = runCatching { ProfileStore(applicationContext).profile.first() }
             (saved.exceptionOrNull() as? CancellationException)?.let { throw it }
-            return (saved.getOrNull() ?: profile).also { lastProfile = it }
+            return saved.getOrNull() ?: profile
         }
         if (profile.teamAuth == TeamAuth.OFF) return profile
         val secrets = SecretStore(applicationContext)
         return profile.copy(
             accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
             accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
-        ).also { lastProfile = it }
-    }
-
-    private suspend fun connectFlow(requested: ConnectionProfile, restored: Boolean) {
-        DiagnosticsLog.clear()
-        // Hydrated AFTER the log is cleared, so its notes survive in the panel.
-        val profile = hydrate(requested, restored)
-        // STALE-CIRCLES ROOT-CAUSE FIX: the four self-test circles were only
-        // reset inside Diagnostics.run(), which starts AFTER the engine has
-        // launched AND finished its endpoint scan — so on a reconnect the
-        // previous session's green circles sat on screen for the entire scan
-        // and appeared to "reset late". Reset them the INSTANT a new connect
-        // starts, so the panel always reflects the current attempt on time.
-        Diagnostics.resetChecks()
-        EngineMeta.reset()
-        DiagnosticsLog.i(TAG, "Connect requested — protocol=${profile.protocol} scan=${profile.scanMode} ip=${profile.ipVersion}")
-
-        val resolved: ConnectionProfile =
-            if (profile.protocol == Protocol.AUTO) {
-                connectSmartAuto(profile)
-            } else {
-                // An explicitly chosen protocol keeps that protocol; the
-                // engine still selects its own endpoint (see [directPlan]).
-                AetherController.setState(ConnectionState.Launching)
-                runLadder(directPlan(profile), getString(R.string.err_protocol_failed))
-            }
-
-        // Desktop-parity info row (1.2.4): publish the protocol that actually
-        // won (Smart Auto resolves AUTO to a concrete protocol). The endpoint
-        // arrives through EngineMeta's engine-log parser; for a pinned peer we
-        // already know it here (no selection line is logged).
-        EngineMeta.setProtocol(resolved.protocol.name)
-        if (resolved.manualPeer.isNotBlank()) EngineMeta.setEndpoint(resolved.manualPeer)
-
-        // LIVE SPEED IN THE SHADE: the meter starts BEFORE the Connected
-        // transition, so the first notification the user pulls down already
-        // carries a reading instead of a bare "Connected".
-        startTrafficMeter()
-        AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
-        updateNotification(getString(R.string.state_connected))
-        DiagnosticsLog.i(TAG, "All checks passed — tunnel is ready.")
-
-        superviseEngine(resolved)
+        )
     }
 
     /**
@@ -273,56 +290,10 @@ class AetherVpnService : VpnService() {
      */
     private suspend fun connectSmartAuto(userProfile: ConnectionProfile): ConnectionProfile {
         AetherController.setState(ConnectionState.Launching)
-        updateNotification(getString(R.string.state_analyzing))
+        notifications.update(getString(R.string.state_analyzing))
         val fingerprint = SmartAuto.fingerprint(this)
         val plan = SmartAuto.buildPlan(userProfile, fingerprint)
         return runLadder(plan, getString(R.string.err_auto_failed))
-    }
-
-    /**
-     * Two-pass plan for a protocol the user picked by hand (MASQUE, WireGuard
-     * or Gool).
-     *
-     * 1.2.2 "MASQUE hangs forever" FIX: a hand-picked protocol used to get ONE
-     * attempt with the full scan budget of the selected scan mode — with no
-     * second chance. On a network where QUIC/UDP is throttled that means the
-     * user stares at "Connecting" for minutes and then just fails, while Smart
-     * mode (which walks a ladder of shorter, hardened attempts) connects in
-     * seconds. So the chosen protocol now gets:
-     *   1. a first pass exactly as configured, on a capped budget, and
-     *   2. if that fails, the SAME protocol again with anti-DPI hardening
-     *      (obfuscation on, plus HTTP/2 + TLS fragmentation + ECH for MASQUE)
-     *      on the full budget.
-     * The protocol the user chose is never swapped for another one.
-     */
-    private fun directPlan(profile: ConnectionProfile): List<AutoCandidate> {
-        val fullBudget = profile.connectTimeoutMs()
-        val hardenedNoize = if (profile.noize == Noize.OFF) Noize.FIREWALL else profile.noize
-        val masque = profile.protocol == Protocol.MASQUE
-        val hardened = profile.copy(
-            noize = hardenedNoize,
-            masqueHttp2 = profile.masqueHttp2 || masque,
-            fragment = profile.fragment || masque,
-            ech = profile.ech || masque,
-        )
-        if (hardened == profile) {
-            return listOf(
-                AutoCandidate(profile, fullBudget, "${profile.protocol.name} · as configured"),
-            )
-        }
-        return listOf(
-            AutoCandidate(
-                profile,
-                fullBudget.coerceAtMost(FIRST_PASS_MAX_MS),
-                "${profile.protocol.name} · as configured",
-            ),
-            AutoCandidate(
-                hardened,
-                fullBudget,
-                "${profile.protocol.name} · noize=${hardenedNoize.name.lowercase()}" +
-                    (if (masque) " · h2 · fragment · ech" else "") + " (anti-DPI pass)",
-            ),
-        )
     }
 
     /**
@@ -349,7 +320,7 @@ class AetherVpnService : VpnService() {
                     TAG,
                     "${candidate.label} failed (${e.message}) — moving to the next strategy.",
                 )
-                cleanupNativeOnly()
+                cleanupNatives()
                 Diagnostics.resetChecks()
             }
         }
@@ -362,80 +333,59 @@ class AetherVpnService : VpnService() {
      * for SOCKS5, bring up TUN/proxy, and gate on the 4-step self-test.
      * Throws on any failure; the caller decides whether to retry differently.
      */
-    private suspend fun connectAttempt(
-        profile: ConnectionProfile,
-        timeoutMs: Long,
-    ) {
+    private suspend fun connectAttempt(profile: ConnectionProfile, timeoutMs: Long) {
         AetherController.setState(ConnectionState.Launching)
-        updateNotification(getString(R.string.state_launching))
+        notifications.update(getString(R.string.state_launching))
         // 1.2.2 PROTOCOL-SWITCH FIX: never start an engine on top of a dying
         // one. Tear the previous natives down and wait for the local SOCKS5
         // port to be released first, otherwise the probe below can "see" the
         // old listener and the whole attempt is verified against a socket that
-        // is about to disappear.
-        // Leaving lockdown (if any): the blackhole TUN is torn down here.
-        lockdownTunActive = false
-        cleanupNativeOnly()
-        if (!PortProbe.awaitClosed(SOCKS_HOST, SOCKS_PORT, PORT_RELEASE_WAIT_MS)) {
+        // is about to disappear. This is also what lifts a lockdown: the
+        // blackhole TUN is torn down here.
+        cleanupNatives()
+        val portReleased = PortProbe.awaitClosed(
+            VpnTunables.SOCKS_HOST,
+            VpnTunables.SOCKS_PORT,
+            VpnTunables.PORT_RELEASE_WAIT_MS,
+        )
+        if (!portReleased) {
             DiagnosticsLog.w(
                 TAG,
-                "Local port $SOCKS_PORT is still busy after ${PORT_RELEASE_WAIT_MS / 1000}s — starting anyway.",
+                "Local port ${VpnTunables.SOCKS_PORT} is still busy after " +
+                    "${VpnTunables.PORT_RELEASE_WAIT_MS / 1000}s — starting anyway.",
             )
         }
         DiagnosticsLog.i(TAG, "Launching engine (libaether.so)…")
-        engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
+        natives.startEngine(profile)
 
         AetherController.setState(ConnectionState.Connecting)
-        updateNotification(getString(R.string.state_connecting))
+        notifications.update(getString(R.string.state_connecting))
         // Timeout comes from the caller: the profile's scan-mode budget for a
         // direct connect, or the per-candidate budget in the Smart Auto ladder.
         DiagnosticsLog.i(
             TAG,
-            "Waiting for SOCKS5 on $SOCKS_HOST:$SOCKS_PORT… (scan=${profile.scanMode}, timeout=${timeoutMs / 1000}s)",
+            "Waiting for SOCKS5 on ${VpnTunables.SOCKS_ENDPOINT}… " +
+                "(scan=${profile.scanMode}, timeout=${timeoutMs / 1000}s)",
         )
-        val opened = PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, timeoutMs) { engine?.isAlive() == true }
+        val opened = PortProbe.awaitOpen(
+            VpnTunables.SOCKS_HOST,
+            VpnTunables.SOCKS_PORT,
+            timeoutMs,
+        ) { natives.engineAlive }
         if (!opened) {
-            val engineDied = engine?.isAlive() != true
-            if (engineDied) {
+            if (!natives.engineAlive) {
                 DiagnosticsLog.e(TAG, "Engine exited before it opened the SOCKS5 port.")
                 throw IllegalStateException(getString(R.string.err_engine_died))
             }
-            DiagnosticsLog.e(TAG, "Engine still scanning after ${timeoutMs / 1000}s — SOCKS5 port never opened.")
+            DiagnosticsLog.e(
+                TAG,
+                "Engine still scanning after ${timeoutMs / 1000}s — SOCKS5 port never opened.",
+            )
             throw IllegalStateException(getString(R.string.err_engine_timeout))
         }
         DiagnosticsLog.i(TAG, "SOCKS5 port is up.")
 
-        if (profile.proxyMode) {
-            // Proxy mode: DON'T capture the whole device through a system TUN.
-            // Instead expose the engine's SOCKS5 + an HTTP proxy so individual
-            // apps (or the Wi-Fi proxy setting) can opt in. This is ideal when
-            // only one app (e.g. Telegram) needs the tunnel. LAN exposure only
-            // happens when the user explicitly turned sharing on.
-            //
-            // startSync is ground truth: in proxy mode these listeners ARE the
-            // product, so a bind failure must fail the connection loudly
-            // instead of claiming "Local proxy ready" over dead ports (the old
-            // fire-and-forget start swallowed EADDRINUSE and still reported the
-            // ports as ready — external apps then couldn't connect).
-            val shareReady = ShareBridge.startSync(localOnly = !profile.lanShare)
-            if (!shareReady) {
-                DiagnosticsLog.e(TAG, "Proxy mode: the fixed local proxy ports could not be opened (see errors above).")
-                throw IllegalStateException(getString(R.string.err_proxy_ports))
-            }
-            // Ports are FIXED (v2rayNG-style standard) — the same values are
-            // shown as copyable rows under the Proxy-mode toggle in the UI.
-            DiagnosticsLog.i(
-                TAG,
-                "Proxy mode: system TUN skipped. Local proxy ready — " +
-                    "SOCKS5 127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}, HTTP 127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}",
-            )
-        } else {
-            establishTun(profile)
-            startTun2Socks(profile)
-            // LAN sharing: if the user enabled it, expose the tunnel to other
-            // devices on the same Wi-Fi/hotspot (HTTP + SOCKS5 bridge).
-            if (profile.lanShare) ShareBridge.start(localOnly = false)
-        }
+        if (profile.proxyMode) startLocalProxy(profile) else startFullTunnel(profile)
 
         // GATING FIX: the app used to report Connected the moment the TUN /
         // proxy was up while the 4-step self-test still ran in the background —
@@ -444,21 +394,14 @@ class AetherVpnService : VpnService() {
         // Verifying, and Connected is reported ONLY after all four checks pass,
         // so Connected == genuinely ready to browse.
         AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
+        notifications.update(getString(R.string.state_verifying))
         DiagnosticsLog.i(
             TAG,
             if (profile.proxyMode) "Proxy started. Verifying end-to-end connectivity…"
             else "TUN + hev tunnel started. Verifying end-to-end connectivity…",
         )
 
-        // In proxy mode, test THROUGH the shared SOCKS5 listener — the exact
-        // endpoint external apps connect to — so a dead bridge can no longer
-        // hide behind a passing engine-port (1819) self-test.
-        val diagPort =
-            if (profile.proxyMode) ShareBridge.socksPort.value ?: SOCKS_PORT
-            else SOCKS_PORT
-        val healthy = runCatching { Diagnostics.run(port = diagPort) }.getOrDefault(false)
-        if (!healthy) {
+        if (!selfTest(profile)) {
             DiagnosticsLog.e(TAG, "Self-test failed — refusing to report Connected.")
             throw IllegalStateException(getString(R.string.err_selftest))
         }
@@ -476,38 +419,79 @@ class AetherVpnService : VpnService() {
         }
     }
 
+    /**
+     * Proxy mode: DON'T capture the whole device through a system TUN. Instead
+     * expose the engine's SOCKS5 + an HTTP proxy so individual apps (or the
+     * Wi-Fi proxy setting) can opt in. This is ideal when only one app (e.g.
+     * Telegram) needs the tunnel. LAN exposure only happens when the user
+     * explicitly turned sharing on.
+     */
+    private fun startLocalProxy(profile: ConnectionProfile) {
+        if (!natives.startLocalProxy(localOnly = !profile.lanShare)) {
+            DiagnosticsLog.e(
+                TAG,
+                "Proxy mode: the fixed local proxy ports could not be opened (see errors above).",
+            )
+            throw IllegalStateException(getString(R.string.err_proxy_ports))
+        }
+        // Ports are FIXED (v2rayNG-style standard) — the same values are
+        // shown as copyable rows under the Proxy-mode toggle in the UI.
+        DiagnosticsLog.i(
+            TAG,
+            "Proxy mode: system TUN skipped. Local proxy ready — " +
+                "SOCKS5 127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}, HTTP 127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}",
+        )
+    }
+
+    private fun startFullTunnel(profile: ConnectionProfile) {
+        natives.establishTun(profile)
+        natives.startForwarder(profile)
+        // LAN sharing: if the user enabled it, expose the tunnel to other
+        // devices on the same Wi-Fi/hotspot (HTTP + SOCKS5 bridge).
+        if (profile.lanShare) natives.startLanShare()
+    }
+
+    /**
+     * The 4-step self-test, run against the endpoint that actually carries the
+     * user's traffic.
+     *
+     * In proxy mode that is the SHARED SOCKS5 listener — the exact port external
+     * apps connect to — so a dead bridge can no longer hide behind a passing
+     * engine-port (1819) test. The initial connect got this right while the
+     * post-restart check in [superviseEngine] did not, which is why the port
+     * decision now lives in one function that both call.
+     */
+    private suspend fun selfTest(profile: ConnectionProfile): Boolean {
+        val port =
+            if (profile.proxyMode) ShareBridge.socksPort.value ?: VpnTunables.SOCKS_PORT
+            else VpnTunables.SOCKS_PORT
+        return runCatching { Diagnostics.run(port = port) }.getOrDefault(false)
+    }
+
+    // =============================================================== supervise
+
     /** Keeps the engine alive; retries with backoff if it dies. */
     private suspend fun superviseEngine(profile: ConnectionProfile) {
         var attempt = 0
-        probeFailures = 0
-        while (currentScopeActive()) {
-            if (engine?.isAlive() == true) {
-                // 1.2.2 CPU FIX: the supervisor used to wake up every 2 s for
-                // the ENTIRE lifetime of the tunnel just to ask "is the engine
-                // still alive?" — 1,800 wake-ups per hour of a healthy,
-                // otherwise idle connection, each one preventing the CPU from
-                // settling into a deep idle state and quietly draining the
-                // battery. Instead we now BLOCK on the process itself: the OS
-                // wakes us the instant the engine exits and never before, so a
-                // healthy tunnel costs exactly zero polling.
-                engine?.awaitExit(WATCHDOG_INTERVAL_MS)
+        watchdog.reset()
+        // Tracks THIS coroutine's own cancellation. The old check read the
+        // `runJob` field, which a new session overwrites with its own job — so a
+        // superseded supervisor could look "still active" and keep restarting an
+        // engine that belonged to a session nobody was waiting for any more.
+        while (currentCoroutineContext().isActive) {
+            if (natives.engineAlive) {
+                natives.awaitEngineExit(VpnTunables.WATCHDOG_INTERVAL_MS)
                 // STABILITY WATCHDOG (1.2.4, hardened): the engine process can
                 // stay alive while its session silently dies -- the classic
                 // "connected, but after a minute or two no site opens"
                 // symptom. Probe end-to-end THROUGH the local SOCKS5 port and
                 // restart the engine only on SUSTAINED failure; see
-                // probeTunnelCycle() for why the bar is deliberately high.
-                if (engine?.isAlive() == true) {
-                    if (probeTunnelCycle()) {
-                        attempt = 0
-                        probeFailures = 0
-                    } else if (++probeFailures >= WATCHDOG_FAIL_CYCLES) {
-                        DiagnosticsLog.w(
-                            TAG,
-                            "Watchdog: tunnel dead across $WATCHDOG_FAIL_CYCLES consecutive checks -- restarting the engine.",
-                        )
-                        probeFailures = 0
-                        engine?.stop()
+                // TunnelWatchdog for why the bar is deliberately high.
+                if (natives.engineAlive) {
+                    when (watchdog.check()) {
+                        TunnelHealth.HEALTHY -> attempt = 0
+                        TunnelHealth.DEGRADED -> Unit
+                        TunnelHealth.DEAD -> natives.stopEngine()
                     }
                 }
                 continue
@@ -522,218 +506,52 @@ class AetherVpnService : VpnService() {
                 }
                 throw IllegalStateException(getString(R.string.err_engine_died))
             }
-            val backoff = BACKOFF[attempt.coerceAtMost(BACKOFF.size - 1)]
+            val backoff = VpnTunables.BACKOFF[attempt.coerceAtMost(VpnTunables.BACKOFF.size - 1)]
             attempt++
             AetherController.setState(ConnectionState.Reconnecting(attempt, maxRetries(profile)))
-            updateNotification(getString(R.string.state_reconnecting))
+            notifications.update(getString(R.string.state_reconnecting))
             delay(backoff)
 
-            engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
-            if (PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, profile.connectTimeoutMs()) { engine?.isAlive() == true }) {
-                // Same gate as the initial connect: never claim Connected after
-                // a silent engine restart until traffic really flows again.
-                AetherController.setState(ConnectionState.Verifying)
-                updateNotification(getString(R.string.state_verifying))
-                if (runCatching { Diagnostics.run() }.getOrDefault(false)) {
-                    attempt = 0
-                    // The engine was replaced, so the counters the meter polls
-                    // were rebased: restart it with the new session.
-                    startTrafficMeter()
-                    AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
-                    updateNotification(getString(R.string.state_connected))
-                } else {
-                    DiagnosticsLog.w(TAG, "Self-test failed after engine restart — retrying.")
-                    engine?.stop()
-                }
+            natives.startEngine(profile)
+            val opened = PortProbe.awaitOpen(
+                VpnTunables.SOCKS_HOST,
+                VpnTunables.SOCKS_PORT,
+                profile.connectTimeoutMs(),
+            ) { natives.engineAlive }
+            if (!opened) continue
+
+            // Same gate as the initial connect: never claim Connected after
+            // a silent engine restart until traffic really flows again.
+            AetherController.setState(ConnectionState.Verifying)
+            notifications.update(getString(R.string.state_verifying))
+            if (selfTest(profile)) {
+                attempt = 0
+                watchdog.reset()
+                // The engine was replaced, so the counters the meter polls
+                // were rebased: restart it with the new session.
+                notifications.startTrafficMeter()
+                AetherController.setState(ConnectionState.Connected(VpnTunables.SOCKS_ENDPOINT))
+                notifications.update(getString(R.string.state_connected))
+            } else {
+                DiagnosticsLog.w(TAG, "Self-test failed after engine restart — retrying.")
+                natives.stopEngine()
             }
         }
     }
 
-    private fun currentScopeActive(): Boolean = runJob?.isActive ?: false
-
-    /**
-     * The profile MTU, clamped to what the TUN (and hev's lwIP netif) accept.
-     * Both must agree, so this is the single place the value is bounded.
-     */
-    private fun ConnectionProfile.safeMtu(): Int = mtu.coerceIn(MIN_MTU, MAX_MTU)
-
-    private fun establishTun(profile: ConnectionProfile) {
-        // User-tunable MTU (defaults to 1280 — safe for Iranian mobile/DPI).
-        // Clamped to a sane range so a bad saved value can't break establish().
-        val mtu = profile.safeMtu()
-        val builder = Builder()
-            .setSession("Aether")
-            .setMtu(mtu)
-            // The TUN address MUST match hev's tunnel.ipv4/ipv6 (see writeHevConfig).
-            .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
-            .addAddress(TunnelConfig.TUN_IPV6, TunnelConfig.TUN_IPV6_PREFIX)
-            .addRoute("0.0.0.0", 0)
-
-        // IPv6 LEAK PROTECTION (1.2.4): on by default -- the v6 default
-        // route keeps IPv6 traffic inside the tunnel. Can be disabled for
-        // networks where a default v6 route breaks connectivity.
-        if (profile.ipv6LeakProtection) {
-            builder.addRoute("::", 0)
+    /** Max automatic engine restarts (Smart Reconnect, 1.2.4). */
+    private fun maxRetries(profile: ConnectionProfile): Int =
+        if (profile.smartReconnect) {
+            profile.reconnectRetryLimit.coerceIn(1, VpnTunables.MAX_ENGINE_RESTARTS)
+        } else {
+            VpnTunables.MAX_ENGINE_RESTARTS
         }
 
-        // KILL SWITCH (1.2.4): a blocking interface never falls back to
-        // direct traffic while the tunnel is not forwarding.
-        //
-        // BATTERY FIX (same flag, second reason): the userspace filter bridge
-        // reads this fd from a plain Java thread. `establish()` hands out a
-        // NON-BLOCKING fd by default, and on Android a non-blocking read with
-        // no packet pending returns 0 — so that reader spun read()→0→read()
-        // forever and pinned a CPU core for the entire session, while writes
-        // could fail with EAGAIN and silently drop packets. Blocking mode parks
-        // the reader on the fd instead: zero CPU while the tunnel is idle.
-        // (hev-socks5-tunnel manages the fd mode itself, and the two paths are
-        // mutually exclusive, so this only ever affects the bridge.)
-        if (profile.killSwitch || profile.strictKillSwitch || profile.blockedApps.isNotEmpty()) {
-            builder.setBlocking(true)
-        }
-
-        TunnelConfig.DNS_SERVERS.forEach { builder.addDnsServer(it) }
-
-        // Split tunneling + loop prevention (keeps the engine's own traffic off
-        // the TUN, equivalent to v2rayNG's in-process protect()).
-        applyAppFilter(builder, profile)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setMetered(false)
-        }
-
-        tun = builder.establish()
-            ?: throw IllegalStateException("Failed to establish the VPN interface")
-        DiagnosticsLog.i(
-            TAG,
-            "TUN established: ipv4=${TunnelConfig.TUN_IPV4}/${TunnelConfig.TUN_IPV4_PREFIX} " +
-                "ipv6=${TunnelConfig.TUN_IPV6}/${TunnelConfig.TUN_IPV6_PREFIX} mtu=$mtu " +
-                "split=${profile.splitMode} apps=${profile.splitApps.size} dns=${TunnelConfig.DNS_SERVERS}",
-        )
-    }
-
-    /**
-     * Applies the split-tunnel policy and always keeps the app's own engine
-     * traffic off the TUN (loop prevention).
-     *
-     * - OFF     : everything routes through the VPN except our own package.
-     * - INCLUDE : ONLY the chosen apps route through the VPN. Our own package is
-     *             implicitly excluded because it is never added to the allow-list.
-     * - EXCLUDE : everything routes through the VPN except the chosen apps + us.
-     */
-    private fun applyAppFilter(builder: Builder, profile: ConnectionProfile) {
-        val apps = profile.splitApps.filter { it.isNotBlank() && it != packageName }
-        when (profile.splitMode) {
-            SplitMode.INCLUDE -> {
-                if (apps.isEmpty()) {
-                    // Nothing selected -> fall back to OFF so we don't build a
-                    // tunnel that carries no traffic at all.
-                    safeDisallow(builder, packageName)
-                    return
-                }
-                apps.forEach { safeAllow(builder, it) }
-            }
-            SplitMode.EXCLUDE -> {
-                safeDisallow(builder, packageName)
-                // Blocked apps must stay INSIDE the TUN so the filter bridge
-                // can drop their traffic; excluding them would give them
-                // direct internet instead of none.
-                apps.filter { it !in profile.blockedApps }.forEach { safeDisallow(builder, it) }
-            }
-            SplitMode.OFF -> safeDisallow(builder, packageName)
-        }
-    }
-
-    private fun safeAllow(builder: Builder, pkg: String) {
-        try {
-            builder.addAllowedApplication(pkg)
-        } catch (_: Exception) {
-            DiagnosticsLog.w(TAG, "addAllowedApplication failed for $pkg (not installed?)")
-        }
-    }
-
-    private fun safeDisallow(builder: Builder, pkg: String) {
-        try {
-            builder.addDisallowedApplication(pkg)
-        } catch (_: Exception) {
-            if (pkg != packageName) DiagnosticsLog.w(TAG, "addDisallowedApplication failed for $pkg")
-        }
-    }
-
-    private fun startTun2Socks(profile: ConnectionProfile) {
-        if (profile.blockedApps.isNotEmpty()) {
-            // PER-APP BLOCKING (1.2.4): hev-socks5-tunnel cannot filter per
-            // UID, so a userspace filter bridge (merged into Aether's
-            // SocksTunBridge) reads the TUN itself, resolves each flow's
-            // owning app and drops blocked apps' packets. It is activated
-            // ONLY when blocking is configured; the battle-tested hev path
-            // below stays the default for everyone else.
-            val pfd = tun ?: throw IllegalStateException("TUN descriptor is null")
-            // Snapshot the blocked set ONCE: the bridge asks its provider on
-            // every packet, and `blockedApps.toSet()` allocated a fresh set per
-            // call — a per-packet allocation on the hottest path in the app.
-            val blocked = profile.blockedApps.toSet()
-            val bridge = SocksTunBridge(
-                vpnService = this,
-                tunDescriptor = pfd,
-                socksHost = SOCKS_HOST,
-                socksPort = SOCKS_PORT,
-                mtu = profile.safeMtu(),
-                blockedPackagesProvider = { blocked },
-                routingEngine = RoutingEngine(emptyList()),
-            )
-            DiagnosticsLog.i(TAG, "Starting userspace filter bridge (blocked apps=${profile.blockedApps.size})")
-            bridge.start()
-            tunBridge = bridge
-            return
-        }
-        val config = writeHevConfig(profile.safeMtu())
-        // Use the LIVE fd of the ParcelFileDescriptor (do NOT detach): hev uses it
-        // while running and we close the pfd ourselves on teardown. The fd is only
-        // valid inside THIS process, which is exactly why hev must run in-process.
-        val fd = tun?.fd ?: throw IllegalStateException("TUN descriptor is null")
-        DiagnosticsLog.i(TAG, "Starting hev-socks5-tunnel in-process (fd=$fd)")
-        HevTunnel.start(config.absolutePath, fd)
-        tunnelStarted = true
-    }
-
-    /**
-     * Writes the hev-socks5-tunnel config in the exact shape v2rayNG uses.
-     *
-     * The critical difference from the previous (broken) version is the
-     * `tunnel.ipv4` / `tunnel.ipv6` fields. hev configures its internal lwIP
-     * netif from these; without them packets are pulled off the TUN fd but have
-     * nowhere to be routed, so the tunnel "connects" but no site ever loads.
-     * These MUST equal the VpnService addAddress values.
-     */
-    private fun writeHevConfig(mtu: Int): File {
-        val file = File(filesDir, "hev.yaml")
-        val yaml = """
-            tunnel:
-              mtu: $mtu
-              ipv4: ${TunnelConfig.TUN_IPV4}
-              ipv6: '${TunnelConfig.TUN_IPV6}'
-            socks5:
-              address: $SOCKS_HOST
-              port: $SOCKS_PORT
-              udp: 'udp'
-            misc:
-              task-stack-size: 86016
-              connect-timeout: 5000
-              # 1.2.4 stability: the old 60s idle timeout killed long-lived
-              # sessions ("works 1-2 minutes, then no site opens").
-              tcp-read-write-timeout: 300000
-              udp-read-write-timeout: 120000
-              log-level: warn
-        """.trimIndent()
-        file.writeText(yaml)
-        DiagnosticsLog.i(TAG, "hev.yaml written:\n$yaml")
-        return file
-    }
+    // ================================================================ teardown
 
     private fun stopEverything() {
         AetherController.setState(ConnectionState.Disconnecting)
-        updateNotification(getString(R.string.state_disconnecting))
+        notifications.update(getString(R.string.state_disconnecting))
         val job = runJob
         runJob = null
         // The session is over: its kill-switch policy must not leak into a
@@ -750,84 +568,23 @@ class AetherVpnService : VpnService() {
         // "Disconnecting…" for as long as the supervisor's engine wait had
         // left to run — up to a full minute.
         job?.cancel()
-        stopJob = scope.launch(Dispatchers.IO) {
-            cleanupNativeOnly()
+        launchTeardown {
+            cleanupNatives()
             // STALE-CIRCLES FIX (part 2): clear the finished session's results
             // right at disconnect, so the panel never carries green circles
             // from a dead session into the next connect.
             Diagnostics.resetChecks()
             EngineMeta.reset()
             AetherController.setState(ConnectionState.Idle)
-            AetherTileService.requestUpdate(this@AetherVpnService)
-            // The final Idle transition never goes through
-            // updateNotification(), which is what repaints the widget — so
-            // without this the widget stays on "Disconnecting…" forever.
-            AetherWidgetProvider.updateAllWidgets(this@AetherVpnService)
-            stopForegroundCompat()
+            // The final Idle transition never goes through notifications.update(),
+            // which is what repaints the tile and the widget — so without this
+            // they stay on "Disconnecting…" forever.
+            notifications.syncTileAndWidget()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             job?.join()
         }
     }
-
-    /** Max automatic engine restarts (Smart Reconnect, 1.2.4). */
-    private fun maxRetries(profile: ConnectionProfile): Int =
-        if (profile.smartReconnect) profile.reconnectRetryLimit.coerceIn(1, 50) else 50
-
-    /**
-     * WATCHDOG PROBE, hardened (1.2.4 periodic-outage root-cause fix).
-     *
-     * The old probe was a single TCP connect to 1.1.1.1:53 with a 5 s
-     * timeout. On high-RTT, lossy links (the tunnel's own baseline RTT is
-     * 350-550 ms and DPI throttling causes multi-second UDP stalls that heal
-     * by themselves) that lone probe fails SPURIOUSLY -- two unlucky probes
-     * 30 s apart were enough to kill a perfectly healthy engine and force a
-     * full endpoint rescan, which is itself a 30-90 s total outage. The cure
-     * had become the disease: the periodic "no site opens, then it works
-     * again" the user saw every few minutes was the watchdog restarting a
-     * tunnel that was only briefly stalled.
-     *
-     * A check now only counts as failed when THREE attempts in a row --
-     * spread over three different anycast resolvers, 8 s timeout each, 1.5 s
-     * apart -- all fail, and the engine is restarted only after THREE
-     * consecutive failed checks (90 s+ of continuously proven dead tunnel).
-     * Brief self-healing stalls no longer trigger restarts, a genuinely dead
-     * session still recovers automatically, and MASQUE's in-engine reconnect
-     * loop gets room to finish before the app steps in.
-     */
-    private suspend fun probeTunnelCycle(): Boolean {
-        repeat(PROBE_ATTEMPTS) { attempt ->
-            if (probeTunnelOnce(PROBE_TARGETS[attempt % PROBE_TARGETS.size])) return true
-            if (attempt < PROBE_ATTEMPTS - 1) delay(PROBE_RETRY_GAP_MS)
-        }
-        return false
-    }
-
-    /**
-     * Single TCP connect to [target] ("host:port") THROUGH the engine's local
-     * SOCKS5 listener.
-     *
-     * DISCONNECT-LATENCY FIX: this is a BLOCKING `Socket.connect` with an 8 s
-     * timeout, and coroutine cancellation cannot interrupt a blocking call. A
-     * disconnect tapped while the watchdog happened to be mid-probe therefore
-     * sat on "Disconnecting…" until the probe timed out on its own — the exact
-     * same defect [AetherProcess.awaitExit] already fixes, so it gets the exact
-     * same cure: `runInterruptible` maps cancellation onto a real thread
-     * interrupt, so the connect aborts immediately.
-     *
-     * CancellationException is deliberately NOT swallowed: a cancelled
-     * supervisor must unwind, not report "tunnel dead" and trigger a restart of
-     * an engine that is already being torn down.
-     */
-    private suspend fun probeTunnelOnce(target: String): Boolean =
-        runInterruptible(Dispatchers.IO) {
-            runCatching {
-                val host = target.substringBefore(':')
-                val port = target.substringAfter(':').toInt()
-                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(SOCKS_HOST, SOCKS_PORT))
-                Socket(proxy).use { it.connect(InetSocketAddress(host, port), PROBE_TIMEOUT_MS) }
-                true
-            }.getOrDefault(false)
-        }
 
     /**
      * KILL SWITCH lockdown (1.2.4): stop the engine and the forwarder but
@@ -839,192 +596,56 @@ class AetherVpnService : VpnService() {
         val job = runJob
         runJob = null
         job?.cancel()
-        stopJob = scope.launch(Dispatchers.IO) {
-            stopForwardingNatives()
+        launchTeardown {
+            // The speed meter polls hev's and the bridge's counters, so it has
+            // to stop BEFORE the natives it reads are torn down.
+            notifications.stopTrafficMeter()
+            natives.stopForwarding()
             // If the blackhole interface cannot be established (consent
             // revoked, another VPN took over) there is nothing to hold the
             // traffic with — say so instead of pretending to be protected.
-            val lockedDown = ensureLockdownTun(profile)
+            val lockedDown = natives.establishLockdownTun(profile)
             lockdownTunActive = lockedDown
             Diagnostics.resetChecks()
             EngineMeta.reset()
             if (lockedDown) {
                 AetherController.setState(ConnectionState.Error(getString(R.string.state_killswitch)))
-                updateNotification(getString(R.string.state_killswitch))
+                notifications.update(getString(R.string.state_killswitch))
             } else {
                 AetherController.setState(
                     ConnectionState.Error(getString(R.string.err_lockdown_failed)),
                 )
-                updateNotification(getString(R.string.err_lockdown_failed))
-                stopForegroundCompat()
+                notifications.update(getString(R.string.err_lockdown_failed))
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             job?.join()
         }
     }
 
-    /** Stops sharing, the forwarder and the engine but deliberately KEEPS [tun]. */
-    private fun stopForwardingNatives() {
-        // The speed meter polls hev's and the bridge's counters, so it has to
-        // stop BEFORE the natives it reads are torn down.
-        stopTrafficMeter()
-        try {
-            ShareBridge.stop()
-        } catch (_: Throwable) {
+    /**
+     * Runs a teardown on the IO dispatcher, AFTER any teardown that is still
+     * finishing.
+     *
+     * Chaining matters: [stopJob] used to be overwritten outright, so a second
+     * disconnect (or a disconnect immediately followed by a lockdown) dropped
+     * the reference to the teardown still in flight, and the next connect only
+     * waited for the last one — which could easily finish first.
+     */
+    private fun launchTeardown(block: suspend () -> Unit) {
+        val previous = stopJob
+        stopJob = scope.launch(Dispatchers.IO) {
+            previous?.join()
+            block()
         }
-        tunBridge?.let { runCatching { it.stop() } }
-        tunBridge = null
-        if (tunnelStarted) {
-            try {
-                HevTunnel.stop()
-            } catch (_: Throwable) {
-            }
-            tunnelStarted = false
-        }
-        try {
-            engine?.stop()
-        } catch (_: Throwable) {
-        }
-        engine = null
     }
 
-    /** (Re)builds the TUN as a full-tunnel blackhole: routes everything, reads nothing. */
-    private fun ensureLockdownTun(profile: ConnectionProfile): Boolean {
-        runCatching { tun?.close() }
-        tun = null
-        val builder = Builder()
-            .setSession("Aether KillSwitch")
-            .setMtu(profile.safeMtu())
-            .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
-            .addRoute("0.0.0.0", 0)
-            .setBlocking(true)
-        if (profile.ipv6LeakProtection) {
-            builder.addAddress(TunnelConfig.TUN_IPV6, TunnelConfig.TUN_IPV6_PREFIX)
-            builder.addRoute("::", 0)
-        }
-        // establish() returns NULL when consent was revoked or another VPN is
-        // active. Reporting lockdown anyway would leave all traffic flowing
-        // direct while the UI claims protection.
-        tun = runCatching { builder.establish() }.getOrNull() ?: return false
-        return true
-    }
-
-    private fun cleanupNativeOnly() {
-        stopForwardingNatives()
-        try {
-            tun?.close()
-        } catch (_: Throwable) {
-        }
-        tun = null
+    /** Stops every native piece of the session, including the TUN. */
+    private fun cleanupNatives() {
+        // Meter first: it polls counters that belong to the natives below.
+        notifications.stopTrafficMeter()
+        natives.teardown()
         lockdownTunActive = false
-    }
-
-    private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
-    }
-
-    override fun onRevoke() {
-        stopEverything()
-        super.onRevoke()
-    }
-
-    override fun onDestroy() {
-        runJob?.cancel()
-        cleanupNativeOnly()
-        scope.coroutineContext[Job]?.cancel()
-        super.onDestroy()
-    }
-
-    private fun buildNotification(text: String): android.app.Notification {
-        val openIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val disconnectIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, AetherVpnService::class.java).apply { action = ACTION_DISCONNECT },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        return NotificationCompat.Builder(this, AetherApp.CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.notif_title))
-            .setContentText(text)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setContentIntent(openIntent)
-            // The action LABEL is what the button says, so it has to be the
-            // verb ("Disconnect"), not the state it leads to ("Disconnecting…").
-            .addAction(0, getString(R.string.action_disconnect), disconnectIntent)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
-    }
-
-    /**
-     * The notification that belongs on screen RIGHT NOW.
-     *
-     * While the tunnel is up and the meter has a reading, the speed card IS the
-     * status; rebuilding the plain text notification instead would blank the
-     * numbers for a second. Shared by [updateNotification] and by the
-     * startForeground() call in [onStartCommand], so promoting the service can
-     * never wipe a live reading either.
-     */
-    private fun currentNotification(text: String): android.app.Notification {
-        val sample = TrafficMonitor.sample.value
-        return if (sample.live && AetherController.state.value.isConnected) {
-            TrafficNotification.build(this, sample)
-        } else {
-            buildNotification(text)
-        }
-    }
-
-    /**
-     * Starts the 1-second speed meter and pipes every sample into the ongoing
-     * notification. Idempotent, so a reconnect cannot end up with two writers.
-     *
-     * Deliberately NOT routed through [updateNotification]: that also repaints
-     * the Quick Settings tile and every placed home-screen widget, and doing
-     * that once a second for the entire session would burn battery to redraw
-     * two things whose content did not change.
-     */
-    private fun startTrafficMeter() {
-        trafficJob?.cancel()
-        TrafficMonitor.start()
-        trafficJob = scope.launch {
-            TrafficMonitor.sample.collect { sample ->
-                if (!sample.live) return@collect
-                // A state transition owns the notification while it is busy:
-                // "Connecting…" must never be replaced by a speed card.
-                if (!AetherController.state.value.isConnected) return@collect
-                runCatching {
-                    getSystemService(android.app.NotificationManager::class.java)
-                        .notify(NOTIF_ID, TrafficNotification.build(this@AetherVpnService, sample))
-                }
-            }
-        }
-    }
-
-    private fun stopTrafficMeter() {
-        trafficJob?.cancel()
-        trafficJob = null
-        TrafficMonitor.stop()
-    }
-
-    private fun updateNotification(text: String) {
-        val manager = getSystemService(android.app.NotificationManager::class.java)
-        manager.notify(NOTIF_ID, currentNotification(text))
-        // Keep the Quick Settings tile in sync with every state transition.
-        AetherTileService.requestUpdate(this)
-        // Keep the home-screen widget (feature merge) in sync too.
-        // Cheap: returns immediately when no widget is placed.
-        AetherWidgetProvider.updateAllWidgets(this)
     }
 
     companion object {
@@ -1032,52 +653,6 @@ class AetherVpnService : VpnService() {
         const val ACTION_DISCONNECT = "studio.cluvex.aether.DISCONNECT"
         const val EXTRA_PROFILE = "profile"
 
-        private const val NOTIF_ID = 0x4145
         private const val TAG = "vpn"
-        private const val SOCKS_HOST = TunnelConfig.SOCKS_HOST
-        private const val SOCKS_PORT = TunnelConfig.SOCKS_PORT
-        private val BACKOFF = longArrayOf(2000L, 5000L, 10000L)
-
-        /** Bounds a user-supplied MTU to what `VpnService.Builder` accepts. */
-        private const val MIN_MTU = 576
-        private const val MAX_MTU = 9000
-
-        /**
-         * Watchdog probe cadence while the tunnel is up (1.2.4). It doubles as
-         * the upper bound for ONE blocking wait on the engine process: the
-         * supervisor never polls, it parks on the process itself and only wakes
-         * up this often to re-check its own cancellation state and to probe the
-         * tunnel end-to-end.
-         */
-        private const val WATCHDOG_INTERVAL_MS = 30_000L
-
-        /**
-         * Consecutive failed checks before the engine is restarted (1.2.4
-         * hardening): three failed checks = 90 s+ of proven dead tunnel, so
-         * only a genuinely dead session is restarted.
-         */
-        private const val WATCHDOG_FAIL_CYCLES = 3
-
-        /**
-         * Attempts per watchdog check, rotating over anycast resolvers so one
-         * blocked or slow target can never fake a dead tunnel (1.2.4 fix).
-         */
-        private const val PROBE_ATTEMPTS = 3
-        private val PROBE_TARGETS = arrayOf("1.1.1.1:53", "1.0.0.1:53", "9.9.9.9:53")
-        private const val PROBE_TIMEOUT_MS = 8_000
-        private const val PROBE_RETRY_GAP_MS = 1_500L
-
-        /**
-         * How long to wait for the previous engine to release the local SOCKS5
-         * port before starting a new one (1.2.2 protocol-switch fix).
-         */
-        private const val PORT_RELEASE_WAIT_MS = 3_000L
-
-        /**
-         * Cap for the FIRST attempt of a hand-picked protocol, so a throttled
-         * network cannot hold the user on "Connecting" for the whole scan
-         * budget before the hardened second pass is even tried.
-         */
-        private const val FIRST_PASS_MAX_MS = 75_000L
     }
 }
