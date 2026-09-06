@@ -18,10 +18,8 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.ui.components.*
-import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 enum class SettingsPage { APPEARANCE, ENGINE, SETUPS, AUTOMATION, SHARING, ABOUT }
-
 @Composable
 internal fun settingsPageTitle(page: SettingsPage): String = stringResource(when (page) {
     SettingsPage.APPEARANCE -> R.string.page_appearance_title
@@ -31,7 +29,6 @@ internal fun settingsPageTitle(page: SettingsPage): String = stringResource(when
     SettingsPage.SHARING -> R.string.page_sharing_title
     SettingsPage.ABOUT -> R.string.page_about_title
 })
-
 @Composable
 internal fun settingsPageSubtitle(page: SettingsPage): String = stringResource(when (page) {
     SettingsPage.APPEARANCE -> R.string.page_appearance_sub
@@ -41,7 +38,6 @@ internal fun settingsPageSubtitle(page: SettingsPage): String = stringResource(w
     SettingsPage.SHARING -> R.string.page_sharing_sub
     SettingsPage.ABOUT -> R.string.page_about_sub
 })
-
 internal fun settingsPageIcon(page: SettingsPage): ImageVector = when (page) {
     SettingsPage.APPEARANCE -> Icons.Rounded.Palette
     SettingsPage.ENGINE -> Icons.Rounded.Tune
@@ -51,31 +47,26 @@ internal fun settingsPageIcon(page: SettingsPage): ImageVector = when (page) {
     SettingsPage.ABOUT -> Icons.Rounded.Info
 }
 
-/** The engine is primary; personal and occasional controls stay quiet. */
 @Composable
-fun SettingsHub(
-    locked: Boolean, onOpen: (SettingsPage) -> Unit,
-    modifier: Modifier = Modifier, scrollState: ScrollState = rememberScrollState(),
-) {
-    val accents = LocalAetherAccents.current
+fun SettingsHub(locked: Boolean, onOpen: (SettingsPage) -> Unit, modifier: Modifier = Modifier, scrollState: ScrollState = rememberScrollState()) {
     Column(modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 24.dp)) {
-        Spacer(Modifier.height(12.dp))
-        Surface(onClick = { onOpen(SettingsPage.ENGINE) }, color = accents.brandWash,
-            contentColor = MaterialTheme.colorScheme.onSurface, shape = MaterialTheme.shapes.large) {
-            Column(Modifier.fillMaxWidth().padding(24.dp)) {
+        Spacer(Modifier.height(16.dp))
+        Surface(onClick = { onOpen(SettingsPage.ENGINE) }, color = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary, shape = MaterialTheme.shapes.extraLarge) {
+            Column(Modifier.fillMaxWidth().padding(28.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Tune, null, tint = accents.brand)
+                    Icon(Icons.Rounded.Tune, null, Modifier.size(32.dp))
                     Spacer(Modifier.weight(1f))
-                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = accents.brand)
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
                 }
-                Spacer(Modifier.height(24.dp))
-                Text(settingsPageTitle(SettingsPage.ENGINE), style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(32.dp))
+                Text(settingsPageTitle(SettingsPage.ENGINE), style = MaterialTheme.typography.headlineLarge)
+                Spacer(Modifier.height(12.dp))
                 Text(settingsPageSubtitle(SettingsPage.ENGINE), style = MaterialTheme.typography.bodyMedium)
                 if (locked) {
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(20.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Lock, null, Modifier.size(16.dp))
+                        Icon(Icons.Rounded.Lock, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.settings_locked), style = MaterialTheme.typography.bodySmall)
                     }
@@ -84,40 +75,33 @@ fun SettingsHub(
         }
         Spacer(Modifier.height(32.dp))
         SectionTitle(stringResource(R.string.hub_group_essentials))
-        listOf(SettingsPage.APPEARANCE, SettingsPage.SETUPS).forEach { page -> HubRow(page, onOpen); Hairline() }
+        listOf(SettingsPage.SETUPS, SettingsPage.APPEARANCE).forEach { HubRow(it, onOpen); Hairline() }
         Spacer(Modifier.height(32.dp))
         SectionTitle(stringResource(R.string.hub_group_more))
-        listOf(SettingsPage.AUTOMATION, SettingsPage.SHARING, SettingsPage.ABOUT).forEach { page -> HubRow(page, onOpen); Hairline() }
-        Spacer(Modifier.height(32.dp))
+        listOf(SettingsPage.AUTOMATION, SettingsPage.SHARING, SettingsPage.ABOUT).forEach { HubRow(it, onOpen); Hairline() }
+        Spacer(Modifier.height(40.dp))
     }
 }
-
 @Composable
 private fun HubRow(page: SettingsPage, onOpen: (SettingsPage) -> Unit) {
-    NavRow(title = settingsPageTitle(page), subtitle = settingsPageSubtitle(page),
-        icon = settingsPageIcon(page), tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        onClick = { onOpen(page) })
+    NavRow(settingsPageTitle(page), { onOpen(page) }, subtitle = settingsPageSubtitle(page), icon = settingsPageIcon(page))
 }
-
 @Composable
-fun SettingsPageBody(
-    page: SettingsPage, state: ConnectionState, profile: ConnectionProfile,
-    onProfileChange: (ConnectionProfile) -> Unit, settingsEnabled: Boolean,
-    modifier: Modifier = Modifier,
-) {
+fun SettingsPageBody(page: SettingsPage, state: ConnectionState, profile: ConnectionProfile,
+    onProfileChange: (ConnectionProfile) -> Unit, settingsEnabled: Boolean, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(20.dp))
         when (page) {
             SettingsPage.APPEARANCE -> AppearancePanel()
             SettingsPage.ENGINE -> {
                 if (!settingsEnabled) { NoticeBar(stringResource(R.string.settings_locked)); Spacer(Modifier.height(24.dp)) }
-                AdvancedPanel(profile = profile, onProfileChange = onProfileChange, enabled = settingsEnabled)
+                AdvancedPanel(profile, onProfileChange, settingsEnabled)
             }
-            SettingsPage.SETUPS -> PresetsPanel(profile = profile, onProfileChange = onProfileChange, enabled = settingsEnabled)
-            SettingsPage.AUTOMATION -> { AutomationPanel(); Spacer(Modifier.height(32.dp)); HistoryPanel() }
-            SettingsPage.SHARING -> SharePanel(state = state, profile = profile, onProfileChange = onProfileChange)
+            SettingsPage.SETUPS -> PresetsPanel(profile, onProfileChange, settingsEnabled)
+            SettingsPage.AUTOMATION -> { AutomationPanel(); Spacer(Modifier.height(40.dp)); HistoryPanel() }
+            SettingsPage.SHARING -> SharePanel(state, profile, onProfileChange)
             SettingsPage.ABOUT -> AboutPanel()
         }
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(40.dp))
     }
 }

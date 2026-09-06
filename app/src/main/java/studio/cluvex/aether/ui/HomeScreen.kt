@@ -7,10 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.BugReport
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.listSaver
@@ -37,7 +34,6 @@ import studio.cluvex.aether.ui.components.LanguageToggle
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
 internal enum class HomeTab { HOME, DIAGNOSTICS, SETTINGS }
-
 internal data class HomeRoute(val tab: HomeTab = HomeTab.HOME, val page: SettingsPage? = null) {
     init { require(page == null || tab == HomeTab.SETTINGS) }
     val canGoBack: Boolean get() = page != null || tab != HomeTab.HOME
@@ -53,11 +49,7 @@ internal data class HomeRoute(val tab: HomeTab = HomeTab.HOME, val page: Setting
         }
     }
 }
-
-private val HomeRouteSaver = listSaver<HomeRoute, String>(
-    save = { it.savedValues() }, restore = { HomeRoute.restore(it) },
-)
-
+private val HomeRouteSaver = listSaver<HomeRoute, String>(save = { it.savedValues() }, restore = { HomeRoute.restore(it) })
 internal fun connectionActionLabel(state: ConnectionState): Int = when {
     state is ConnectionState.Disconnecting -> R.string.state_disconnecting
     state.isConnected -> R.string.action_disconnect
@@ -65,7 +57,6 @@ internal fun connectionActionLabel(state: ConnectionState): Int = when {
     state is ConnectionState.Error -> R.string.action_retry
     else -> R.string.action_connect
 }
-
 internal fun connectionStatusLabel(state: ConnectionState): Int = when {
     state.isConnected -> R.string.passage_verified
     state is ConnectionState.Error -> R.string.pill_failed
@@ -73,30 +64,23 @@ internal fun connectionStatusLabel(state: ConnectionState): Int = when {
     state.isBusy -> R.string.pill_working
     else -> R.string.state_idle
 }
-
 private val destinations = listOf(HomeTab.HOME, HomeTab.SETTINGS, HomeTab.DIAGNOSTICS)
-private fun tabLabel(tab: HomeTab): Int = when (tab) {
+private fun tabLabel(tab: HomeTab) = when (tab) {
     HomeTab.HOME -> R.string.nav_connection
     HomeTab.SETTINGS -> R.string.nav_settings
     HomeTab.DIAGNOSTICS -> R.string.nav_diagnostics
 }
 private fun tabIcon(tab: HomeTab): ImageVector = when (tab) {
     HomeTab.HOME -> Icons.Rounded.Shield
-    HomeTab.SETTINGS -> Icons.Rounded.Settings
-    HomeTab.DIAGNOSTICS -> Icons.Rounded.BugReport
+    HomeTab.SETTINGS -> Icons.Rounded.Tune
+    HomeTab.DIAGNOSTICS -> Icons.Rounded.Terminal
 }
 
-/** One connection action, isolated from navigation and form submission. */
 @Composable
 fun HomeScreen(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    connectedSince: Long?,
-    ipInfo: IpEndpoint?,
-    ipLoading: Boolean,
-    onProfileChange: (ConnectionProfile) -> Unit,
-    onToggleConnection: () -> Unit,
-    modifier: Modifier = Modifier,
+    state: ConnectionState, profile: ConnectionProfile, connectedSince: Long?,
+    ipInfo: IpEndpoint?, ipLoading: Boolean, onProfileChange: (ConnectionProfile) -> Unit,
+    onToggleConnection: () -> Unit, modifier: Modifier = Modifier,
 ) {
     var route by rememberSaveable(stateSaver = HomeRouteSaver) { mutableStateOf(HomeRoute()) }
     val homeScroll = rememberScrollState()
@@ -106,78 +90,52 @@ fun HomeScreen(
     val haptics = LocalHapticFeedback.current
     val editable = state is ConnectionState.Idle || state is ConnectionState.Error
     BackHandler(route.canGoBack) { route = route.back() }
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
             val rail = maxWidth >= 720.dp && LocalDensity.current.fontScale < 1.5f
             Row(Modifier.fillMaxSize()) {
-                if (rail) {
-                    NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
-                        Spacer(Modifier.height(24.dp))
-                        destinations.forEach { tab ->
-                            NavigationRailItem(
-                                selected = route.tab == tab,
-                                onClick = { route = route.select(tab) },
-                                icon = { Icon(tabIcon(tab), null) },
-                                label = { Text(stringResource(tabLabel(tab))) },
-                                modifier = Modifier.padding(vertical = 8.dp),
-                            )
-                        }
+                if (rail) NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
+                    Spacer(Modifier.height(32.dp))
+                    Icon(Icons.Rounded.Shield, null, Modifier.size(32.dp), MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(40.dp))
+                    destinations.forEach { tab ->
+                        NavigationRailItem(selected = route.tab == tab, onClick = { route = route.select(tab) },
+                            icon = { Icon(tabIcon(tab), null) }, label = { Text(stringResource(tabLabel(tab))) },
+                            modifier = Modifier.padding(vertical = 12.dp))
                     }
                 }
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     HomeHeader(route, onBack = { route = route.back() })
-                    Box(Modifier.weight(1f).widthIn(max = 760.dp).fillMaxWidth()) {
+                    Box(Modifier.weight(1f).widthIn(max = 880.dp).fillMaxWidth()) {
                         pages.SaveableStateProvider(route.savedValues().joinToString("/")) {
                             val page = route.page
                             when {
                                 page != null -> SettingsPageBody(page, state, profile, onProfileChange, editable)
-                                route.tab == HomeTab.SETTINGS -> SettingsHub(
-                                    locked = !editable,
-                                    onOpen = { route = route.open(it) },
-                                    scrollState = settingsScroll,
-                                )
+                                route.tab == HomeTab.SETTINGS -> SettingsHub(!editable, { route = route.open(it) }, scrollState = settingsScroll)
                                 route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(diagnosticsScroll)
-                                else -> ConnectionHome(
-                                    state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
+                                else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
                                     onOpenEngine = { route = route.open(SettingsPage.ENGINE) },
-                                    onOpenDiagnostics = { route = route.select(HomeTab.DIAGNOSTICS) },
-                                )
+                                    onOpenDiagnostics = { route = route.select(HomeTab.DIAGNOSTICS) })
                             }
                         }
                     }
                     Surface(color = MaterialTheme.colorScheme.surface) {
-                        Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
+                        Column(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            if (route.tab == HomeTab.HOME) {
-                                ConnectionAction(state, onClick = {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onToggleConnection()
-                                })
-                            } else {
-                                // Returning to this screen must never disconnect an active session.
-                                TextButton(
-                                    onClick = { route = route.select(HomeTab.HOME) },
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                                ) {
-                                    Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(stringResource(R.string.nav_connection) + " · " + stringResource(connectionStatusLabel(state)))
-                                }
+                            if (route.tab == HomeTab.HOME) ConnectionAction(state) {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onToggleConnection()
+                            } else TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(R.string.nav_connection) + " · " + stringResource(connectionStatusLabel(state)))
                             }
-                            if (!rail) {
-                                NavigationBar(
-                                    containerColor = MaterialTheme.colorScheme.surface,
-                                    tonalElevation = 0.dp,
-                                    windowInsets = WindowInsets(0, 0, 0, 0),
-                                ) {
-                                    destinations.forEach { tab ->
-                                        NavigationBarItem(
-                                            selected = route.tab == tab,
-                                            onClick = { route = route.select(tab) },
-                                            icon = { Icon(tabIcon(tab), null) },
-                                            label = { Text(stringResource(tabLabel(tab))) },
-                                        )
-                                    }
+                            if (!rail) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
+                                windowInsets = WindowInsets(0, 0, 0, 0)) {
+                                destinations.forEach { tab ->
+                                    NavigationBarItem(selected = route.tab == tab, onClick = { route = route.select(tab) },
+                                        icon = { Icon(tabIcon(tab), null) }, label = { Text(stringResource(tabLabel(tab))) },
+                                        colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer))
                                 }
                             }
                         }
@@ -190,57 +148,38 @@ fun HomeScreen(
 
 @Composable
 private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
-    val page = route.page
-    Row(
-        Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (page != null) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.passage_back))
-            }
+    Row(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (route.page != null) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.passage_back)) }
             Spacer(Modifier.width(8.dp))
         }
         Column(Modifier.weight(1f)) {
-            Text(
-                if (page != null) settingsPageTitle(page)
-                else if (route.tab == HomeTab.HOME) stringResource(R.string.app_name)
-                else stringResource(tabLabel(route.tab)),
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.semantics { heading() },
-            )
-            if (page != null) {
-                Text(settingsPageSubtitle(page), style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            if (route.tab != HomeTab.HOME) Text(stringResource(R.string.app_name), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary)
+            Text(route.page?.let { settingsPageTitle(it) } ?: stringResource(if (route.tab == HomeTab.HOME) R.string.app_name else tabLabel(route.tab)),
+                style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
         }
         Spacer(Modifier.width(12.dp))
         LanguageToggle(accent = LocalAetherAccents.current.brand)
     }
 }
-
 @Composable
 private fun DiagnosticsDestination(scrollState: ScrollState) {
     Column(Modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 24.dp)) {
         DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 420.dp)
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(40.dp))
     }
 }
-
 @Composable
 private fun ConnectionAction(state: ConnectionState, onClick: () -> Unit) {
     val label = stringResource(connectionActionLabel(state))
-    val modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).heightIn(min = 56.dp)
+    val modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).heightIn(min = 60.dp)
     if (state.isConnected || state.isBusy || state is ConnectionState.Disconnecting) {
-        OutlinedButton(
-            onClick = onClick, enabled = state !is ConnectionState.Disconnecting,
-            shape = MaterialTheme.shapes.medium, modifier = modifier,
-        ) { Text(label, style = MaterialTheme.typography.titleMedium) }
-    } else {
-        Button(onClick = onClick, shape = MaterialTheme.shapes.medium, modifier = modifier) {
-            Icon(if (state is ConnectionState.Error) Icons.Rounded.Refresh else Icons.Rounded.Shield, null)
-            Spacer(Modifier.width(12.dp))
-            Text(label, style = MaterialTheme.typography.titleMedium)
-        }
+        OutlinedButton(onClick = onClick, enabled = state !is ConnectionState.Disconnecting,
+            shape = MaterialTheme.shapes.large, modifier = modifier) { Text(label, style = MaterialTheme.typography.titleMedium) }
+    } else Button(onClick = onClick, shape = MaterialTheme.shapes.large, modifier = modifier) {
+        Icon(if (state is ConnectionState.Error) Icons.Rounded.Refresh else Icons.Rounded.PowerSettingsNew, null)
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.titleMedium)
     }
 }
