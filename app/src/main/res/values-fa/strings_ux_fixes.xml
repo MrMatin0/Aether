@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ux_select_matches">انتخاب نتایج جستجو</string>
+    <string name="ux_clear_matches">لغو انتخاب برنامه‌های فهرست‌شده</string>
+    <string name="ux_apps_failed">بارگذاری برنامه‌ها ناموفق بود. انتخاب شما تغییری نکرده است.</string>
+    <string name="ux_apps_empty">برنامه‌ای پیدا نشد. عبارت دیگری جستجو کنید.</string>
+    <string name="ux_reset_confirm">تمام تنظیمات اتصال بازنشانی شود؟ اطلاعات ورود سازمانی و قواعد مسیریابی نیز از پیکربندی فعلی حذف می‌شوند.</string>
+    <string name="ux_delete_setup">تنظیمات ذخیره‌شدهٔ «%1$s» حذف شود؟</string>
+    <string name="ux_clear_history">تاریخچهٔ نشست‌های ثبت‌شده حذف شود؟ این کار قابل بازگشت نیست.</string>
+    <string name="ux_expanded">باز شده</string>
+    <string name="ux_collapsed">بسته شده</string>
+    <string name="ux_open_link_failed">برنامه‌ای برای باز کردن این پیوند پیدا نشد.</string>
+    <string name="ux_privacy_local">گزارش‌های عیب‌یابی و تاریخچهٔ اختیاری نشست‌ها روی همین دستگاه نگهداری می‌شوند. می‌توانید آن‌ها را در بخش عیب‌یابی و خودکارسازی پاک کنید. اندروید پیش از اولین اتصال اجازهٔ VPN می‌خواهد.</string>
+    <string-array name="ux_original_features">
+        <item>پیدا کردن خودکار سرور با بررسی سرتاسری اتصال</item>
+        <item>MASQUE روی HTTP/3 یا HTTP/2 با تکه‌تکه‌سازی اختیاری TLS</item>
+        <item>WireGuard و اتصال تو‌در‌توی WARP</item>
+        <item>مبهم‌سازی ترافیک و اتصال مجدد خودکار</item>
+        <item>پراکسی محلی SOCKS5 و ابزارهای خط فرمان</item>
+    </string-array>
+    <string-array name="ux_android_features">
+        <item>رابط بومی اندروید با VPN سراسری دستگاه</item>
+        <item>عیب‌یابی اتصال، مصرف داده و سنجش دستی تأخیر</item>
+        <item>فارسی و انگلیسی با پوسته‌های روشن و تاریک</item>
+        <item>کاشی تنظیمات سریع و ویجت صفحهٔ اصلی</item>
+        <item>اشتراک‌گذاری HTTP و SOCKS5 در شبکهٔ محلی</item>
+        <item>ورود سازمانی، مسیریابی تفکیکی و DNS دلخواه</item>
+    </string-array>
+</resources>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ux_select_matches">Select search results</string>
+    <string name="ux_clear_matches">Deselect listed apps</string>
+    <string name="ux_apps_failed">Could not load apps. Your selection has not changed.</string>
+    <string name="ux_apps_empty">No apps found. Try another search.</string>
+    <string name="ux_reset_confirm">Reset the entire connection profile? This also removes organization credentials and routing rules from the current profile.</string>
+    <string name="ux_delete_setup">Delete saved setup “%1$s”?</string>
+    <string name="ux_clear_history">Delete the recorded session history? This cannot be undone.</string>
+    <string name="ux_expanded">Expanded</string>
+    <string name="ux_collapsed">Collapsed</string>
+    <string name="ux_open_link_failed">No app could open this link.</string>
+    <string name="ux_privacy_local">Diagnostic logs and optional session history stay on this device. You can clear them in Diagnostics and Automation. Android asks for VPN permission before the first connection.</string>
+    <string-array name="ux_original_features">
+        <item>Automatic endpoint discovery with end-to-end validation</item>
+        <item>MASQUE over HTTP/3 or HTTP/2, with optional TLS fragmentation</item>
+        <item>WireGuard and nested WireGuard (WARP-in-WARP)</item>
+        <item>Traffic obfuscation and automatic reconnection</item>
+        <item>Local SOCKS5 proxy and command-line clients</item>
+    </string-array>
+    <string-array name="ux_android_features">
+        <item>Native Android interface with system-wide VPN</item>
+        <item>Connection diagnostics, session traffic and manual latency tests</item>
+        <item>English and Persian, with light and dark themes</item>
+        <item>Quick Settings tile and home-screen widget</item>
+        <item>HTTP and SOCKS5 sharing over a local network</item>
+        <item>Organization credentials, split routing and custom DNS</item>
+    </string-array>
+</resources>

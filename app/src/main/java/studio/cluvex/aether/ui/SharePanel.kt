@@ -1,139 +1,79 @@
 package studio.cluvex.aether.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isConnected
-import studio.cluvex.aether.ui.components.AetherCard
-import studio.cluvex.aether.ui.components.CardHeader
-import studio.cluvex.aether.ui.components.Hint
-import studio.cluvex.aether.ui.components.NoticeBar
-import studio.cluvex.aether.ui.components.SwitchRow
-import studio.cluvex.aether.ui.components.ValueRow
+import studio.cluvex.aether.ui.components.*
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
-/**
- * Turn the phone into a gateway for a laptop or a second phone on the same
- * Wi-Fi / hotspot.
- *
- * WHY IT IS NOT COLLAPSED: this panel's whole job is to report state — is the
- * bridge up, on which address, and if not, why not. Hiding that behind a chevron
- * meant the answer to "nothing is sharing" was two taps away and looked like a
- * blank row until you expanded it. Each of the four possible states is said out
- * loud, and the card's tone follows the state so "up" and "not up" are
- * distinguishable before reading a word.
- *
- * The self-healing start() and the immediate start/stop on toggle are unchanged;
- * start() is async and thread-safe, so it can never block the UI.
- */
+/** Only copy real bound endpoints; interface enumeration never runs during composition. */
 @Composable
-fun SharePanel(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    onProfileChange: (ConnectionProfile) -> Unit,
-    modifier: Modifier = Modifier,
-) {
+fun SharePanel(state: ConnectionState, profile: ConnectionProfile,
+    onProfileChange: (ConnectionProfile) -> Unit, modifier: Modifier = Modifier) {
     val accents = LocalAetherAccents.current
-    val shareActive by ShareBridge.active.collectAsState()
-    // The ACTUAL bound ports (null while a listener is still binding), so what is
-    // on screen always matches what the bridge listens on.
-    val socksPort by ShareBridge.socksPort.collectAsState()
-    val httpPort by ShareBridge.httpPort.collectAsState()
-
-    // Re-resolve the LAN address whenever sharing or connectivity flips.
-    val lanIp = remember(shareActive, state.isConnected, profile.lanShare) {
-        ShareBridge.lanAddress()
-    }
-
-    LaunchedEffect(state.isConnected, profile.lanShare, shareActive) {
-        if (state.isConnected && profile.lanShare && !shareActive) {
-            withContext(Dispatchers.IO) { ShareBridge.start() }
+    val shareActive by ShareBridge.active.collectAsStateWithLifecycle()
+    val socksPort by ShareBridge.socksPort.collectAsStateWithLifecycle()
+    val httpPort by ShareBridge.httpPort.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val connected = state.isConnected
+    val sharing = profile.lanShare
+    val lanIp by produceState<String?>(null, connected, sharing, lifecycle) {
+        value = null
+        if (connected && sharing) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    value = withContext(Dispatchers.IO) { ShareBridge.lanAddress() }
+                    delay(5_000L)
+                }
+            }
         }
     }
-
-    val live = profile.lanShare && state.isConnected && shareActive && lanIp != null
-
+    LaunchedEffect(connected, sharing, shareActive) {
+        if (connected && sharing && !shareActive) withContext(Dispatchers.IO) { ShareBridge.start() }
+    }
+    val live = sharing && connected && shareActive && lanIp != null && (httpPort != null || socksPort != null)
     AetherCard(modifier = modifier, tone = if (live) accents.protected else null) {
-        CardHeader(
-            title = stringResource(R.string.share_title),
-            subtitle = stringResource(R.string.share_subtitle),
-            icon = Icons.Rounded.WifiTethering,
-            tint = if (live) accents.protected else accents.brand,
-        )
-        Spacer(Modifier.height(6.dp))
-        SwitchRow(
-            title = stringResource(R.string.share_toggle),
-            description = stringResource(R.string.share_toggle_desc),
-            checked = profile.lanShare,
-            enabled = true,
-            onChange = { on ->
+        CardHeader(stringResource(R.string.share_title), subtitle = stringResource(R.string.share_subtitle),
+            icon = Icons.Rounded.WifiTethering, tint = if (live) accents.protected else accents.brand)
+        SwitchRow(title = stringResource(R.string.share_toggle), description = stringResource(R.string.share_toggle_desc),
+            checked = sharing, enabled = true, onChange = { on ->
                 onProfileChange(profile.copy(lanShare = on))
-                // Take effect immediately for the current session; the service
-                // also honours the flag on connect.
-                if (state.isConnected) {
-                    if (on) ShareBridge.start() else ShareBridge.stop()
+                if (connected) { if (on) ShareBridge.start() else ShareBridge.stop() }
+            })
+        if (sharing) {
+            Spacer(Modifier.height(16.dp))
+            val address = lanIp
+            when {
+                !connected -> NoticeBar(stringResource(R.string.share_need_connect), icon = Icons.Rounded.WifiTethering)
+                address == null -> NoticeBar(stringResource(R.string.share_need_wifi), icon = Icons.Rounded.WifiTethering)
+                live -> {
+                    Hint(stringResource(R.string.share_howto))
+                    val host = if (':' in address) "[$address]" else address
+                    httpPort?.let { ValueRow(stringResource(R.string.share_http_label), "$host:$it") }
+                    socksPort?.let { ValueRow(stringResource(R.string.share_socks_label), "$host:$it") }
+                    if (httpPort == null || socksPort == null) Hint(stringResource(R.string.share_starting))
+                    Spacer(Modifier.height(12.dp))
+                    NoticeBar(stringResource(R.string.share_warning), tone = MaterialTheme.colorScheme.error, icon = Icons.Rounded.Warning)
                 }
-            },
-        )
-
-        AnimatedVisibility(visible = profile.lanShare) {
-            Column {
-                Spacer(Modifier.height(14.dp))
-                when {
-                    !state.isConnected -> NoticeBar(
-                        text = stringResource(R.string.share_need_connect),
-                        icon = Icons.Rounded.WifiTethering,
-                    )
-                    lanIp == null -> NoticeBar(
-                        text = stringResource(R.string.share_need_wifi),
-                        icon = Icons.Rounded.WifiTethering,
-                    )
-                    shareActive -> {
-                        Column {
-                            Hint(stringResource(R.string.share_howto))
-                            Spacer(Modifier.height(8.dp))
-                            ValueRow(
-                                label = stringResource(R.string.share_http_label),
-                                value = "$lanIp:${httpPort ?: ShareBridge.HTTP_SHARE_PORT}",
-                            )
-                            ValueRow(
-                                label = stringResource(R.string.share_socks_label),
-                                value = "$lanIp:${socksPort ?: ShareBridge.SOCKS_SHARE_PORT}",
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            NoticeBar(
-                                text = stringResource(R.string.share_warning),
-                                tone = MaterialTheme.colorScheme.error,
-                                icon = Icons.Rounded.Warning,
-                            )
-                        }
-                    }
-                    // Binding, or a bind failed: never leave the panel blank.
-                    else -> NoticeBar(
-                        text = stringResource(R.string.share_starting),
-                        icon = Icons.Rounded.WifiTethering,
-                    )
-                }
+                else -> NoticeBar(stringResource(R.string.share_starting), icon = Icons.Rounded.WifiTethering)
             }
         }
     }
