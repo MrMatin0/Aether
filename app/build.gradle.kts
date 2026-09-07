@@ -18,11 +18,18 @@ plugins {
 // new APK as the same build and refuses to install it as an update. 11 and 12
 // belong to the 1.4.3 / 1.4.4 line and are skipped rather than reused.
 //
+// 1.4.6 is the first build whose APK actually CONTAINS the Psiphon and Tor
+// cores. 1.4.5 shipped the chain feature's source and none of its binaries: the
+// Psiphon cross-compile could not start (the pipeline installed Go 1.23 while
+// psiphon-tunnel-core's go.mod asks for 1.26.0) and that build step is
+// continue-on-error, so the release went out with libpsiphon.so missing and the
+// app correctly reported the core as absent. See docs/CHAIN_CORES.md.
+//
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
-val appVersionName = "1.4.5"
-val appBaseVersionCode = 13
+val appVersionName = "1.4.6"
+val appBaseVersionCode = 14
 
 // Each split APK needs its own code, and the universal one must outrank both,
 // otherwise a device that can take the arm64 split could still be offered the
@@ -295,6 +302,10 @@ android {
         // (legacy packaging off) native libs are mapped straight out of the
         // APK and never land on disk, so the engine would simply not be there
         // at runtime and every connection attempt would fail.
+        //
+        // The same is true of libpsiphon.so and libtor.so: all three chain
+        // cores are executables under a .so name, not libraries. See
+        // core/NativeChild.kt and docs/CHAIN_CORES.md.
         jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
