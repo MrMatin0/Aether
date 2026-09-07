@@ -2,6 +2,7 @@ package studio.cluvex.aether.vpn.session
 
 import android.content.Context
 import studio.cluvex.aether.core.ChainRuntime
+import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.DnsRoute
 import studio.cluvex.aether.core.PortProbe
@@ -79,11 +80,18 @@ internal class ChainStack(
     val alive: Boolean
         get() = (psiphon?.isAlive ?: true) && (tor?.isAlive ?: true)
 
-    /** Cores [mode] needs that this build does not ship. */
-    fun missingCores(mode: ChainMode): List<Hop> = buildList {
-        if (mode.usesPsiphon && !PsiphonCore(context, filesDir).isAvailable) add(Hop.PSIPHON)
-        if (mode.usesTor && !TorCore(context, filesDir).isAvailable) add(Hop.TOR)
-    }
+    /**
+     * Cores [mode] needs that this build does not ship.
+     *
+     * Reads the SAME snapshot the Chain settings page reads
+     * ([CoreAvailability]), which is the point: a mode the picker offers and the
+     * session then refuses is a worse experience than a mode that was never
+     * offered, and that is exactly what two independent availability checks
+     * eventually produce. It also stops this question from having a side effect -
+     * the previous version constructed a PsiphonCore and a TorCore just to ask,
+     * and both create their data directory in their initializer.
+     */
+    fun missingCores(mode: ChainMode): List<Hop> = CoreAvailability.of(context).missing(mode)
 
     /**
      * Brings up every non-Aether hop and returns the CHAIN ENTRY port: the
