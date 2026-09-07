@@ -31,8 +31,9 @@ import java.io.File
  * ours to ship), so the config comes from, in order:
  *
  *  1. what the user pasted into Settings ([ConnectionProfile.psiphonConfig]);
- *  2. `assets/psiphon.config`, which `scripts/fetch-natives.sh` can place there
- *     at build time and which is gitignored like every other fetched artifact.
+ *  2. `assets/psiphon.config`, which CI places there at build time from the
+ *     `PSIPHON_CONFIG_B64` secret and which is gitignored like every other
+ *     fetched artifact.
  *
  * With neither, the Psiphon chain modes report a clear "no Psiphon config"
  * error instead of failing somewhere deep in a Go stack trace. See
@@ -168,7 +169,24 @@ class PsiphonCore(
         // a separately installed Psiphon app (its default is 1080).
         json.put("DataRootDirectory", dataDir.absolutePath)
         json.put("LocalSocksProxyPort", TunnelConfig.PSIPHON_SOCKS_PORT)
-        json.put("ListenInterface", TunnelConfig.SOCKS_HOST)
+
+        // DO NOT SET ListenInterface HERE, AND DO NOT "FIX" IT TO AN IP.
+        //
+        // This field is an INTERFACE NAME, not an address (psiphon/config.go):
+        // unset means listen on 127.0.0.1, "any" means 0.0.0.0, and anything
+        // else is resolved with net.InterfaceByName. This code used to write
+        // "127.0.0.1" into it, so the core looked for an interface with that
+        // name, found none, and gave up BEFORE binding the local SOCKS5
+        // listener. Nothing in the log said "bad config" - the port simply never
+        // opened, so every Psiphon chain mode spent its full readiness budget
+        // waiting for a listener that was never going to exist and then reported
+        // a timeout. The default is precisely what this app wants, so the
+        // override is REMOVED rather than corrected: a network-issued config
+        // that carries its own value must not be able to move the listener off
+        // loopback either, which is the same rule every other listener in this
+        // app follows.
+        json.remove("ListenInterface")
+
         // One listener is enough: everything in this app speaks SOCKS5, and an
         // extra unauthenticated HTTP proxy is one more thing bound on loopback.
         json.put("DisableLocalHTTPProxy", true)
@@ -241,7 +259,7 @@ class PsiphonCore(
          */
         const val BINARY = "libpsiphon.so"
 
-        /** Optional build-time config, placed by scripts/fetch-natives.sh. */
+        /** Optional build-time config, placed by CI from PSIPHON_CONFIG_B64. */
         const val ASSET_CONFIG = "psiphon.config"
 
         private const val POLL_MS = 500L

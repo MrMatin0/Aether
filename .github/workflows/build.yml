@@ -14,9 +14,11 @@ name: Build
 #  2. A BUILD IS REPRODUCIBLE. The engine version is whatever the tree says it
 #     is. Nothing is silently upgraded while a release is being cut, so the APK
 #     attached to a tag is the APK that tag's source actually produces.
-#  3. NATIVE WORK IS CACHED. The NDK/Rust half takes minutes and depends only on
-#     scripts/ and native/, so it is keyed on exactly that and skipped when
-#     nothing there moved. App-only commits build in a fraction of the time.
+#  3. NATIVE WORK IS CACHED - BUT ONLY WHEN IT IS COMPLETE. The NDK/Rust half
+#     takes minutes and depends only on scripts/ and native/, so it is keyed on
+#     exactly that. What it must never do is cache a PARTIAL payload: see the
+#     natives job for why that used to remove the chain feature from every
+#     later release permanently.
 #  4. ONLY TAGS BECOME "LATEST". A push to the default branch publishes a
 #     PRERELEASE so every build stays downloadable, but `make_latest` is
 #     reserved for `v*` tags. That is what stops a dispatch from an old feature
@@ -65,25 +67,63 @@ jobs:
       # vendored engine - nothing else in this repository. Key the cache on
       # exactly those and an app-only commit reuses them instead of spending
       # ~8 minutes setting up and running the NDK and Rust toolchains.
+      #
+      # RESTORE ONLY. The save is a separate, GUARDED step at the end of this
+      # job, and that split is the whole point:
+      #
+      #   actions/cache saves whenever the job succeeds, and the overlay-core
+      #   step below is continue-on-error by design. So the first run in which
+      #   Psiphon or Tor failed to build wrote an INCOMPLETE jniLibs under this
+      #   key - and since a cache hit used to skip every build step, every later
+      #   run restored that incomplete payload and never retried. One transient
+      #   Go or upstream-layout hiccup silently removed the chain feature from
+      #   every subsequent release. Key bumped to v3 so no existing partial
+      #   entry is inherited.
       - name: Restore prebuilt native cores
         id: natives-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             app/src/main/jniLibs
             app/src/main/assets/tor
           key: >-
-            jnilibs-v2-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{
+            jnilibs-v3-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{
             hashFiles('scripts/build-natives.sh', 'scripts/fetch-natives.sh',
             'scripts/build-overlay-cores.sh', 'scripts/aethertun-jni.c',
             'native/aether/**') }}
 
+      # A restored cache is trusted only for what it actually contains. Anything
+      # missing is rebuilt, so a cache that lost the chain cores costs one slow
+      # job instead of costing the feature forever.
+      - name: Decide what still has to be built
+        id: payload
+        run: |
+          set -euo pipefail
+          mandatory=true
+          chain=true
+          for abi in arm64-v8a armeabi-v7a; do
+            for lib in libaether.so libhev-socks5-tunnel.so libaethertun.so; do
+              [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || mandatory=false
+            done
+            for lib in libpsiphon.so libtor.so; do
+              [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || chain=false
+            done
+          done
+          build=true
+          if [ "${mandatory}" = true ] && [ "${chain}" = true ]; then build=false; fi
+          {
+            echo "mandatory=${mandatory}"
+            echo "chain=${chain}"
+            echo "build=${build}"
+          } >> "$GITHUB_OUTPUT"
+          echo "restored: mandatory=${mandatory} chain=${chain} -> build=${build}"
+
       - name: Set up Android SDK
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.build == 'true'
         uses: android-actions/setup-android@v4
 
       - name: Install NDK ${{ env.NDK_VERSION }}
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.build == 'true'
         run: |
           set -euo pipefail
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
@@ -93,7 +133,7 @@ jobs:
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Rust (Android targets)
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.mandatory != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.RUST_TARGETS }}
@@ -101,7 +141,7 @@ jobs:
       # cargo-ndk used to be compiled from source on every single run. Cache the
       # binary and the crate registry; the engine pulls in quiche and friends.
       - name: Cache cargo registry and cargo-ndk
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.mandatory != 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -114,11 +154,11 @@ jobs:
             cargo-v1-${{ runner.os }}-
 
       - name: Install cargo-ndk
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.mandatory != 'true'
         run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
 
       - name: Fetch native sources
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.mandatory != 'true'
         run: bash scripts/fetch-natives.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,7 +168,7 @@ jobs:
       # No auto-upgrade and no rollback dance: whatever is vendored in the tree
       # is what gets compiled, so this step either works or it is a real error.
       - name: Build native cores (hev + engine)
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.mandatory != 'true'
         run: bash scripts/build-natives.sh all
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
@@ -137,44 +177,69 @@ jobs:
       # Deliberately non-fatal, and deliberately AFTER the mandatory cores.
       #
       # These two are additive: the app detects a build without them and says so
-      # (the Psiphon/Tor chain modes report "this build does not include ..."
-      # instead of failing at connect time). A Go toolchain hiccup or an
-      # upstream layout change must therefore cost the chain feature for one
-      # build - not the whole APK, which is what would happen if this were part
-      # of the step above.
+      # (the Chain settings page disables the modes that need them and names the
+      # missing core, instead of failing at connect time). A Go toolchain hiccup
+      # or an upstream layout change must therefore cost the chain feature for
+      # one build - not the whole APK, which is what would happen if this were
+      # part of the step above.
+      #
+      # What it must NOT cost any more is every FUTURE build: see the guarded
+      # cache save below.
       - name: Set up Go ${{ env.GO_VERSION }}
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.chain != 'true'
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
       - name: Build overlay cores (Psiphon + Tor)
-        if: steps.natives-cache.outputs.cache-hit != 'true'
+        if: steps.payload.outputs.chain != 'true'
         continue-on-error: true
         run: bash scripts/build-overlay-cores.sh all
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
-          # Optional: a Psiphon client config, if this repo has one configured.
-          # Never committed; see docs/CHAINING.md.
-          PSIPHON_CONFIG_B64: ${{ secrets.PSIPHON_CONFIG_B64 }}
 
-      - name: Summary
+      # Re-inspect AFTER building: this decides both what the summary says and
+      # whether the payload is allowed into the cache.
+      - name: Verify the built payload
+        id: built
         run: |
+          set -euo pipefail
+          complete=true
           {
             echo "### Native cores"
             echo '```'
             find app/src/main/jniLibs -name '*.so' -printf '%p  %s bytes\n' | sort
             echo '```'
             echo "### Chain cores"
-            for lib in libpsiphon.so libtor.so; do
-              if [ -f "app/src/main/jniLibs/arm64-v8a/${lib}" ]; then
-                echo "- ${lib}: present"
-              else
-                echo "- ${lib}: MISSING (chain modes needing it will be unavailable)"
-              fi
-            done
           } >> "$GITHUB_STEP_SUMMARY"
+          for lib in libpsiphon.so libtor.so; do
+            present=true
+            for abi in arm64-v8a armeabi-v7a; do
+              [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || present=false
+            done
+            if [ "${present}" = true ]; then
+              echo "- ${lib}: present" >> "$GITHUB_STEP_SUMMARY"
+            else
+              complete=false
+              echo "- ${lib}: **MISSING** - chain modes needing it are unavailable in this build" \
+                >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::${lib} is missing for at least one ABI; the chain modes that need it will be unavailable"
+            fi
+          done
+          echo "complete=${complete}" >> "$GITHUB_OUTPUT"
+
+      # ONLY a complete payload is cached. An incomplete one would be restored by
+      # every later run and skip the build that would have fixed it, which is
+      # exactly how the chain cores disappeared from releases.
+      - name: Save the native cores for later runs
+        if: steps.natives-cache.outputs.cache-hit != 'true' && steps.built.outputs.complete == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            app/src/main/jniLibs
+            app/src/main/assets/tor
+          key: ${{ steps.natives-cache.outputs.cache-primary-key }}
 
       - name: Upload native cores
         uses: actions/upload-artifact@v7
@@ -218,15 +283,44 @@ jobs:
           name: jnilibs
           path: app/src/main/jniLibs
 
-      # tor's geoip database and, when the build has one, the Psiphon config.
-      # Optional by design: continue-on-error, because a build without them is
-      # a valid build with fewer chain features.
+      # tor's geoip database. Optional by design: continue-on-error, because a
+      # build without it is a valid build with fewer chain features.
       - name: Download chain assets
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: chain-assets
           path: app/src/main/assets
+
+      # THE PSIPHON CONFIG IS WRITTEN HERE, NOT IN THE NATIVES JOB.
+      #
+      # It used to be written by build-overlay-cores.sh, in a job whose cache
+      # covers app/src/main/jniLibs and app/src/main/assets/tor - and NOT
+      # app/src/main/assets/psiphon.config. So on any cache hit the config was
+      # never produced, never uploaded and never packaged, and the Psiphon modes
+      # reported "no Psiphon config" on a repo that had the secret configured.
+      # Writing it in the job that actually assembles the APK removes the
+      # dependency on a cache entirely.
+      #
+      # PropagationChannelId / SponsorId are network-issued and not ours to
+      # commit; see docs/CHAINING.md. A repo without the secret simply builds an
+      # APK whose Chain page asks the user to paste one.
+      - name: Bundle the Psiphon client config
+        env:
+          PSIPHON_CONFIG_B64: ${{ secrets.PSIPHON_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PSIPHON_CONFIG_B64:-}" ]; then
+            echo "::notice::No PSIPHON_CONFIG_B64 secret - users will paste a Psiphon config in Settings > Chain."
+            exit 0
+          fi
+          mkdir -p app/src/main/assets
+          printf '%s' "${PSIPHON_CONFIG_B64}" | base64 -d > app/src/main/assets/psiphon.config
+          # A mis-pasted secret must fail the build, not ship a config the core
+          # will refuse three minutes into a connect attempt.
+          python3 -c "import json;json.load(open('app/src/main/assets/psiphon.config'))" \
+            || { echo "::error::PSIPHON_CONFIG_B64 did not decode to valid JSON"; exit 1; }
+          echo "Bundled a Psiphon client config ($(stat -c%s app/src/main/assets/psiphon.config) bytes)."
 
       # Fail in five seconds instead of six minutes. An APK that ships only some
       # of the cores runs proxy mode and silently fails full VPN mode.
@@ -240,11 +334,15 @@ jobs:
                 exit 1
               fi
             done
-            # The chain cores are OPTIONAL: the app reports their absence in
-            # plain language, so a missing one is a warning, never a red build.
+            # The chain cores are OPTIONAL: the Chain settings page disables the
+            # modes that need a missing core and names it, so a missing one is a
+            # warning, never a red build. It IS surfaced in the job summary
+            # though - a release should not ship without them by accident.
             for lib in libpsiphon.so libtor.so; do
               if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
                 echo "::warning::${abi}/${lib} is missing - the chain modes that need it will be unavailable in this build"
+                echo "- :warning: \`${abi}/${lib}\` missing: chain modes needing it are unavailable" \
+                  >> "$GITHUB_STEP_SUMMARY"
               fi
             done
           done

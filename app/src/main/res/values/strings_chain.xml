@@ -1,67 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Strings for the chained cores (Psiphon / Tor).
+  Copy for the Chain settings page.
 
-  Kept in their own file rather than appended to strings.xml: this is one
-  self-contained feature, and a reviewer should be able to read everything it
-  says to the user without scrolling past four hundred unrelated lines.
+  Its own file on purpose: strings.xml is already large, and the chain feature's
+  wording is the part most likely to be revised as the cores change. One file per
+  language keeps a translation diff readable.
 -->
 <resources>
 
-    <!-- ============================================================ page == -->
-    <string name="section_chain">Chain</string>
-    <string name="section_chain_note">Stack Aether with Psiphon and Tor. More hops means more ways past a filter, and less speed.</string>
+    <!-- Named once at the top of the page, so a build's contents are not a
+         connect-time surprise. %1$s is a comma-separated list of core names. -->
+    <string name="chain_build_missing">This build does not include: %1$s. Modes that need them are disabled.</string>
 
-    <string name="chain_mode">Cores</string>
-    <string name="chain_path">Path: %1$s</string>
+    <string name="chain_group_single">One core</string>
+    <string name="chain_group_stacked">Stacked cores</string>
+    <string name="chain_group_stacked_note">Each extra hop adds latency. Reach for these when the simple path is the thing being blocked, not before.</string>
 
-    <!-- ======================================================== the modes == -->
-    <string name="chain_aether">Aether</string>
-    <string name="chain_aether_desc">Aether alone. Fastest. Start here and only add hops when this does not get through.</string>
+    <!-- %1$s is a comma-separated list of core names. -->
+    <string name="chain_mode_unavailable">Not available: this build has no %1$s core.</string>
 
-    <string name="chain_psiphon">Psiphon</string>
-    <string name="chain_psiphon_desc">Psiphon alone. Worth trying when it is Cloudflare WARP itself that your network blocks.</string>
+    <string name="chain_tier_fast">Fast</string>
+    <string name="chain_tier_moderate">Slower</string>
+    <string name="chain_tier_slow">Slowest</string>
 
-    <string name="chain_tor">Tor</string>
-    <string name="chain_tor_desc">Tor alone. Anonymous, slow, and blocked outright on many networks in Iran.</string>
+    <string name="chain_psiphon_options">Psiphon</string>
+    <string name="chain_tor_options">Tor</string>
 
-    <string name="chain_psiphon_over_aether">Psiphon over Aether</string>
-    <string name="chain_psiphon_over_aether_desc">Psiphon dials out through Aether. Your operator sees WARP traffic and nothing that looks like Psiphon.</string>
+    <string name="psiphon_config_pasted">Using the config you pasted below.</string>
+    <string name="psiphon_config_bundled">A Psiphon config is bundled with this build. Paste one below only to override it.</string>
+    <string name="psiphon_config_absent">This build has no Psiphon config. Paste one below, or the Psiphon modes cannot start.</string>
+    <string name="psiphon_config_invalid">That config is not valid JSON, so it will be ignored.</string>
+    <string name="psiphon_config_invalid_help">Paste the whole config, from the opening brace to the closing one.</string>
+    <string name="psiphon_config_clear">Clear config</string>
 
-    <string name="chain_tor_over_aether">Tor over Aether</string>
-    <string name="chain_tor_over_aether_desc">Tor reaches the Tor network through Aether. Use this when Tor cannot connect at all, or to hide that you use Tor.</string>
-
-    <string name="chain_tor_over_psiphon">Tor over Psiphon</string>
-    <string name="chain_tor_over_psiphon_desc">Tor reaches the Tor network through Psiphon. Use this when Tor is blocked and WARP is blocked too.</string>
-
-    <string name="chain_tor_over_all">Tor over Psiphon over Aether</string>
-    <string name="chain_tor_over_all_desc">All three, stacked. The slowest option in the app and the last thing left to try.</string>
-
-    <!-- ========================================================= Psiphon == -->
-    <string name="psiphon_region_label">Psiphon exit country</string>
-    <string name="psiphon_region_hint">e.g. NL</string>
-    <string name="psiphon_region_help">Two-letter country code. Leave empty to let Psiphon pick its fastest server, which is usually the right answer.</string>
-
-    <string name="psiphon_config_label">Psiphon config (JSON)</string>
-    <string name="psiphon_config_hint">{"PropagationChannelId": …, "SponsorId": …}</string>
-    <string name="psiphon_config_help">Psiphon issues this file; it is not bundled with the app. Leave empty if your build already ships one. See docs/CHAINING.md.</string>
-
-    <!-- ============================================================= Tor == -->
-    <string name="tor_note">Tor adds three relays: expect much higher latency, and no UDP at all, so video calls and QUIC fall back to TCP or stop working. The first connection can take a few minutes.</string>
-
-    <string name="tor_exit_label">Tor exit country</string>
-    <string name="tor_exit_hint">e.g. de</string>
-    <string name="tor_exit_help">Two-letter country code for the exit relay. Needs the geoip database bundled in the build; leave empty to let Tor choose.</string>
-
-    <string name="tor_strict_title">Only that country</string>
-    <string name="tor_strict_desc">Never fall back to another country when the one you chose has no usable exit. That can mean no connection at all.</string>
-
-    <!-- ========================================================== errors == -->
-    <string name="err_core_missing">This build does not include: %1$s. Build the native cores (scripts/build-natives.sh) or pick a chain that does not need them.</string>
-    <string name="err_psiphon_config">No Psiphon config. Paste one under Settings › Chain, or use a build that bundles it.</string>
-    <string name="err_psiphon_timeout">Psiphon could not find a server. Try Psiphon over Aether, or another network.</string>
-    <string name="err_tor_timeout">Tor could not finish connecting. Your network is likely blocking Tor itself — try Tor over Aether or Tor over Psiphon.</string>
-    <string name="err_front_bind">The local proxy port is busy. Close the other tunnel app using it and reconnect.</string>
-    <string name="err_chain_failed">The chain could not be brought up. Check the log for which core failed.</string>
+    <string name="tor_tradeoffs">Tor is slow: the first connection regularly takes two minutes or more. It also carries no UDP, so video calls will not work through it.</string>
+    <string name="tor_exit_no_geoip">This build has no Tor country database, so an exit country cannot be requested.</string>
 
 </resources>
