@@ -29,6 +29,14 @@ private const val TAG = "vpn"
  *  - teardown is serialized, so a disconnect racing `onDestroy()` can no longer
  *    call `HevTunnel.stop()` or close the same fd twice.
  *
+ * CONTEXT RULE - READ BEFORE ADDING A FIELD: this class is constructed from
+ * AetherVpnService's own field initializer, which the platform runs inside the
+ * Service CONSTRUCTOR, i.e. BEFORE attachBaseContext(). [service] is therefore
+ * a ContextWrapper with a null base at construction time, and touching ANY
+ * Context method here (getFilesDir, getSystemService, getString, …) crashes the
+ * whole service before onCreate() is ever reached. Every use of [service] must
+ * happen from a session call, never from an initializer.
+ *
  * Teardown ORDER is load-bearing and lives in exactly one place
  * ([stopForwarding]): sharing, then the bridge, then hev, then the chain (front
  * first, then Tor, then Psiphon), then the engine, and the TUN last of all.
@@ -47,7 +55,27 @@ internal class NativeStack(private val service: VpnService) {
     @Volatile
     private var bridge: SocksTunBridge? = null
 
-    private val chain = ChainStack(service, service.filesDir)
+    /**
+     * Built LAZILY, and that is load-bearing (see the CONTEXT RULE above).
+     *
+     * This used to read `service.filesDir` eagerly, which - because the whole
+     * object is created in the Service's field initializer, before
+     * attachBaseContext() - dereferenced a null base context and killed every
+     * single connect attempt with:
+     *
+     *     Unable to create service studio.cluvex.aether.vpn.AetherVpnService:
+     *     java.lang.NullPointerException: Attempt to invoke virtual method
+     *     'java.io.File android.content.Context.getFilesDir()' on a null
+     *     object reference
+     *
+     * The crash landed in the CONSTRUCTOR, so no amount of guarding inside
+     * onStartCommand() could have caught it. Nothing needs the chain until a
+     * session actually runs, and the context is attached long before that, so
+     * resolving the directory on first use is both the minimal and the correct
+     * fix. `lazy` defaults to thread-safe publication, which this needs: the
+     * session coroutine and the main thread both reach the chain.
+     */
+    private val chain by lazy { ChainStack(service, service.filesDir) }
 
     private val teardownLock = Any()
 
