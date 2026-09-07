@@ -50,6 +50,7 @@ env:
   NDK_VERSION: "26.3.11579264"
   ANDROID_API: "26"             # must match minSdk in app/build.gradle.kts
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
+  GO_VERSION: "1.23"            # Psiphon core (cgo through the NDK)
 
 jobs:
   # =========================================================== NATIVE CORES ==
@@ -68,11 +69,14 @@ jobs:
         id: natives-cache
         uses: actions/cache@v6
         with:
-          path: app/src/main/jniLibs
+          path: |
+            app/src/main/jniLibs
+            app/src/main/assets/tor
           key: >-
-            jnilibs-v1-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{
+            jnilibs-v2-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{
             hashFiles('scripts/build-natives.sh', 'scripts/fetch-natives.sh',
-            'scripts/aethertun-jni.c', 'native/aether/**') }}
+            'scripts/build-overlay-cores.sh', 'scripts/aethertun-jni.c',
+            'native/aether/**') }}
 
       - name: Set up Android SDK
         if: steps.natives-cache.outputs.cache-hit != 'true'
@@ -129,6 +133,32 @@ jobs:
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
 
+      # ---- OVERLAY CORES (Psiphon + Tor) -----------------------------------
+      # Deliberately non-fatal, and deliberately AFTER the mandatory cores.
+      #
+      # These two are additive: the app detects a build without them and says so
+      # (the Psiphon/Tor chain modes report "this build does not include ..."
+      # instead of failing at connect time). A Go toolchain hiccup or an
+      # upstream layout change must therefore cost the chain feature for one
+      # build - not the whole APK, which is what would happen if this were part
+      # of the step above.
+      - name: Set up Go ${{ env.GO_VERSION }}
+        if: steps.natives-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Build overlay cores (Psiphon + Tor)
+        if: steps.natives-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: bash scripts/build-overlay-cores.sh all
+        env:
+          ANDROID_API: ${{ env.ANDROID_API }}
+          # Optional: a Psiphon client config, if this repo has one configured.
+          # Never committed; see docs/CHAINING.md.
+          PSIPHON_CONFIG_B64: ${{ secrets.PSIPHON_CONFIG_B64 }}
+
       - name: Summary
         run: |
           {
@@ -136,6 +166,14 @@ jobs:
             echo '```'
             find app/src/main/jniLibs -name '*.so' -printf '%p  %s bytes\n' | sort
             echo '```'
+            echo "### Chain cores"
+            for lib in libpsiphon.so libtor.so; do
+              if [ -f "app/src/main/jniLibs/arm64-v8a/${lib}" ]; then
+                echo "- ${lib}: present"
+              else
+                echo "- ${lib}: MISSING (chain modes needing it will be unavailable)"
+              fi
+            done
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload native cores
@@ -144,6 +182,14 @@ jobs:
           name: jnilibs
           path: app/src/main/jniLibs
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload chain assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: chain-assets
+          path: app/src/main/assets
+          if-no-files-found: ignore
           retention-days: 7
 
   # =========================================================== RELEASE APKS ==
@@ -172,6 +218,16 @@ jobs:
           name: jnilibs
           path: app/src/main/jniLibs
 
+      # tor's geoip database and, when the build has one, the Psiphon config.
+      # Optional by design: continue-on-error, because a build without them is
+      # a valid build with fewer chain features.
+      - name: Download chain assets
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: chain-assets
+          path: app/src/main/assets
+
       # Fail in five seconds instead of six minutes. An APK that ships only some
       # of the cores runs proxy mode and silently fails full VPN mode.
       - name: Check the native payload
@@ -182,6 +238,13 @@ jobs:
               if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
                 echo "::error::missing native library ${abi}/${lib}"
                 exit 1
+              fi
+            done
+            # The chain cores are OPTIONAL: the app reports their absence in
+            # plain language, so a missing one is a warning, never a red build.
+            for lib in libpsiphon.so libtor.so; do
+              if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
+                echo "::warning::${abi}/${lib} is missing - the chain modes that need it will be unavailable in this build"
               fi
             done
           done
@@ -323,6 +386,10 @@ jobs:
               for lib in libhev-socks5-tunnel.so libaethertun.so; do
                 printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}" \
                   || { echo "::error::$(basename "$apk") lacks ${lib} for ${abi}"; exit 1; }
+              done
+              for lib in libpsiphon.so libtor.so; do
+                printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}" \
+                  || echo "::warning::$(basename "$apk") has no ${lib} for ${abi} (chain feature reduced)"
               done
             done
             echo "OK  $(basename "$apk")  cores present for ${abis[*]}"
