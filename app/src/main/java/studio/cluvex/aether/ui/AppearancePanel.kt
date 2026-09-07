@@ -17,7 +17,14 @@ import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.data.ThemeMode
 import studio.cluvex.aether.ui.components.*
 
-/** Keep existing stored theme preferences; this redesign adds no theme modes. */
+/**
+ * Keep existing stored theme preferences; this redesign adds no theme modes.
+ *
+ * The theme write goes through AppPrefs.mutate for the same reason as the
+ * Automation switches: `behaviour.copy(themeMode = it)` would carry this
+ * composition's stale copy of the automation flags and could revert a toggle
+ * the user flipped a moment earlier.
+ */
 @Composable
 fun AppearancePanel(modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -26,7 +33,7 @@ fun AppearancePanel(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
         ControlSection(stringResource(R.string.theme_title), stringResource(R.string.theme_subtitle), Icons.Rounded.Palette) {
             SegmentedSelector(listOf(ThemeMode.SYSTEM, ThemeMode.DARK, ThemeMode.LIGHT), behaviour.themeMode,
-                onSelect = { AppPrefs.update(context, behaviour.copy(themeMode = it)) }, label = { themeLabel(it) })
+                onSelect = { mode -> AppPrefs.mutate(context) { it.copy(themeMode = mode) } }, label = { themeLabel(it) })
             Hint(stringResource(R.string.theme_hint))
         }
         Spacer(Modifier.height(32.dp)); Hairline(); Spacer(Modifier.height(32.dp))

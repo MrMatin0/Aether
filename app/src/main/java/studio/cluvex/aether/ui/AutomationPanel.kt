@@ -16,6 +16,12 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.ui.components.*
 
+/**
+ * `behaviour` is READ-ONLY here: it paints the switches. Writes go through
+ * AppPrefs.mutate, which rebases the change on the store's current state -
+ * passing `behaviour.copy(...)` back would send this composition's stale copy
+ * of every other field and revert whichever toggle was flipped just before.
+ */
 @Composable
 fun AutomationPanel(modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -23,13 +29,13 @@ fun AutomationPanel(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
         ControlSection(stringResource(R.string.automation_title), stringResource(R.string.automation_subtitle), Icons.Rounded.Schedule) {
             SwitchRow(stringResource(R.string.auto_launch_title), stringResource(R.string.auto_launch_desc), behaviour.autoConnectOnLaunch,
-                enabled = true, onChange = { AppPrefs.update(context, behaviour.copy(autoConnectOnLaunch = it)) })
+                enabled = true, onChange = { value -> AppPrefs.mutate(context) { it.copy(autoConnectOnLaunch = value) } })
             Hairline()
             SwitchRow(stringResource(R.string.auto_boot_title), stringResource(R.string.auto_boot_desc), behaviour.autoConnectOnBoot,
-                enabled = true, onChange = { AppPrefs.update(context, behaviour.copy(autoConnectOnBoot = it)) })
+                enabled = true, onChange = { value -> AppPrefs.mutate(context) { it.copy(autoConnectOnBoot = value) } })
             Hairline()
             SwitchRow(stringResource(R.string.history_keep_title), stringResource(R.string.history_keep_desc), behaviour.keepHistory,
-                enabled = true, onChange = { AppPrefs.update(context, behaviour.copy(keepHistory = it)) })
+                enabled = true, onChange = { value -> AppPrefs.mutate(context) { it.copy(keepHistory = value) } })
         }
         Spacer(Modifier.height(32.dp))
         ControlSection(stringResource(R.string.automation_system_title), stringResource(R.string.automation_system_sub), Icons.Rounded.Settings) {

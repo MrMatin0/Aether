@@ -45,6 +45,11 @@ data class AppBehaviour(
  * The theme lives here rather than in DataStore for the same reason: the very
  * first frame of the very first Activity needs it, and an async read means a
  * guaranteed flash of the wrong scheme on every cold start.
+ *
+ * WRITING: prefer [mutate] over [update]. A settings row only ever changes ONE
+ * field, and [mutate] rebases that change on the CURRENT state instead of on
+ * whatever snapshot the caller happened to be holding - see its KDoc for the
+ * bug that motivated it.
  */
 object AppPrefs {
     private const val FILE = "aether_behaviour"
@@ -58,7 +63,17 @@ object AppPrefs {
     private val _state = MutableStateFlow(AppBehaviour())
     val state: StateFlow<AppBehaviour> = _state.asStateFlow()
 
-    /** Idempotent; called from Application.onCreate and defensively elsewhere. */
+    /**
+     * Idempotent AND thread-safe, and it has to be both: this is called from
+     * [studio.cluvex.aether.AetherApp.onCreate], from
+     * [studio.cluvex.aether.vpn.BootReceiver] (a binder thread) and from
+     * MainActivity's auto-connect check. The `prefs != null` guard makes every
+     * call after the first a no-op, and @Synchronized is what keeps two callers
+     * from both deciding they are the first one and publishing [_state] twice.
+     *
+     * Every read of and write to [prefs] in this object happens under this same
+     * monitor, which is why the field needs no @Volatile.
+     */
     @Synchronized
     fun init(context: Context) {
         if (prefs != null) return
@@ -72,15 +87,53 @@ object AppPrefs {
         )
     }
 
+    /**
+     * Changes ONE part of the behaviour, rebased on the CURRENT state.
+     *
+     * WHAT WAS WRONG: every settings row called
+     * `update(context, behaviour.copy(field = new))`, where `behaviour` is the
+     * value the composable captured when it was COMPOSED. That turns a
+     * single-field edit into a whole-object overwrite carrying a stale copy of
+     * every other field, and the snapshot only refreshes after the
+     * StateFlow -> collectAsState round trip has recomposed the panel. Any
+     * second tap that lands before that - two switches in Automation flipped in
+     * quick succession, a theme change while a toggle was still settling -
+     * wrote the old value of the first field back over the new one. The setting
+     * silently reverted, on disk as well as on screen, and it looked like the
+     * toggle "did not stick".
+     *
+     * Doing the read-modify-write inside the lock that already guards the store
+     * removes the window entirely: [transform] always receives the state as it
+     * is right now, never as some caller last saw it.
+     */
+    @Synchronized
+    fun mutate(context: Context, transform: (AppBehaviour) -> AppBehaviour) {
+        init(context)
+        write(transform(_state.value))
+    }
+
+    /**
+     * Replaces the WHOLE behaviour. Correct for a reset or an import, which
+     * genuinely own every field; for a single setting use [mutate].
+     */
     @Synchronized
     fun update(context: Context, behaviour: AppBehaviour) {
         init(context)
-        prefs?.edit()
-            ?.putBoolean(KEY_LAUNCH, behaviour.autoConnectOnLaunch)
-            ?.putBoolean(KEY_BOOT, behaviour.autoConnectOnBoot)
-            ?.putBoolean(KEY_HISTORY, behaviour.keepHistory)
-            ?.putString(KEY_THEME, behaviour.themeMode.name)
-            ?.apply()
+        write(behaviour)
+    }
+
+    /** Only call while holding this object's monitor (see [mutate]). */
+    private fun write(behaviour: AppBehaviour) {
+        // Non-null unless init() threw, in which case it propagated and we are
+        // not here. Named so a future edit cannot quietly turn a failed write
+        // into a published in-memory value that never reached the disk.
+        val store = prefs ?: return
+        store.edit()
+            .putBoolean(KEY_LAUNCH, behaviour.autoConnectOnLaunch)
+            .putBoolean(KEY_BOOT, behaviour.autoConnectOnBoot)
+            .putBoolean(KEY_HISTORY, behaviour.keepHistory)
+            .putString(KEY_THEME, behaviour.themeMode.name)
+            .apply()
         _state.value = behaviour
     }
 
