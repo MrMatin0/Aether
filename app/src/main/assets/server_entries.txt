@@ -1,0 +1,7 @@
+# Embedded Psiphon Server Entries
+#
+# This file provides pre-seeded bootstrap server entries for the Psiphon core.
+# If available, Psiphon can establish tunnel connectivity immediately without
+# waiting for out-of-band remote server list discovery downloads.
+#
+# Additional server entries are discovered dynamically during connection.
