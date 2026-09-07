@@ -3,6 +3,7 @@ package studio.cluvex.aether.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import studio.cluvex.aether.R
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -87,4 +88,34 @@ internal fun splitLabel(m: SplitMode): String = when (m) {
     SplitMode.OFF -> stringResource(R.string.split_off)
     SplitMode.INCLUDE -> stringResource(R.string.split_include)
     SplitMode.EXCLUDE -> stringResource(R.string.split_exclude)
+}
+
+@Composable
+internal fun chainLabel(mode: ChainMode): String = when (mode) {
+    ChainMode.AETHER -> stringResource(R.string.chain_aether)
+    ChainMode.PSIPHON -> stringResource(R.string.chain_psiphon)
+    ChainMode.TOR -> stringResource(R.string.chain_tor)
+    ChainMode.PSIPHON_OVER_AETHER -> stringResource(R.string.chain_psiphon_over_aether)
+    ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether)
+    ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon)
+    ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all)
+}
+
+/**
+ * WHAT the combination is for, in one line.
+ *
+ * Not decoration: these seven options are not a preference, they are answers to
+ * seven different failures, and "Tor over Psiphon" tells a user nothing about
+ * when to reach for it. Without this the fastest thing to do is pick the biggest
+ * chain, which is also the slowest thing to run.
+ */
+@Composable
+internal fun chainDescription(mode: ChainMode): String = when (mode) {
+    ChainMode.AETHER -> stringResource(R.string.chain_aether_desc)
+    ChainMode.PSIPHON -> stringResource(R.string.chain_psiphon_desc)
+    ChainMode.TOR -> stringResource(R.string.chain_tor_desc)
+    ChainMode.PSIPHON_OVER_AETHER -> stringResource(R.string.chain_psiphon_over_aether_desc)
+    ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether_desc)
+    ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
+    ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
 }

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  رشته‌های فارسی برای هسته‌های زنجیره‌ای (سایفون / تور).
+
+  در فایل جداگانه، دقیقاً مثل نسخه انگلیسی: یک قابلیت مستقل، یک فایل.
+-->
+<resources>
+
+    <!-- ============================================================ page == -->
+    <string name="section_chain">زنجیره</string>
+    <string name="section_chain_note">اتر را با سایفون و تور روی هم بچینید. هر لایه راه‌های بیشتری برای عبور از فیلترینگ می‌دهد و سرعت کمتری.</string>
+
+    <string name="chain_mode">هسته‌ها</string>
+    <string name="chain_path">مسیر: %1$s</string>
+
+    <!-- ======================================================== the modes == -->
+    <string name="chain_aether">اتر</string>
+    <string name="chain_aether_desc">فقط اتر. سریع‌ترین حالت. از همین شروع کنید و تنها وقتی جواب نداد لایه اضافه کنید.</string>
+
+    <string name="chain_psiphon">سایفون</string>
+    <string name="chain_psiphon_desc">فقط سایفون. وقتی به کار می‌آید که شبکه‌تان خودِ WARP کلادفلر را بسته باشد.</string>
+
+    <string name="chain_tor">تور</string>
+    <string name="chain_tor_desc">فقط تور. ناشناس، کند، و روی بسیاری از شبکه‌های ایران کاملاً بسته.</string>
+
+    <string name="chain_psiphon_over_aether">سایفون روی اتر</string>
+    <string name="chain_psiphon_over_aether_desc">سایفون از داخل اتر بیرون می‌رود. اپراتور فقط ترافیک WARP می‌بیند، نه چیزی شبیه سایفون.</string>
+
+    <string name="chain_tor_over_aether">تور روی اتر</string>
+    <string name="chain_tor_over_aether_desc">تور از داخل اتر به شبکه تور می‌رسد. وقتی تور اصلاً وصل نمی‌شود، یا نمی‌خواهید معلوم شود از تور استفاده می‌کنید.</string>
+
+    <string name="chain_tor_over_psiphon">تور روی سایفون</string>
+    <string name="chain_tor_over_psiphon_desc">تور از داخل سایفون به شبکه تور می‌رسد. وقتی هم تور بسته است و هم WARP.</string>
+
+    <string name="chain_tor_over_all">تور روی سایفون روی اتر</string>
+    <string name="chain_tor_over_all_desc">هر سه، روی هم. کندترین حالت برنامه و آخرین چیزی که می‌ماند برای امتحان کردن.</string>
+
+    <!-- ========================================================= Psiphon == -->
+    <string name="psiphon_region_label">کشور خروج سایفون</string>
+    <string name="psiphon_region_hint">مثلاً NL</string>
+    <string name="psiphon_region_help">کد دو حرفی کشور. خالی بگذارید تا سایفون سریع‌ترین سرورش را انتخاب کند؛ معمولاً همین درست است.</string>
+
+    <string name="psiphon_config_label">کانفیگ سایفون (JSON)</string>
+    <string name="psiphon_config_hint">{"PropagationChannelId": …, "SponsorId": …}</string>
+    <string name="psiphon_config_help">این فایل را شبکه سایفون صادر می‌کند و همراه برنامه نمی‌آید. اگر بیلد شما آن را دارد، خالی بگذارید. راهنما: docs/CHAINING.md</string>
+
+    <!-- ============================================================= Tor == -->
+    <string name="tor_note">تور سه رله اضافه می‌کند: تأخیر خیلی بیشتر، و هیچ UDP‌ای؛ پس تماس تصویری و QUIC به TCP برمی‌گردند یا کار نمی‌کنند. اولین اتصال ممکن است چند دقیقه طول بکشد.</string>
+
+    <string name="tor_exit_label">کشور خروج تور</string>
+    <string name="tor_exit_hint">مثلاً de</string>
+    <string name="tor_exit_help">کد دو حرفی کشور رله خروجی. به دیتابیس geoip در بیلد نیاز دارد؛ خالی بگذارید تا تور خودش انتخاب کند.</string>
+
+    <string name="tor_strict_title">فقط همان کشور</string>
+    <string name="tor_strict_desc">اگر کشور انتخابی خروجی سالم نداشت، به کشور دیگری برنگردد. یعنی ممکن است اصلاً وصل نشوید.</string>
+
+    <!-- ========================================================== errors == -->
+    <string name="err_core_missing">این بیلد شامل %1$s نیست. هسته‌های نیتیو را بسازید (scripts/build-natives.sh) یا زنجیره‌ای انتخاب کنید که به آن نیاز ندارد.</string>
+    <string name="err_psiphon_config">کانفیگ سایفون موجود نیست. در تنظیمات › زنجیره یکی را بچسبانید، یا از بیلدی استفاده کنید که آن را همراه دارد.</string>
+    <string name="err_psiphon_timeout">سایفون سروری پیدا نکرد. «سایفون روی اتر» یا شبکه دیگری را امتحان کنید.</string>
+    <string name="err_tor_timeout">تور نتوانست اتصالش را کامل کند. احتمالاً شبکه خودِ تور را بسته است — «تور روی اتر» یا «تور روی سایفون» را امتحان کنید.</string>
+    <string name="err_front_bind">پورت پروکسی محلی مشغول است. برنامه تانل دیگری که آن را گرفته ببندید و دوباره وصل شوید.</string>
+    <string name="err_chain_failed">زنجیره بالا نیامد. برای دیدن اینکه کدام هسته شکست خورد، لاگ را ببینید.</string>
+
+</resources>
