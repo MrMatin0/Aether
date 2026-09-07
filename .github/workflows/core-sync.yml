@@ -16,6 +16,16 @@ name: Core sync
 # So the upgrade lives here instead: on a schedule, it syncs the core, PROVES
 # it compiles, and opens a pull request. The engine still updates itself, but a
 # human sees the diff and CI verifies it as a normal change.
+#
+# WHICH TOKEN OPENS THE PULL REQUEST MATTERS.
+# GitHub deliberately does not trigger `pull_request` workflows for a PR opened
+# with the default GITHUB_TOKEN - that is its loop breaker. So the old body's
+# promise that "the build workflow attaches installable APKs to this PR" was
+# never true: the PR sat there with no checks at all. Set a CORE_SYNC_TOKEN
+# secret (a PAT or GitHub App token with contents + pull-requests write) and the
+# PR is opened as that identity, which does trigger Build. Without it everything
+# still works, and the body says plainly that a maintainer has to push a commit
+# or close/reopen the PR to get CI to look at it.
 # ---------------------------------------------------------------------------
 
 on:
@@ -35,14 +45,21 @@ env:
   NDK_VERSION: "26.3.11579264"
   ANDROID_API: "26"
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
+  CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
 
 jobs:
   sync:
     name: Sync and verify the engine
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # This job pushes, so credentials stay - but they are whichever token
+          # will also open the PR, otherwise the branch and the PR would be
+          # authored by two different identities.
+          token: ${{ secrets.CORE_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Sync Aether core
         id: sync
@@ -72,11 +89,18 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         uses: android-actions/setup-android@v4
 
+      # Same shape as build.yml: accept the licences first, then assert the NDK
+      # is actually on disk. `yes | sdkmanager "ndk;..."` on its own reports
+      # success while having installed nothing when a licence is unaccepted, and
+      # the failure then surfaces four steps later as a missing clang.
       - name: Install NDK ${{ env.NDK_VERSION }}
         if: steps.check.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "ndk;${NDK_VERSION}" > /dev/null
+          test -d "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" \
+            || { echo "::error::NDK ${NDK_VERSION} not installed"; exit 1; }
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up Rust (Android targets)
@@ -85,9 +109,32 @@ jobs:
         with:
           targets: ${{ env.RUST_TARGETS }}
 
-      - name: Install cargo-ndk
+      # This job compiled the engine from a cold cargo registry every week and
+      # built cargo-ndk from source while it was at it. Same cache and the same
+      # pin as build.yml, so the weekly run is minutes rather than tens of them.
+      - name: Cache cargo registry and cargo-ndk
         if: steps.check.outputs.changed == 'true'
-        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-ndk
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-v2-${{ runner.os }}-ndk${{ env.CARGO_NDK_VERSION }}-${{ hashFiles('native/aether/**/Cargo.lock', 'native/aether/**/Cargo.toml') }}
+          restore-keys: |
+            cargo-v2-${{ runner.os }}-ndk${{ env.CARGO_NDK_VERSION }}-
+
+      - name: Install cargo-ndk ${{ env.CARGO_NDK_VERSION }}
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          have="$(cargo ndk --version 2>/dev/null | awk '{print $NF}' || true)"
+          if [ "${have}" = "${CARGO_NDK_VERSION}" ]; then
+            echo "cargo-ndk ${have} restored from cache."
+            exit 0
+          fi
+          cargo install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked --force
 
       # The whole point of this workflow: an upstream core that does not compile
       # never becomes a pull request, and definitely never reaches a release.
@@ -97,6 +144,7 @@ jobs:
       - name: Prove the new engine compiles
         if: steps.check.outputs.changed == 'true'
         run: |
+          set -euo pipefail
           bash scripts/fetch-natives.sh
           bash scripts/build-natives.sh aether
         env:
@@ -106,23 +154,51 @@ jobs:
       - name: Open a pull request
         if: steps.check.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CORE_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ secrets.CORE_SYNC_TOKEN != '' }}
           CORE: ${{ steps.check.outputs.core }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           BRANCH="chore/core-v${CORE}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
+
+          # --force-with-lease needs a remote-tracking ref to compare against,
+          # and actions/checkout fetches exactly one ref at depth 1 - so on the
+          # second sync for the same core version, origin/$BRANCH was unknown
+          # here and the push was rejected as stale instead of updating the open
+          # PR. Fetch the branch first when it exists; when it does not, the
+          # empty lease is the correct "this must not exist yet".
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+          git checkout -B "$BRANCH"
+
           git add native/aether README.md README.fa.md
           git commit -m "chore: upgrade Aether core to v${CORE}"
-          git push --force-with-lease origin "$BRANCH"
+          git push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"
+
+          if [ "${HAVE_PAT}" = "true" ]; then
+            CI_NOTE="The Build workflow runs on this pull request and attaches installable APKs to the run - test the tunnel on a real link before merging."
+          else
+            CI_NOTE="NO CHECKS WILL APPEAR ON THIS PULL REQUEST. It was opened with the default GITHUB_TOKEN, and GitHub does not trigger \`pull_request\` workflows for those. Push any commit to the branch, or close and reopen the PR, to get Build to run - or add a CORE_SYNC_TOKEN secret so future syncs trigger it themselves."
+          fi
+
           if gh pr view "$BRANCH" >/dev/null 2>&1; then
             echo "A pull request for ${BRANCH} is already open; pushed the update to it."
             exit 0
           fi
+          # Built into a variable rather than written inline: a multi-line
+          # string inside this block would have to start its continuation lines
+          # at column 0 to avoid leading spaces in the rendered PR body, and a
+          # column-0 line ends the YAML block scalar - the workflow would not
+          # parse at all.
+          BODY="$(printf '%s\n\n%s\n' \
+            "Automated engine sync from CluvexStudio/Aether. The vendored core moved to v${CORE} with this app's engine patches preserved, libaether.so was cross-compiled from this exact tree before the PR was opened, and the changelog in both READMEs was updated by scripts/sync-core.sh." \
+            "${CI_NOTE}")"
+
           gh pr create \
-            --base "${{ github.event.repository.default_branch }}" \
+            --base "${DEFAULT_BRANCH}" \
             --head "$BRANCH" \
             --title "chore: upgrade Aether core to v${CORE}" \
-            --body "Automated engine sync from CluvexStudio/Aether. Vendored core moved to v${CORE} with this app's engine patches preserved, libaether.so was cross-compiled from this exact tree before the PR was opened, and the 1.2.2 changelog in both READMEs was updated by scripts/sync-core.sh. The build workflow attaches installable APKs to this PR - test the tunnel on a real link before merging."
+            --body "$BODY"

@@ -5,15 +5,19 @@ name: Build
 #
 #   natives  ->  app  ->  release
 #
-# Design rules this file follows (the previous version broke all four):
+# Design rules this file follows:
 #
 #  1. A BUILD NEVER WRITES TO THE REPOSITORY. No auto-commits, no auto-push, no
 #     keystore minted and pushed back, no README rewritten mid-run. CI reads the
 #     tree, produces artifacts, and stops. Anything that has to change the repo
-#     goes through a pull request instead (see core-sync.yml).
+#     goes through a pull request instead (see core-sync.yml). The checkouts
+#     below therefore run with persist-credentials: false - the build scripts
+#     clone third-party sources, and none of them has any business inheriting a
+#     token from .git/config.
 #  2. A BUILD IS REPRODUCIBLE. The engine version is whatever the tree says it
-#     is. Nothing is silently upgraded while a release is being cut, so the APK
-#     attached to a tag is the APK that tag's source actually produces.
+#     is, the Gradle version is whatever the wrapper descriptor says it is, and
+#     cargo-ndk is pinned. Nothing is silently upgraded while a release is being
+#     cut, so the APK attached to a tag is the APK that tag's source produces.
 #  3. NATIVE WORK IS CACHED - BUT ONLY WHEN IT IS COMPLETE. The NDK/Rust half
 #     takes minutes and depends only on scripts/ and native/, so it is keyed on
 #     exactly that. What it must never do is cache a PARTIAL payload: see the
@@ -24,18 +28,36 @@ name: Build
 #     reserved for `v*` tags. That is what stops a dispatch from an old feature
 #     branch (see v1.3.0-build.48) from advertising itself as the current
 #     download while main is already on 1.4.5.
+#  5. ONE MISSING CORE COSTS EXACTLY THAT CORE. Psiphon and Tor are built as two
+#     independent steps, never as one `all` invocation: the script is set -e, so
+#     a Go hiccup used to cost libtor.so too - and tor is just a signed download
+#     that had nothing to do with the failure.
+#  6. EVERY JOB HAS A CEILING. Without timeout-minutes a hung sdkmanager, cargo
+#     or `go build` sits on a runner for the six-hour default.
 # ---------------------------------------------------------------------------
 
 on:
   push:
     branches: [main, master]
     tags: ["v*"]
+    # NOTE: deliberately NO paths filter on push. GitHub evaluates path filters
+    # against the pushed commits, and a tag push carries no file changes of its
+    # own - a filter here can silently skip the release a `v*` tag exists to cut.
   # A pull request is a VERIFICATION run: it compiles, tests, checks the
   # signature and the native payload, then attaches the APKs to the run so a
   # change can be installed on a real device before it is merged. It publishes
   # nothing and cannot write to the repo (see the permissions below).
   pull_request:
     branches: [main, master]
+    # Prose cannot change an APK, and a cold run is ~20 minutes of runner time.
+    # Everything that CAN reach the build - sources, scripts, native/, gradle/,
+    # this file - is deliberately absent from this list.
+    paths-ignore:
+      - "README.md"
+      - "README.fa.md"
+      - "docs/**"
+      - "_META/**"
+      - "LICENSE"
   workflow_dispatch:
 
 # Read-only by default. Only the release job widens this.
@@ -48,20 +70,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  JAVA_VERSION: "17"            # AGP 9.3 requires JDK 17
+  JAVA_VERSION: "17"            # AGP 9.4 requires JDK 17
   NDK_VERSION: "26.3.11579264"
   ANDROID_API: "26"             # must match minSdk in app/build.gradle.kts
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
   GO_VERSION: "1.23"            # Psiphon core (cgo through the NDK)
+  # Pinned on purpose. `cargo install cargo-ndk` unpinned means the toolchain
+  # that links a release is whatever crates.io published that morning, which is
+  # rule 2 above with extra steps.
+  CARGO_NDK_VERSION: "4.1.2"
 
 jobs:
   # =========================================================== NATIVE CORES ==
   natives:
     name: Native cores
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # The .so files depend on the build scripts, the JNI bridge and the
       # vendored engine - nothing else in this repository. Key the cache on
@@ -72,7 +101,7 @@ jobs:
       # job, and that split is the whole point:
       #
       #   actions/cache saves whenever the job succeeds, and the overlay-core
-      #   step below is continue-on-error by design. So the first run in which
+      #   steps below are continue-on-error by design. So the first run in which
       #   Psiphon or Tor failed to build wrote an INCOMPLETE jniLibs under this
       #   key - and since a cache hit used to skip every build step, every later
       #   run restored that incomplete payload and never retried. One transient
@@ -95,28 +124,37 @@ jobs:
       # A restored cache is trusted only for what it actually contains. Anything
       # missing is rebuilt, so a cache that lost the chain cores costs one slow
       # job instead of costing the feature forever.
+      #
+      # psiphon and tor are reported SEPARATELY rather than as one `chain` flag:
+      # they come from two unrelated toolchains (a Go cross-compile and a signed
+      # AAR download), so there is no reason a missing one should drag the other
+      # into a rebuild - or be blocked by it failing.
       - name: Decide what still has to be built
         id: payload
         run: |
           set -euo pipefail
           mandatory=true
-          chain=true
+          psiphon=true
+          tor=true
           for abi in arm64-v8a armeabi-v7a; do
             for lib in libaether.so libhev-socks5-tunnel.so libaethertun.so; do
               [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || mandatory=false
             done
-            for lib in libpsiphon.so libtor.so; do
-              [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || chain=false
-            done
+            [ -f "app/src/main/jniLibs/${abi}/libpsiphon.so" ] || psiphon=false
+            [ -f "app/src/main/jniLibs/${abi}/libtor.so" ] || tor=false
           done
+          chain=false
+          if [ "${psiphon}" = true ] && [ "${tor}" = true ]; then chain=true; fi
           build=true
           if [ "${mandatory}" = true ] && [ "${chain}" = true ]; then build=false; fi
           {
             echo "mandatory=${mandatory}"
+            echo "psiphon=${psiphon}"
+            echo "tor=${tor}"
             echo "chain=${chain}"
             echo "build=${build}"
           } >> "$GITHUB_OUTPUT"
-          echo "restored: mandatory=${mandatory} chain=${chain} -> build=${build}"
+          echo "restored: mandatory=${mandatory} psiphon=${psiphon} tor=${tor} -> build=${build}"
 
       - name: Set up Android SDK
         if: steps.payload.outputs.build == 'true'
@@ -140,22 +178,35 @@ jobs:
 
       # cargo-ndk used to be compiled from source on every single run. Cache the
       # binary and the crate registry; the engine pulls in quiche and friends.
+      #
+      # Only cargo-ndk is cached out of ~/.cargo/bin, never the whole directory:
+      # that also holds rustup's cargo/rustc/rustup shims, and restoring last
+      # week's shims over the toolchain the action just installed is a debugging
+      # session nobody needs. The pin is part of the key, so bumping the version
+      # installs the new one instead of finding the old one and stopping.
       - name: Cache cargo registry and cargo-ndk
         if: steps.payload.outputs.mandatory != 'true'
         uses: actions/cache@v6
         with:
           path: |
-            ~/.cargo/bin
+            ~/.cargo/bin/cargo-ndk
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-v1-${{ runner.os }}-${{ hashFiles('native/aether/**/Cargo.lock', 'native/aether/**/Cargo.toml') }}
+          key: cargo-v2-${{ runner.os }}-ndk${{ env.CARGO_NDK_VERSION }}-${{ hashFiles('native/aether/**/Cargo.lock', 'native/aether/**/Cargo.toml') }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-
+            cargo-v2-${{ runner.os }}-ndk${{ env.CARGO_NDK_VERSION }}-
 
-      - name: Install cargo-ndk
+      - name: Install cargo-ndk ${{ env.CARGO_NDK_VERSION }}
         if: steps.payload.outputs.mandatory != 'true'
-        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+        run: |
+          set -euo pipefail
+          have="$(cargo ndk --version 2>/dev/null | awk '{print $NF}' || true)"
+          if [ "${have}" = "${CARGO_NDK_VERSION}" ]; then
+            echo "cargo-ndk ${have} restored from cache."
+            exit 0
+          fi
+          cargo install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked --force
 
       - name: Fetch native sources
         if: steps.payload.outputs.mandatory != 'true'
@@ -183,19 +234,32 @@ jobs:
       # one build - not the whole APK, which is what would happen if this were
       # part of the step above.
       #
-      # What it must NOT cost any more is every FUTURE build: see the guarded
-      # cache save below.
+      # And it must cost ONE core, not both. `build-overlay-cores.sh all` builds
+      # Psiphon first under set -e, so a Go failure returned before tor - a
+      # plain signed-AAR download - was ever attempted, and a single flaky Go
+      # step took out both chain cores. Two steps, two independent failures,
+      # each gated on the core it actually produces.
+      #
+      # What none of this may cost is every FUTURE build: see the guarded cache
+      # save below.
       - name: Set up Go ${{ env.GO_VERSION }}
-        if: steps.payload.outputs.chain != 'true'
+        if: steps.payload.outputs.psiphon != 'true'
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
-      - name: Build overlay cores (Psiphon + Tor)
-        if: steps.payload.outputs.chain != 'true'
+      - name: Build the Psiphon core
+        if: steps.payload.outputs.psiphon != 'true'
         continue-on-error: true
-        run: bash scripts/build-overlay-cores.sh all
+        run: bash scripts/build-overlay-cores.sh psiphon
+        env:
+          ANDROID_API: ${{ env.ANDROID_API }}
+
+      - name: Build the Tor core
+        if: steps.payload.outputs.tor != 'true'
+        continue-on-error: true
+        run: bash scripts/build-overlay-cores.sh tor
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
 
@@ -205,6 +269,14 @@ jobs:
         id: built
         run: |
           set -euo pipefail
+          # `find` on a missing root is fatal under set -e, and "No such file or
+          # directory" says nothing about the build step that actually went
+          # wrong. Report the real problem instead.
+          if [ ! -d app/src/main/jniLibs ]; then
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+            echo "::error::app/src/main/jniLibs does not exist - no native cores were produced or restored"
+            exit 1
+          fi
           complete=true
           {
             echo "### Native cores"
@@ -232,8 +304,17 @@ jobs:
       # ONLY a complete payload is cached. An incomplete one would be restored by
       # every later run and skip the build that would have fixed it, which is
       # exactly how the chain cores disappeared from releases.
+      #
+      # The guard is "something was built AND the result is complete", NOT "the
+      # restore missed". Those are not the same: a run that restored a PARTIAL
+      # entry (a v2 leftover, or anything written before this guard existed)
+      # rebuilt the missing cores and then refused to save the repaired payload,
+      # because the restore had technically hit - so every later run restored the
+      # same partial entry and paid for the same rebuild, forever. Cache keys are
+      # immutable, so a save against an existing key is a logged no-op rather
+      # than a failure, which is the right outcome here.
       - name: Save the native cores for later runs
-        if: steps.natives-cache.outputs.cache-hit != 'true' && steps.built.outputs.complete == 'true'
+        if: steps.payload.outputs.build == 'true' && steps.built.outputs.complete == 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -262,11 +343,14 @@ jobs:
     name: Release APKs
     needs: natives
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       version: ${{ steps.collect.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v6
@@ -349,9 +433,10 @@ jobs:
           echo "Native payload complete for arm64-v8a and armeabi-v7a."
 
       # This repo ships no gradle-wrapper.jar, so Gradle comes from the action.
-      # AGP accepts only a narrow window of Gradle versions (9.3 requires 9.5.0)
-      # and the runner image's preinstalled Gradle drifts, so the version is read
-      # from the wrapper descriptor: one source of truth, no drift.
+      # AGP accepts only a narrow window of Gradle versions (9.4 needs 9.6.0 or
+      # newer) and the runner image's preinstalled Gradle drifts, so the version
+      # is read from the wrapper descriptor: one source of truth, no drift, and
+      # the pipeline moves when the wrapper does.
       - name: Resolve the required Gradle version
         id: gradle_version
         run: |
@@ -383,31 +468,38 @@ jobs:
       # There is deliberately no third option: CI no longer mints a fresh key,
       # because a build that invents a certificate produces an APK that existing
       # users cannot install over the app they already have.
+      #
+      # The passwords do NOT go into $GITHUB_ENV any more. A secret written
+      # there is exported to every later step in the job - including the ones
+      # that run third-party build scripts - and a value containing a newline
+      # can define extra variables on the way in. Only the mode and the keystore
+      # path (neither of them secret) leave this step; the credentials go
+      # straight to the single step that needs them.
       - name: Prepare signing keystore
+        id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -n "${KEYSTORE_BASE64}" ]; then
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
             echo "Signing with the release keystore from repository Secrets."
             printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            test -s "${RUNNER_TEMP}/release.keystore" \
+              || { echo "::error::KEYSTORE_BASE64 decoded to an empty file"; exit 1; }
             {
-              echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore"
-              echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASSWORD}"
-              echo "KEY_ALIAS=${SECRET_KEY_ALIAS}"
-              echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}"
-              echo "AETHER_SIGNING_MODE=release"
-            } >> "$GITHUB_ENV"
+              echo "mode=release"
+              echo "keystore_path=${RUNNER_TEMP}/release.keystore"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -f .github/ci-keystore.jks.b64 ]; then
             echo "::warning::No signing Secrets set - using the CI keystore committed to this repo."
             echo "::warning::It is public by definition: it guarantees updatability, not authenticity."
             echo "::warning::Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD for real distribution."
-            echo "AETHER_SIGNING_MODE=ci" >> "$GITHUB_ENV"
+            {
+              echo "mode=ci"
+              echo "keystore_path="
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "::error::No signing material found."
@@ -416,8 +508,29 @@ jobs:
           echo "::error::would produce an APK that existing users could not install as an update."
           exit 1
 
+      # The signing credentials are scoped to this one step. app/build.gradle.kts
+      # reads them with System.getenv, and this invocation is what starts the
+      # Gradle daemon, so the daemon inherits exactly this environment.
       - name: Assemble release APKs and run unit tests
+        env:
+          KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle :app:assembleRelease :app:testReleaseUnitTest --stacktrace
+
+      # A failed unit test used to mean reading a four-thousand-line log to find
+      # out which assertion went. The HTML report is right there; keep it.
+      - name: Upload the unit test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report-${{ github.run_number }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
       # PLAY-PROTECT + OVER-INSTALL SAFEGUARD. Never publish an APK that is
       # unsigned, debug-signed, or signed by a different certificate than the
@@ -425,10 +538,27 @@ jobs:
       # (INSTALL_FAILED_UPDATE_INCOMPATIBLE) and users would have to uninstall
       # and lose their settings.
       - name: Verify release signature
+        env:
+          AETHER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          BT="$(ls -d "${ANDROID_SDK_ROOT}"/build-tools/* | sort -V | tail -n1)"
+          # apksigner lives in build-tools, which is not guaranteed to be
+          # installed - and with nullglob set, an empty build-tools glob left
+          # `ls -d` with no arguments, so the path silently became "." and this
+          # entire gate died on "./apksigner: not found". Locate it properly, and
+          # say so plainly when it is genuinely absent.
+          APKSIGNER=""
+          for d in $(printf '%s\n' "${ANDROID_SDK_ROOT}"/build-tools/*/ | sort -Vr); do
+            if [ -x "${d}apksigner" ]; then APKSIGNER="${d}apksigner"; break; fi
+          done
+          [ -n "$APKSIGNER" ] || APKSIGNER="$(command -v apksigner || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found - no Android build-tools on this runner."
+            echo "::error::The release signature cannot be verified, so this build is not publishable."
+            exit 1
+          fi
+          echo "Using ${APKSIGNER}"
           case "${AETHER_SIGNING_MODE:-ci}" in
             release) PIN=".github/expected-signer.txt" ;;
             *)       PIN=".github/expected-signer-ci.txt" ;;
@@ -436,7 +566,7 @@ jobs:
           apks=(app/build/outputs/apk/release/*.apk)
           [ "${#apks[@]}" -gt 0 ] || { echo "::error::no release APKs to verify"; exit 1; }
           for apk in "${apks[@]}"; do
-            "${BT}/apksigner" verify --verbose --print-certs "$apk" > /tmp/sig.txt
+            "$APKSIGNER" verify --verbose --print-certs "$apk" > /tmp/sig.txt
             grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/sig.txt \
               || { echo "::error::$apk has no APK Signature Scheme v2 signature"; exit 1; }
             if grep -qi "CN=Android Debug" /tmp/sig.txt; then
@@ -463,8 +593,13 @@ jobs:
                 exit 1
               fi
             else
+              # Release mode with no pin file is the dangerous case: the
+              # over-install guarantee is simply not being enforced. Make it
+              # visible in the run summary instead of one grey log line.
               echo "::warning::no fingerprint pinned in ${PIN}; this build's signer is ${SHA}."
               echo "::warning::Commit it to ${PIN} to lock updatability in place."
+              echo "- :warning: signer not pinned in \`${PIN}\` - this build's signer is \`${SHA}\`" \
+                >> "$GITHUB_STEP_SUMMARY"
             fi
             echo "OK  $(basename "$apk")  signer ${SHA}"
           done
@@ -550,6 +685,7 @@ jobs:
       (startsWith(github.ref, 'refs/tags/v') ||
        github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -558,6 +694,7 @@ jobs:
         with:
           sparse-checkout: .github/release-notes.md
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Download APKs
         uses: actions/download-artifact@v8
@@ -565,12 +702,26 @@ jobs:
           name: aether-${{ needs.app.outputs.version }}-${{ github.run_number }}
           path: artifacts
 
+      # Checked before anything can become "latest". The release action's file
+      # matching does not fail by default, so a download that produced nothing
+      # published an EMPTY release - and on a `v*` tag that empty release was
+      # also marked latest, leaving the download page offering nothing at all.
+      - name: Confirm there is something to publish
+        run: |
+          set -euo pipefail
+          count="$(find artifacts -name '*.apk' | wc -l)"
+          [ "$count" -gt 0 ] \
+            || { echo "::error::no APKs were downloaded - refusing to publish an empty release"; exit 1; }
+          echo "Publishing ${count} APK(s)."
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', needs.app.outputs.version, github.run_number) }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && format('Aether {0}', github.ref_name) || format('Aether v{0}', needs.app.outputs.version) }}
           files: artifacts/*.apk
+          # Defaults to false, i.e. "publish it anyway". See the step above.
+          fail_on_unmatched_files: true
           body_path: .github/release-notes.md
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           make_latest: ${{ startsWith(github.ref, 'refs/tags/v') }}
