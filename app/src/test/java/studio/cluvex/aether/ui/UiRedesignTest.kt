@@ -68,7 +68,7 @@ class UiRedesignTest {
     }
 
     @Test fun engineSectionsHaveUniqueLabelsAndSurviveEnumRestoration() {
-        assertEquals(6, EnginePage.entries.size)
+        assertEquals(7, EnginePage.entries.size)
         assertEquals(EnginePage.entries.size, EnginePage.entries.map { it.title }.toSet().size)
         EnginePage.entries.forEach { assertEquals(it, EnginePage.valueOf(it.name)) }
     }
