@@ -139,7 +139,7 @@ data class ConnectionProfile(
     /** TUN interface MTU. 1280 is the safe default for Iranian mobile/DPI. */
     val mtu: Int = DEFAULT_MTU,
     /**
-     * Proxy mode: run the engine + local SOCKS5/HTTP proxy WITHOUT capturing
+     * Proxy mode: run the cores + local SOCKS5/HTTP proxy WITHOUT capturing
      * the whole device through a system VPN/TUN. Lets apps that support SOCKS5
      * natively (e.g. Telegram) use the tunnel selectively.
      */
@@ -154,6 +154,10 @@ data class ConnectionProfile(
     /**
      * Resolvers used INSIDE the tunnel (engine `--dns`). Blank = engine default
      * (1.1.1.1, 1.0.0.1). Comma separated; a bare IP implies port 53.
+     *
+     * Also used by the chained-core path: with a Psiphon entry these are the
+     * resolvers the DNS-over-TCP shim queries through the tunnel (see
+     * [studio.cluvex.aether.core.SocksFront]).
      */
     val dnsServers: String = "",
 
@@ -196,9 +200,9 @@ data class ConnectionProfile(
     val strictKillSwitch: Boolean = false,
     /** Route IPv6 through the tunnel as well (prevents IPv6 leaks). On by default. */
     val ipv6LeakProtection: Boolean = true,
-    /** Stop and report an error after [reconnectRetryLimit] failed engine restarts. */
+    /** Stop and report an error after [reconnectRetryLimit] failed core restarts. */
     val smartReconnect: Boolean = true,
-    /** Max automatic engine restarts when [smartReconnect] is on. */
+    /** Max automatic core restarts when [smartReconnect] is on. */
     val reconnectRetryLimit: Int = 5,
     /** TLS ClientHello fragment chunk-size range, e.g. "16-32" (engine `--fragment-size`). */
     val fragmentSize: String = "",
@@ -218,6 +222,51 @@ data class ConnectionProfile(
     val coreLogLevel: CoreLogLevel = CoreLogLevel.WARN,
     /** Apps that get NO internet at all while the VPN is on (UID-filtering bridge). */
     val blockedApps: List<String> = emptyList(),
+
+    // ---- Added in 1.5.0: chained cores (Psiphon / Tor) ----
+
+    /**
+     * Which cores carry the session, and in which order. [ChainMode.AETHER] is
+     * the behaviour of every build before chaining existed, and stays the
+     * default: the extra hops cost latency and are only worth it when the
+     * simple path does not work.
+     *
+     * None of the fields below reach the engine's CLI - they configure the
+     * Psiphon and Tor children instead (see PsiphonCore / TorCore).
+     */
+    val chain: ChainMode = ChainMode.AETHER,
+
+    /**
+     * Psiphon `EgressRegion`: a two-letter country code for the exit, or blank
+     * for "the best performing server anywhere", which is what Psiphon is good
+     * at and what a user should normally leave it doing.
+     */
+    val psiphonRegion: String = "",
+
+    /**
+     * A Psiphon client config (JSON), pasted by the user.
+     *
+     * `PropagationChannelId` and `SponsorId` are issued by the Psiphon network
+     * and are not ours to ship, so this app cannot embed a working config. Blank
+     * means "use the one bundled at build time" (assets/psiphon.config), and
+     * with neither the Psiphon chain modes report that instead of failing deep
+     * inside the core. See docs/CHAINING.md.
+     */
+    val psiphonConfig: String = "",
+
+    /**
+     * Tor `ExitNodes {cc}`: two-letter country code for the exit relay, or
+     * blank for Tor's own choice. Requires the geoip database to be bundled;
+     * without it tor cannot map relays to countries and ignores the request.
+     */
+    val torExitCountry: String = "",
+
+    /**
+     * Tor `StrictNodes 1`: never fall back to another country when the
+     * requested one has no usable exit. Off by default, because "strict" here
+     * means "rather no connection at all".
+     */
+    val torStrictNodes: Boolean = false,
 
 ) {
     /** True when a Zero Trust organization is configured and usable. */
@@ -405,6 +454,10 @@ data class ConnectionProfile(
      * otherwise the app aborts an attempt while the engine is still
      * legitimately scanning - which looks exactly like a failure and is not
      * one. A pinned peer connects almost immediately.
+     *
+     * Chained cores are NOT included here: each of them has its own budget in
+     * VpnTunables and its own readiness signal, and folding them into one
+     * number would mean a slow Tor bootstrap looked like a slow endpoint scan.
      */
     fun connectTimeoutMs(): Long {
         if (hasManualPeer) return 45_000L
