@@ -34,6 +34,15 @@ name: Build
 #     that had nothing to do with the failure.
 #  6. EVERY JOB HAS A CEILING. Without timeout-minutes a hung sdkmanager, cargo
 #     or `go build` sits on a runner for the six-hour default.
+#  7. A RELEASE MAY NOT SHIP WITHOUT THE CORES IT ADVERTISES. Rules 3 and 5 make
+#     a missing chain core survivable; for months they also made it INVISIBLE.
+#     The Psiphon core could not build at all (GO_VERSION was six releases older
+#     than psiphon-tunnel-core's go.mod), the step is continue-on-error, and the
+#     only trace was a ::warning:: in a green log - so every published APK told
+#     users "this build does not include the Psiphon core". A missing core is now
+#     a warning on a branch push or a pull request and a HARD FAILURE on a `v*`
+#     tag, checked twice: after the natives job builds, and against the contents
+#     of the assembled APKs.
 # ---------------------------------------------------------------------------
 
 on:
@@ -74,7 +83,17 @@ env:
   NDK_VERSION: "26.3.11579264"
   ANDROID_API: "26"             # must match minSdk in app/build.gradle.kts
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
-  GO_VERSION: "1.23"            # Psiphon core (cgo through the NDK)
+  # Psiphon core (cgo through the NDK). THIS VALUE IS LOAD-BEARING:
+  # psiphon-tunnel-core's staging-client go.mod carries `go 1.26.0` and
+  # `toolchain go1.26.5`, and actions/setup-go exports GOTOOLCHAIN=local whenever
+  # a go-version is requested, so Go REFUSES to fetch a newer toolchain and stops
+  # with "go.mod requires go >= 1.26.0" before compiling a single package. This
+  # was pinned to 1.23, the step is continue-on-error, and the result was that no
+  # release ever shipped libpsiphon.so. The Psiphon step additionally runs with
+  # GOTOOLCHAIN=auto so the next upstream bump costs a toolchain download rather
+  # than the whole feature; scripts/build-overlay-cores.sh reads the requirement
+  # out of upstream's go.mod and fails with the fix in the message.
+  GO_VERSION: "1.26"
   # Pinned on purpose. `cargo install cargo-ndk` unpinned means the toolchain
   # that links a release is whatever crates.io published that morning, which is
   # rule 2 above with extra steps.
@@ -106,8 +125,8 @@ jobs:
       #   key - and since a cache hit used to skip every build step, every later
       #   run restored that incomplete payload and never retried. One transient
       #   Go or upstream-layout hiccup silently removed the chain feature from
-      #   every subsequent release. Key bumped to v3 so no existing partial
-      #   entry is inherited.
+      #   every subsequent release. Key bumped to v4 with the Go fix, so no entry
+      #   written by a build that could not compile Psiphon is inherited.
       - name: Restore prebuilt native cores
         id: natives-cache
         uses: actions/cache/restore@v6
@@ -116,7 +135,8 @@ jobs:
             app/src/main/jniLibs
             app/src/main/assets/tor
           key: >-
-            jnilibs-v3-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{
+            jnilibs-v4-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-go${{
+            env.GO_VERSION }}-${{
             hashFiles('scripts/build-natives.sh', 'scripts/fetch-natives.sh',
             'scripts/build-overlay-cores.sh', 'scripts/aethertun-jni.c',
             'native/aether/**') }}
@@ -240,8 +260,8 @@ jobs:
       # step took out both chain cores. Two steps, two independent failures,
       # each gated on the core it actually produces.
       #
-      # What none of this may cost is every FUTURE build: see the guarded cache
-      # save below.
+      # What none of this may cost is a RELEASE: see the verify step below, which
+      # turns a missing core into a hard failure on a `v*` tag.
       - name: Set up Go ${{ env.GO_VERSION }}
         if: steps.payload.outputs.psiphon != 'true'
         uses: actions/setup-go@v6
@@ -249,24 +269,38 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
+      # GOTOOLCHAIN=auto is the escape hatch, not the plan. setup-go exports
+      # GOTOOLCHAIN=local for the whole job when a go-version is given, which is
+      # exactly what made "GO_VERSION is older than psiphon's go.mod" fatal
+      # instead of self-correcting. GO_VERSION above is still expected to satisfy
+      # upstream on its own; this only stops the next bump from silently removing
+      # the feature again.
       - name: Build the Psiphon core
+        id: psiphon_core
         if: steps.payload.outputs.psiphon != 'true'
         continue-on-error: true
         run: bash scripts/build-overlay-cores.sh psiphon
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
+          GOTOOLCHAIN: auto
 
       - name: Build the Tor core
+        id: tor_core
         if: steps.payload.outputs.tor != 'true'
         continue-on-error: true
         run: bash scripts/build-overlay-cores.sh tor
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
 
-      # Re-inspect AFTER building: this decides both what the summary says and
-      # whether the payload is allowed into the cache.
+      # Re-inspect AFTER building: this decides what the summary says, whether
+      # the payload is allowed into the cache, and - on a tag - whether this is
+      # publishable at all.
       - name: Verify the built payload
         id: built
+        env:
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          PSIPHON_OUTCOME: ${{ steps.psiphon_core.outcome }}
+          TOR_OUTCOME: ${{ steps.tor_core.outcome }}
         run: |
           set -euo pipefail
           # `find` on a missing root is fatal under set -e, and "No such file or
@@ -284,6 +318,8 @@ jobs:
             find app/src/main/jniLibs -name '*.so' -printf '%p  %s bytes\n' | sort
             echo '```'
             echo "### Chain cores"
+            echo "- Psiphon build step: \`${PSIPHON_OUTCOME:-skipped}\`"
+            echo "- Tor build step: \`${TOR_OUTCOME:-skipped}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           for lib in libpsiphon.so libtor.so; do
             present=true
@@ -296,10 +332,22 @@ jobs:
               complete=false
               echo "- ${lib}: **MISSING** - chain modes needing it are unavailable in this build" \
                 >> "$GITHUB_STEP_SUMMARY"
-              echo "::warning::${lib} is missing for at least one ABI; the chain modes that need it will be unavailable"
+              if [ "${IS_RELEASE_TAG}" = "true" ]; then
+                echo "::error::${lib} is missing for at least one ABI. A tagged release must not ship without the chain cores it advertises - fix the build step above and re-tag."
+              else
+                echo "::warning::${lib} is missing for at least one ABI; the chain modes that need it will be unavailable"
+              fi
             fi
           done
           echo "complete=${complete}" >> "$GITHUB_OUTPUT"
+          # THE RELEASE GATE. A coreless build stays buildable and installable on
+          # a branch - that is rule 5 - but it may not become a release. Before
+          # this existed the whole signal was a ::warning:: in a green log, and
+          # every published APK told users the Psiphon core was not included.
+          if [ "${complete}" != true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error::refusing to publish a release without the Psiphon and Tor cores"
+            exit 1
+          fi
 
       # ONLY a complete payload is cached. An incomplete one would be restored by
       # every later run and skip the build that would have fixed it, which is
@@ -409,8 +457,11 @@ jobs:
       # Fail in five seconds instead of six minutes. An APK that ships only some
       # of the cores runs proxy mode and silently fails full VPN mode.
       - name: Check the native payload
+        env:
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
+          chain_missing=false
           for abi in arm64-v8a armeabi-v7a; do
             for lib in libaether.so libhev-socks5-tunnel.so libaethertun.so; do
               if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
@@ -418,18 +469,23 @@ jobs:
                 exit 1
               fi
             done
-            # The chain cores are OPTIONAL: the Chain settings page disables the
-            # modes that need a missing core and names it, so a missing one is a
-            # warning, never a red build. It IS surfaced in the job summary
-            # though - a release should not ship without them by accident.
+            # The chain cores are OPTIONAL on a branch: the Chain settings page
+            # disables the modes that need a missing core and names it, so a
+            # missing one is a warning there. On a `v*` tag it is fatal - see
+            # rule 7 at the top of this file.
             for lib in libpsiphon.so libtor.so; do
               if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
+                chain_missing=true
                 echo "::warning::${abi}/${lib} is missing - the chain modes that need it will be unavailable in this build"
                 echo "- :warning: \`${abi}/${lib}\` missing: chain modes needing it are unavailable" \
                   >> "$GITHUB_STEP_SUMMARY"
               fi
             done
           done
+          if [ "${chain_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error::a tagged release must include libpsiphon.so and libtor.so for every ABI"
+            exit 1
+          fi
           echo "Native payload complete for arm64-v8a and armeabi-v7a."
 
       # This repo ships no gradle-wrapper.jar, so Gradle comes from the action.
@@ -604,13 +660,17 @@ jobs:
             echo "OK  $(basename "$apk")  signer ${SHA}"
           done
 
-      # Full VPN mode needs all three cores for every ABI in the APK. Proxy mode
-      # alone would still work, which is exactly why this is checked here instead
-      # of being left to a user's bug report.
+      # Full VPN mode needs all three mandatory cores for every ABI in the APK,
+      # and a release needs the two chain cores as well. Proxy mode alone would
+      # still work, which is exactly why this is checked here instead of being
+      # left to a user's bug report.
       - name: Verify native libraries inside the APKs
+        env:
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          chain_missing=false
           for apk in app/build/outputs/apk/release/*.apk; do
             entries="$(unzip -Z1 "$apk")"
             mapfile -t abis < <(printf '%s\n' "$entries" | sed -n 's#^lib/\([^/]*\)/libaether\.so$#\1#p')
@@ -621,12 +681,18 @@ jobs:
                   || { echo "::error::$(basename "$apk") lacks ${lib} for ${abi}"; exit 1; }
               done
               for lib in libpsiphon.so libtor.so; do
-                printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}" \
-                  || echo "::warning::$(basename "$apk") has no ${lib} for ${abi} (chain feature reduced)"
+                if ! printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}"; then
+                  chain_missing=true
+                  echo "::warning::$(basename "$apk") has no ${lib} for ${abi} (chain feature reduced)"
+                fi
               done
             done
             echo "OK  $(basename "$apk")  cores present for ${abis[*]}"
           done
+          if [ "${chain_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error::a tagged release must not ship an APK without libpsiphon.so and libtor.so"
+            exit 1
+          fi
 
       # The version comes from AGP's own output metadata, not from grepping
       # build.gradle.kts, so a stray comment mentioning versionName can no
