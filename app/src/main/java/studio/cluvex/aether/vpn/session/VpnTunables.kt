@@ -1,6 +1,8 @@
 package studio.cluvex.aether.vpn.session
 
+import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 
 /**
@@ -14,18 +16,27 @@ import studio.cluvex.aether.model.ConnectionProfile
  */
 internal object VpnTunables {
 
-    /** The engine's local SOCKS5 listener. Single source of truth: [TunnelConfig]. */
+    /** Loopback. Single source of truth: [TunnelConfig]. */
     const val SOCKS_HOST = TunnelConfig.SOCKS_HOST
-    const val SOCKS_PORT = TunnelConfig.SOCKS_PORT
 
-    /** `host:port` form, used for the Connected state label. */
-    const val SOCKS_ENDPOINT = "$SOCKS_HOST:$SOCKS_PORT"
+    /** The Aether engine's own listener. Only the engine path cares about this. */
+    const val ENGINE_SOCKS_PORT = TunnelConfig.ENGINE_SOCKS_PORT
 
-    /** Backoff ladder between automatic engine restarts. */
+    /**
+     * The port that carries the user's traffic for the CURRENT session, i.e.
+     * the chain entry. Read live: with a chain it is not the engine's port, and
+     * with no chain it still is.
+     */
+    val entryPort: Int get() = ChainRuntime.entryPort
+
+    /** `host:port` form of the entry, used for the Connected state label. */
+    val entryEndpoint: String get() = ChainRuntime.endpoint
+
+    /** Backoff ladder between automatic core restarts. */
     val BACKOFF = longArrayOf(2_000L, 5_000L, 10_000L)
 
     /**
-     * Automatic engine restarts allowed per session. Smart Reconnect lets the
+     * Automatic core restarts allowed per session. Smart Reconnect lets the
      * user lower it; without it the supervisor keeps trying.
      */
     const val MAX_ENGINE_RESTARTS = 50
@@ -36,15 +47,15 @@ internal object VpnTunables {
 
     /**
      * Watchdog probe cadence while the tunnel is up (1.2.4). It doubles as
-     * the upper bound for ONE blocking wait on the engine process: the
-     * supervisor never polls, it parks on the process itself and only wakes
-     * up this often to re-check its own cancellation state and to probe the
-     * tunnel end-to-end.
+     * the upper bound for ONE blocking wait on a core process: the supervisor
+     * never polls, it parks on the process itself and only wakes up this often
+     * to re-check its own cancellation state and to probe the tunnel
+     * end-to-end.
      */
     const val WATCHDOG_INTERVAL_MS = 30_000L
 
     /**
-     * Consecutive failed checks before the engine is restarted (1.2.4
+     * Consecutive failed checks before the cores are restarted (1.2.4
      * hardening): three failed checks = 90 s+ of proven dead tunnel, so
      * only a genuinely dead session is restarted.
      */
@@ -60,8 +71,8 @@ internal object VpnTunables {
     const val PROBE_RETRY_GAP_MS = 1_500L
 
     /**
-     * How long to wait for the previous engine to release the local SOCKS5
-     * port before starting a new one (1.2.2 protocol-switch fix).
+     * How long to wait for the previous session to release a local port before
+     * starting a new core on it (1.2.2 protocol-switch fix).
      */
     const val PORT_RELEASE_WAIT_MS = 3_000L
 
@@ -71,12 +82,55 @@ internal object VpnTunables {
      * budget before the hardened second pass is even tried.
      */
     const val FIRST_PASS_MAX_MS = 75_000L
+
+    // ------------------------------------------------------------ chain hops
+
+    /**
+     * How long Psiphon's local SOCKS5 listener gets to appear. Short on
+     * purpose: the listener is opened almost immediately after launch, so a
+     * miss here means the process is broken, not slow.
+     */
+    const val PSIPHON_PORT_WAIT_MS = 20_000L
+
+    /**
+     * How long Psiphon gets to establish an actual tunnel. Generous, because
+     * this is server discovery over a filtered network - the same class of
+     * work the engine's own endpoint scan does, and the engine is allowed up
+     * to 300 s for it.
+     */
+    const val PSIPHON_READY_WAIT_MS = 180_000L
+
+    /** Same reasoning as [PSIPHON_PORT_WAIT_MS]: tor binds its ports at once. */
+    const val TOR_PORT_WAIT_MS = 20_000L
+
+    /**
+     * How long tor gets to reach `Bootstrapped 100%`.
+     *
+     * A first bootstrap on a hostile mobile network regularly takes over two
+     * minutes: tor has to fetch a consensus and build a circuit, and when it is
+     * chained it does all of that THROUGH another tunnel's added latency. Four
+     * minutes is the difference between "Tor is slow here" and a false "Tor is
+     * blocked here".
+     */
+    const val TOR_BOOTSTRAP_WAIT_MS = 240_000L
+
+    /**
+     * Total budget for a chain-only attempt (no Aether hop, so no endpoint
+     * scan): the sum of what each core is allowed, plus a little slack for the
+     * front to bind and the self-test to run.
+     */
+    fun chainBudgetMs(mode: ChainMode): Long {
+        var budget = 15_000L
+        if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
+        if (mode.usesTor) budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS
+        return budget
+    }
 }
 
 /**
  * The profile MTU, clamped to what the TUN (and hev's lwIP netif) accept.
  *
- * Both must agree, so this is the single place the value is bounded — the TUN
+ * Both must agree, so this is the single place the value is bounded - the TUN
  * builder, the hev config and the userspace bridge all read it from here.
  */
 internal fun ConnectionProfile.safeMtu(): Int =

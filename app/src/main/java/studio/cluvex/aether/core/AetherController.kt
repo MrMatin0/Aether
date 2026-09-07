@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.ConnectionState
@@ -99,8 +100,8 @@ object AetherController {
  *
  * DROPPED-SETTINGS FIX: the codec is the ONLY channel between the UI and
  * [AetherVpnService], so anything it forgets is silently thrown away - the user
- * configures it in Settings, sees it persisted, and the engine never learns
- * about it. The 1.2.3 feature block (in-tunnel DNS, Zero Trust organization,
+ * configures it in Settings, sees it persisted, and the cores never learn about
+ * it. The 1.2.3 feature block (in-tunnel DNS, Zero Trust organization,
  * `--route-block` / `--route-direct`) was never added here, so those fields
  * reached the DataStore but never the engine's argv/env. Every non-secret field
  * of [ConnectionProfile] is transported now.
@@ -155,6 +156,12 @@ object ProfileCodec {
         add("noProfRetry=${p.noProfileRetry}")
         add("coreLog=${p.coreLogLevel.name}")
         add("blockedApps=${p.blockedApps.joinToString(",")}")
+        // Added in 1.5.0 (chained cores: Psiphon / Tor)
+        add("chain=${p.chain.name}")
+        add("psiphonRegion=${flatten(p.psiphonRegion)}")
+        add("psiphonConfig=${flattenJson(p.psiphonConfig)}")
+        add("torExit=${flatten(p.torExitCountry)}")
+        add("torStrict=${p.torStrictNodes}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -216,6 +223,13 @@ object ProfileCodec {
                 coreLogLevel = map["coreLog"]?.let { enumOr<CoreLogLevel>(it) } ?: d.coreLogLevel,
                 blockedApps = map["blockedApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
                     ?: d.blockedApps,
+                // Not enumOr(): ChainMode also understands the shapes a human
+                // types into an exported config by hand ("aether+psiphon").
+                chain = ChainMode.fromStored(map["chain"]) ?: d.chain,
+                psiphonRegion = map["psiphonRegion"] ?: d.psiphonRegion,
+                psiphonConfig = map["psiphonConfig"] ?: d.psiphonConfig,
+                torExitCountry = map["torExit"] ?: d.torExitCountry,
+                torStrictNodes = map["torStrict"]?.toBooleanStrictOrNull() ?: d.torStrictNodes,
             )
         }.getOrDefault(d)
     }
@@ -248,4 +262,13 @@ object ProfileCodec {
      * engine anyway, so newlines fold into commas.
      */
     private fun flatten(value: String): String = value.lineSequence().joinToString(",")
+
+    /**
+     * Same framing problem, opposite fold: a pasted Psiphon config is JSON, and
+     * [flatten] would splice a comma into it and hand the core a document that
+     * no longer parses. In JSON a newline is nothing but whitespace, so it folds
+     * to a space and the document survives the round trip byte-for-byte as far
+     * as any parser is concerned.
+     */
+    private fun flattenJson(value: String): String = value.lineSequence().joinToString(" ")
 }

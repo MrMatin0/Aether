@@ -11,13 +11,19 @@ private const val TAG = "vpn"
  *
  * The critical fields are `tunnel.ipv4` / `tunnel.ipv6`: hev configures its
  * internal lwIP netif from them, and without them packets are pulled off the
- * TUN fd but have nowhere to be routed — so the tunnel "connects" but no site
+ * TUN fd but have nowhere to be routed - so the tunnel "connects" but no site
  * ever loads. They MUST equal the VpnService addAddress values, which is why
  * both read [TunnelConfig].
+ *
+ * The SOCKS5 port is a PARAMETER and not a constant: it is the chain entry, so
+ * it is the engine's own listener for an Aether-only session and the DNS-capable
+ * front ([studio.cluvex.aether.core.SocksFront]) for a Psiphon or Tor entry.
+ * Hard-coding it here would silently forward every packet to whichever core
+ * happened to own 1819.
  */
 internal object HevConfig {
 
-    fun write(filesDir: File, mtu: Int): File {
+    fun write(filesDir: File, mtu: Int, socksPort: Int): File {
         val file = File(filesDir, "hev.yaml")
         val yaml = """
             tunnel:
@@ -25,8 +31,8 @@ internal object HevConfig {
               ipv4: ${TunnelConfig.TUN_IPV4}
               ipv6: '${TunnelConfig.TUN_IPV6}'
             socks5:
-              address: ${VpnTunables.SOCKS_HOST}
-              port: ${VpnTunables.SOCKS_PORT}
+              address: ${TunnelConfig.SOCKS_HOST}
+              port: $socksPort
               udp: 'udp'
             misc:
               task-stack-size: 86016

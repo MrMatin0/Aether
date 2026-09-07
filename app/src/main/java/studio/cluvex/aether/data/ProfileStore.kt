@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
@@ -65,6 +66,12 @@ class ProfileStore(private val context: Context) {
         val noProfileRetry = booleanPreferencesKey("noProfileRetry")
         val coreLogLevel = stringPreferencesKey("coreLogLevel")
         val blockedApps = stringPreferencesKey("blockedApps")
+        // Added in 1.5.0 (chained cores: Psiphon / Tor)
+        val chain = stringPreferencesKey("chain")
+        val psiphonRegion = stringPreferencesKey("psiphonRegion")
+        val psiphonConfig = stringPreferencesKey("psiphonConfig")
+        val torExitCountry = stringPreferencesKey("torExitCountry")
+        val torStrictNodes = booleanPreferencesKey("torStrictNodes")
     }
 
     /**
@@ -73,6 +80,10 @@ class ProfileStore(private val context: Context) {
      * sandbox, so a device backup or an adb dump on a rooted phone would expose
      * a long-lived organization credential. They live in [SecretStore] instead,
      * sealed with a hardware-backed AES-GCM key from the Android Keystore.
+     *
+     * The Psiphon client config deliberately stays HERE: it is a public,
+     * network-issued client identity (propagation channel + sponsor + server
+     * list URLs), not a user credential, and every Psiphon client ships one.
      */
     private val secrets = SecretStore(context)
 
@@ -132,6 +143,11 @@ class ProfileStore(private val context: Context) {
                 ?.let { runCatching { CoreLogLevel.valueOf(it) }.getOrNull() } ?: CoreLogLevel.WARN,
             blockedApps = prefs[Keys.blockedApps]
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            chain = ChainMode.fromStored(prefs[Keys.chain]) ?: d.chain,
+            psiphonRegion = prefs[Keys.psiphonRegion] ?: "",
+            psiphonConfig = prefs[Keys.psiphonConfig] ?: "",
+            torExitCountry = prefs[Keys.torExitCountry] ?: "",
+            torStrictNodes = prefs[Keys.torStrictNodes] ?: false,
         )
     }
 
@@ -176,6 +192,11 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.noProfileRetry] = profile.noProfileRetry
             prefs[Keys.coreLogLevel] = profile.coreLogLevel.name
             prefs[Keys.blockedApps] = profile.blockedApps.joinToString(",")
+            prefs[Keys.chain] = profile.chain.name
+            prefs[Keys.psiphonRegion] = profile.psiphonRegion
+            prefs[Keys.psiphonConfig] = profile.psiphonConfig
+            prefs[Keys.torExitCountry] = profile.torExitCountry
+            prefs[Keys.torStrictNodes] = profile.torStrictNodes
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which

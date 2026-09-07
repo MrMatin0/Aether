@@ -21,13 +21,14 @@ import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.engine.*
 
 internal enum class EnginePage(val title: Int) {
-    CONNECTION(R.string.section_connection), SECURITY(R.string.section_security),
+    CONNECTION(R.string.section_connection), CHAIN(R.string.section_chain),
+    SECURITY(R.string.section_security),
     ROUTING(R.string.section_routing), TRANSPORT(R.string.section_transport),
     ORGANIZATION(R.string.section_zerotrust), TUNING(R.string.section_engine_tuning),
 }
 private enum class AppPicker { SPLIT, BLOCKED }
 
-/** All six categories are visible. Switching categories never writes a profile. */
+/** All seven categories are visible. Switching categories never writes a profile. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AdvancedPanel(profile: ConnectionProfile, onProfileChange: (ConnectionProfile) -> Unit,
@@ -47,6 +48,7 @@ fun AdvancedPanel(profile: ConnectionProfile, onProfileChange: (ConnectionProfil
                     label = { Text(stringResource(destination.title)) }, leadingIcon = {
                         Icon(when (destination) {
                             EnginePage.CONNECTION -> Icons.Rounded.Cable
+                            EnginePage.CHAIN -> Icons.Rounded.Layers
                             EnginePage.SECURITY -> Icons.Rounded.Shield
                             EnginePage.ROUTING -> Icons.Rounded.Route
                             EnginePage.TRANSPORT -> Icons.Rounded.SwapVert
@@ -65,6 +67,9 @@ fun AdvancedPanel(profile: ConnectionProfile, onProfileChange: (ConnectionProfil
                 EnginePage.CONNECTION -> ConnectionSection(protocol = profile.protocol, scanMode = profile.scanMode,
                     endpointMode = profile.endpointMode, manualPeer = profile.manualPeer, manualRange = profile.manualRange,
                     ipVersion = profile.ipVersion, enabled = enabled, edit = edit)
+                EnginePage.CHAIN -> ChainSection(chain = profile.chain, psiphonRegion = profile.psiphonRegion,
+                    psiphonConfig = profile.psiphonConfig, torExitCountry = profile.torExitCountry,
+                    torStrictNodes = profile.torStrictNodes, enabled = enabled, edit = edit)
                 EnginePage.SECURITY -> {
                     SafetySection(quickReconnect = profile.quickReconnect, killSwitch = profile.killSwitch,
                         strictKillSwitch = profile.strictKillSwitch, enabled = enabled, edit = edit)

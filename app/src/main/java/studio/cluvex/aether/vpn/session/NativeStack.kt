@@ -8,14 +8,17 @@ import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SocksTunBridge
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.Hop
 
 private const val TAG = "vpn"
 
 /**
- * Owns every native moving part of a session: the engine process, the TUN fd,
- * the in-process hev-socks5-tunnel core, the userspace filter bridge and the
- * LAN share listeners.
+ * Owns every native moving part of a session: the engine process, the chained
+ * overlay cores (Psiphon, Tor and the SOCKS front), the TUN fd, the in-process
+ * hev-socks5-tunnel core, the userspace filter bridge and the LAN share
+ * listeners.
  *
  * This is the whole reason the service used to be 1,000 lines: five pieces of
  * process-wide state, each with its own teardown order, all as loose `var`s on
@@ -26,8 +29,9 @@ private const val TAG = "vpn"
  *  - teardown is serialized, so a disconnect racing `onDestroy()` can no longer
  *    call `HevTunnel.stop()` or close the same fd twice.
  *
- * Teardown ORDER is load-bearing and lives in exactly one place ([stopForwarding]):
- * sharing, then the bridge, then hev, then the engine, and the TUN last of all.
+ * Teardown ORDER is load-bearing and lives in exactly one place
+ * ([stopForwarding]): sharing, then the bridge, then hev, then the chain (front
+ * first, then Tor, then Psiphon), then the engine, and the TUN last of all.
  */
 internal class NativeStack(private val service: VpnService) {
 
@@ -42,6 +46,8 @@ internal class NativeStack(private val service: VpnService) {
 
     @Volatile
     private var bridge: SocksTunBridge? = null
+
+    private val chain = ChainStack(service, service.filesDir)
 
     private val teardownLock = Any()
 
@@ -59,7 +65,7 @@ internal class NativeStack(private val service: VpnService) {
      * [timeoutMs] elapses.
      *
      * 1.2.2 CPU FIX: the supervisor used to wake up every 2 s for the ENTIRE
-     * lifetime of the tunnel just to ask "is the engine still alive?" — 1,800
+     * lifetime of the tunnel just to ask "is the engine still alive?" - 1,800
      * wake-ups per hour of a healthy, otherwise idle connection, each one
      * preventing the CPU from settling into a deep idle state and quietly
      * draining the battery. Parking on the process itself means the OS wakes us
@@ -72,6 +78,42 @@ internal class NativeStack(private val service: VpnService) {
 
     fun stopEngine() {
         runCatching { engine?.stop() }
+    }
+
+    // ----------------------------------------------------------------- chain
+
+    /** Cores [mode] needs that this build does not ship. */
+    fun missingCores(mode: ChainMode): List<Hop> = chain.missingCores(mode)
+
+    /**
+     * Brings up the non-Aether hops and returns the chain ENTRY port. The
+     * engine, when the mode uses one, must already be listening.
+     */
+    suspend fun startChain(profile: ConnectionProfile): Int = chain.start(profile)
+
+    /**
+     * True while every core this session needs is still running.
+     *
+     * Takes the profile rather than reading a stored copy: a chain without an
+     * Aether hop never starts the engine, and asking `engineAlive` about it
+     * would report a dead tunnel forever.
+     */
+    fun coresAlive(profile: ConnectionProfile): Boolean =
+        (!profile.chain.usesAether || engineAlive) && chain.alive
+
+    /** Parks until a core exits or [timeoutMs] elapses. */
+    suspend fun awaitCoreExit(profile: ConnectionProfile, timeoutMs: Long) {
+        if (profile.chain.usesAether) awaitEngineExit(timeoutMs) else chain.awaitExit(timeoutMs)
+    }
+
+    /**
+     * Stops the cores but KEEPS the TUN and the forwarder, so a restart does
+     * not tear the interface down and open a leak window.
+     */
+    fun stopCores() = synchronized(teardownLock) {
+        runCatching { chain.stop() }
+        runCatching { engine?.stop() }
+        engine = null
     }
 
     // ------------------------------------------------------------------- TUN
@@ -95,12 +137,13 @@ internal class NativeStack(private val service: VpnService) {
     // -------------------------------------------------------------- forwarder
 
     /**
-     * Starts whatever moves packets between the TUN and the engine's SOCKS5.
+     * Starts whatever moves packets between the TUN and [socksPort], the chain
+     * entry.
      *
      * Two mutually exclusive paths: the battle-tested in-process hev core for
      * everyone, and the userspace filter bridge when per-app blocking is on.
      */
-    fun startForwarder(profile: ConnectionProfile) {
+    fun startForwarder(profile: ConnectionProfile, socksPort: Int) {
         val pfd = tun ?: throw IllegalStateException("TUN descriptor is null")
         if (profile.blockedApps.isNotEmpty()) {
             // PER-APP BLOCKING (1.2.4): hev-socks5-tunnel cannot filter per
@@ -112,25 +155,25 @@ internal class NativeStack(private val service: VpnService) {
             //
             // Snapshot the blocked set ONCE: the bridge asks its provider on
             // every packet, and `blockedApps.toSet()` allocated a fresh set per
-            // call — a per-packet allocation on the hottest path in the app.
+            // call - a per-packet allocation on the hottest path in the app.
             val blocked = profile.blockedApps.toSet()
             DiagnosticsLog.i(TAG, "Starting userspace filter bridge (blocked apps=${blocked.size})")
             bridge = SocksTunBridge(
                 vpnService = service,
                 tunDescriptor = pfd,
                 socksHost = VpnTunables.SOCKS_HOST,
-                socksPort = VpnTunables.SOCKS_PORT,
+                socksPort = socksPort,
                 mtu = profile.safeMtu(),
                 blockedPackagesProvider = { blocked },
                 routingEngine = RoutingEngine(emptyList()),
             ).also { it.start() }
             return
         }
-        val config = HevConfig.write(service.filesDir, profile.safeMtu())
+        val config = HevConfig.write(service.filesDir, profile.safeMtu(), socksPort)
         // Use the LIVE fd of the ParcelFileDescriptor (do NOT detach): hev uses it
         // while running and we close the pfd ourselves on teardown. The fd is only
         // valid inside THIS process, which is exactly why hev must run in-process.
-        DiagnosticsLog.i(TAG, "Starting hev-socks5-tunnel in-process (fd=${pfd.fd})")
+        DiagnosticsLog.i(TAG, "Starting hev-socks5-tunnel in-process (fd=${pfd.fd}, socks=$socksPort)")
         HevTunnel.start(config.absolutePath, pfd.fd)
         tunnelStarted = true
     }
@@ -156,7 +199,7 @@ internal class NativeStack(private val service: VpnService) {
     // ---------------------------------------------------------------- teardown
 
     /**
-     * Stops sharing, the forwarder and the engine but deliberately KEEPS the
+     * Stops sharing, the forwarder and every core but deliberately KEEPS the
      * TUN, so the kill-switch blackhole can take it over without opening a leak
      * window.
      *
@@ -179,6 +222,10 @@ internal class NativeStack(private val service: VpnService) {
             runCatching { HevTunnel.stop() }
             tunnelStarted = false
         }
+        // Chain before engine: the overlays' sockets run INTO the engine, so
+        // killing the engine first would make them fail and retry against a
+        // proxy that is already gone.
+        runCatching { chain.stop() }
         runCatching { engine?.stop() }
         engine = null
     }

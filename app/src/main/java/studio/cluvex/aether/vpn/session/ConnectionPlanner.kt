@@ -8,7 +8,7 @@ import studio.cluvex.aether.model.Protocol
 /**
  * Turns a profile into the ordered ladder of concrete attempts a session walks.
  *
- * Pure: no service, no natives, no coroutines — which is exactly why it can be
+ * Pure: no service, no natives, no coroutines - which is exactly why it can be
  * unit-tested, unlike the version that lived inside the service. AUTO's ladder
  * is built by [studio.cluvex.aether.core.SmartAuto] (it needs a live DPI
  * fingerprint of the network); every hand-picked protocol is planned here.
@@ -20,7 +20,7 @@ internal object ConnectionPlanner {
      * or Gool).
      *
      * 1.2.2 "MASQUE hangs forever" FIX: a hand-picked protocol used to get ONE
-     * attempt with the full scan budget of the selected scan mode — with no
+     * attempt with the full scan budget of the selected scan mode - with no
      * second chance. On a network where QUIC/UDP is throttled that means the
      * user stares at "Connecting" for minutes and then just fails, while Smart
      * mode (which walks a ladder of shorter, hardened attempts) connects in
@@ -64,4 +64,22 @@ internal object ConnectionPlanner {
             ),
         )
     }
+
+    /**
+     * ONE attempt, for a chain that has no Aether hop.
+     *
+     * There is deliberately no ladder here. Every rung of the protocol ladder
+     * exists to vary something about the Aether engine's transport or endpoint
+     * choice, and a Psiphon-or-Tor-only session has neither: those cores do
+     * their own transport selection and their own retrying internally, over
+     * budgets measured in minutes. Retrying them from the outside would just
+     * restart that work from scratch and double the wait.
+     */
+    fun chainOnly(profile: ConnectionProfile): List<AutoCandidate> = listOf(
+        AutoCandidate(
+            profile,
+            VpnTunables.chainBudgetMs(profile.chain),
+            profile.chain.pathLabel(),
+        ),
+    )
 }
