@@ -40,9 +40,9 @@ internal sealed interface DnsRoute {
  * UDP through SOCKS5 UDP ASSOCIATE. Psiphon's local SOCKS5 implements CONNECT
  * only (it carries UDP through its own `udpgw` side channel instead), and tor
  * carries no UDP at all, by design. Point the forwarder straight at either one
- * and the result is the failure mode this codebase already has a comment about
- * in [Diagnostics]: TCP passes every check, DNS never resolves, and the app
- * says "connected" while no site opens.
+ * and the result is the failure mode [Diagnostics] already has a comment about:
+ * TCP passes every check, DNS never resolves, and the app says "connected"
+ * while no site opens.
  *
  * ### What it does
  *
@@ -210,8 +210,9 @@ internal class SocksFront(
             }
         }.getOrElse {
             runCatching {
-                client.getOutputStream().write(errorReply(REP_GENERAL_FAILURE))
-                client.getOutputStream().flush()
+                val out = client.getOutputStream()
+                out.write(errorReply(REP_GENERAL_FAILURE))
+                out.flush()
             }
             return
         }
@@ -222,8 +223,9 @@ internal class SocksFront(
             upOut.flush()
             val greeting = readExact(upIn, 2)
             if (greeting == null || greeting[0] != VERSION || greeting[1] != 0.toByte()) {
-                client.getOutputStream().write(errorReply(REP_GENERAL_FAILURE))
-                client.getOutputStream().flush()
+                val out = client.getOutputStream()
+                out.write(errorReply(REP_GENERAL_FAILURE))
+                out.flush()
                 return
             }
             upOut.write(request)
@@ -246,8 +248,9 @@ internal class SocksFront(
             DatagramSocket(InetSocketAddress(TunnelConfig.SOCKS_HOST, 0))
         }.getOrElse {
             runCatching {
-                client.getOutputStream().write(errorReply(REP_GENERAL_FAILURE))
-                client.getOutputStream().flush()
+                val out = client.getOutputStream()
+                out.write(errorReply(REP_GENERAL_FAILURE))
+                out.flush()
             }
             return
         }
@@ -256,13 +259,17 @@ internal class SocksFront(
             reply[0] = VERSION
             reply[1] = 0
             reply[2] = 0
-            reply[3] = ATYP_IPV4
+            reply[3] = ATYP_IPV4.toByte()
             // 127.0.0.1 - the client is in this app's own sandbox by definition.
-            reply[4] = 127; reply[5] = 0; reply[6] = 0; reply[7] = 1
+            reply[4] = 127
+            reply[5] = 0
+            reply[6] = 0
+            reply[7] = 1
             reply[8] = ((relay.localPort shr 8) and 0xFF).toByte()
             reply[9] = (relay.localPort and 0xFF).toByte()
-            client.getOutputStream().write(reply)
-            client.getOutputStream().flush()
+            val out = client.getOutputStream()
+            out.write(reply)
+            out.flush()
 
             val pump = thread(name = "socks-front-udp", isDaemon = true) { udpLoop(relay) }
             // Park on the control connection: when it ends, the association ends.
@@ -289,26 +296,29 @@ internal class SocksFront(
                 // this, and a fake answer would be worse than a dropped packet.
                 continue
             }
-            val client = InetSocketAddress(packet.address, packet.port)
+            val source = packet.address
+            val sourcePort = packet.port
             runCatching {
-                resolvers.execute { resolveAndReply(relay, client, datagram) }
+                resolvers.execute { resolveAndReply(relay, source, sourcePort, datagram) }
             }
         }
     }
 
     private fun resolveAndReply(
         relay: DatagramSocket,
-        client: InetSocketAddress,
+        clientAddress: InetAddress,
+        clientPort: Int,
         datagram: UdpRequest,
     ) {
-        val answer = when (dns) {
-            is DnsRoute.LocalUdp -> resolveViaLocalUdp(dns, datagram.payload)
-            is DnsRoute.OverSocksTcp -> resolveViaSocksTcp(dns, datagram.payload)
+        val route = dns
+        val answer = when (route) {
+            is DnsRoute.LocalUdp -> resolveViaLocalUdp(route, datagram.payload)
+            is DnsRoute.OverSocksTcp -> resolveViaSocksTcp(route, datagram.payload)
         } ?: return
         // The reply carries the request's own header, i.e. "this came from the
         // address you asked about", which is what the client matches on.
         val out = datagram.header + answer
-        runCatching { relay.send(DatagramPacket(out, out.size, client.address, client.port)) }
+        runCatching { relay.send(DatagramPacket(out, out.size, clientAddress, clientPort)) }
     }
 
     /** tor's DNSPort: one UDP round trip on loopback. */
@@ -391,10 +401,7 @@ internal class SocksFront(
         val bodyStart = when (data[3].toInt() and 0xFF) {
             ATYP_IPV4 -> 10
             ATYP_IPV6 -> 22
-            ATYP_DOMAIN -> {
-                val hostLength = data[4].toInt() and 0xFF
-                5 + hostLength + 2
-            }
+            ATYP_DOMAIN -> 5 + (data[4].toInt() and 0xFF) + 2
             else -> return null
         }
         if (length < bodyStart) return null
@@ -407,13 +414,26 @@ internal class SocksFront(
         )
     }
 
+    /**
+     * Builds a CONNECT request for a resolver entry.
+     *
+     * A numeric literal is encoded as ATYP=IPV4/IPV6 and anything else is sent
+     * as ATYP=DOMAIN for the upstream to resolve. The literal test is a pure
+     * string check that runs BEFORE any InetAddress call, because
+     * `getByName` on a name performs a blocking system DNS lookup - outside the
+     * tunnel, on the DNS path, which is precisely the leak this class exists to
+     * prevent.
+     */
     private fun connectRequest(host: String, port: Int): ByteArray {
-        val literal = runCatching { InetAddress.getByName(host) }.getOrNull()
-            ?.takeIf { host.none { ch -> ch.isLetter() } }
+        val literal = if (host.none { it.isLetter() } || host.contains(':')) {
+            runCatching { InetAddress.getByName(host).address }.getOrNull()
+        } else {
+            null
+        }
         val address: ByteArray
         val atyp: Int
         if (literal != null) {
-            address = literal.address
+            address = literal
             atyp = if (address.size == 4) ATYP_IPV4 else ATYP_IPV6
         } else {
             val encoded = host.toByteArray(Charsets.US_ASCII)
@@ -446,15 +466,19 @@ internal class SocksFront(
         ATYP_IPV4 -> readExact(input, 4)
         ATYP_IPV6 -> readExact(input, 16)
         ATYP_DOMAIN -> {
-            val lengthByte = readExact(input, 1) ?: return null
-            val host = readExact(input, lengthByte[0].toInt() and 0xFF) ?: return null
-            lengthByte + host
+            val lengthByte = readExact(input, 1)
+            if (lengthByte == null) {
+                null
+            } else {
+                val host = readExact(input, lengthByte[0].toInt() and 0xFF)
+                if (host == null) null else lengthByte + host
+            }
         }
         else -> null
     }
 
     private fun errorReply(code: Byte): ByteArray =
-        byteArrayOf(VERSION, code, 0, ATYP_IPV4, 0, 0, 0, 0, 0, 0)
+        byteArrayOf(VERSION, code, 0, ATYP_IPV4.toByte(), 0, 0, 0, 0, 0, 0)
 
     private fun readExact(input: InputStream, size: Int): ByteArray? {
         if (size < 0) return null
@@ -507,9 +531,9 @@ internal class SocksFront(
         }
     }
 
-    private fun describeDns(): String = when (dns) {
-        is DnsRoute.LocalUdp -> "tor DNSPort ${dns.host}:${dns.port}"
-        is DnsRoute.OverSocksTcp -> "DNS over TCP via ${dns.resolvers.joinToString(",")}"
+    private fun describeDns(): String = when (val route = dns) {
+        is DnsRoute.LocalUdp -> "tor DNSPort ${route.host}:${route.port}"
+        is DnsRoute.OverSocksTcp -> "DNS over TCP via ${route.resolvers.joinToString(",")}"
     }
 
     private companion object {

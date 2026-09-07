@@ -42,6 +42,12 @@ internal enum class TunnelHealth {
  * automatically, and MASQUE's in-engine reconnect loop gets room to finish
  * before the app steps in.
  *
+ * CHAIN NOTE: the probe deliberately goes through the chain ENTRY port, so
+ * "healthy" means the whole stack carries traffic end to end. A tunnel whose
+ * Tor hop has died is not healthy just because the Aether hop under it still is.
+ * The budget above is also why a slow chain is not mistaken for a dead one: Tor
+ * adds hundreds of milliseconds per hop, and three 8 s attempts absorb that.
+ *
  * One instance per session; the failure streak is its only state, which is why
  * it no longer lives on the service as a field that outlived the session that
  * set it.
@@ -62,7 +68,7 @@ internal class TunnelWatchdog {
         if (++failedChecks < VpnTunables.WATCHDOG_FAIL_CYCLES) return TunnelHealth.DEGRADED
         DiagnosticsLog.w(
             TAG,
-            "Watchdog: tunnel dead across $failedChecks consecutive checks -- restarting the engine.",
+            "Watchdog: tunnel dead across $failedChecks consecutive checks -- restarting the cores.",
         )
         failedChecks = 0
         return TunnelHealth.DEAD
@@ -78,21 +84,21 @@ internal class TunnelWatchdog {
     }
 
     /**
-     * Single TCP connect to [target] ("host:port") THROUGH the engine's local
-     * SOCKS5 listener.
+     * Single TCP connect to [target] ("host:port") THROUGH the chain entry's
+     * local SOCKS5 listener.
      *
      * DISCONNECT-LATENCY FIX: this is a BLOCKING `Socket.connect` with an 8 s
      * timeout, and coroutine cancellation cannot interrupt a blocking call. A
      * disconnect tapped while the watchdog happened to be mid-probe therefore
-     * sat on "Disconnecting…" until the probe timed out on its own — the exact
-     * same defect [studio.cluvex.aether.core.AetherProcess.awaitExit] already
+     * sat on "Disconnecting..." until the probe timed out on its own - the exact
+     * same defect [studio.cluvex.aether.core.NativeChild.awaitExit] already
      * fixes, so it gets the exact same cure: `runInterruptible` maps
      * cancellation onto a real thread interrupt, so the connect aborts
      * immediately.
      *
      * CancellationException is deliberately NOT swallowed: a cancelled
      * supervisor must unwind, not report "tunnel dead" and trigger a restart of
-     * an engine that is already being torn down.
+     * cores that are already being torn down.
      */
     private suspend fun probeOnce(target: String): Boolean =
         runInterruptible(Dispatchers.IO) {
@@ -101,7 +107,7 @@ internal class TunnelWatchdog {
                 val port = target.substringAfter(':').toInt()
                 val proxy = Proxy(
                     Proxy.Type.SOCKS,
-                    InetSocketAddress(VpnTunables.SOCKS_HOST, VpnTunables.SOCKS_PORT),
+                    InetSocketAddress(VpnTunables.SOCKS_HOST, VpnTunables.entryPort),
                 )
                 Socket(proxy).use { it.connect(InetSocketAddress(host, port), VpnTunables.PROBE_TIMEOUT_MS) }
                 true
