@@ -1854,7 +1854,7 @@ mod obfuscation_tests {
     }
 
     #[test]
-    fn_a_permitted_cached_profile_is_still_reused() {
+    fn a_permitted_cached_profile_is_still_reused() {
         let choices = candidates("balanced", true);
         let (name, config) = wg_cached_candidate("aggressive", &choices);
         assert_eq!(name, "aggressive");
