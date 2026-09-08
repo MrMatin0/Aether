@@ -2,7 +2,6 @@ package studio.cluvex.aether.vpn.session
 
 import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.model.ConnectionProfile
-import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 
 /**
@@ -16,27 +15,18 @@ import studio.cluvex.aether.model.Protocol
 internal object ConnectionPlanner {
 
     /**
-     * Two-pass plan for a protocol the user picked by hand (MASQUE, WireGuard
-     * or Gool).
+     * Plan for a protocol the user picked by hand (MASQUE, WireGuard or Gool).
      *
-     * 1.2.2 "MASQUE hangs forever" FIX: a hand-picked protocol used to get ONE
-     * attempt with the full scan budget of the selected scan mode - with no
-     * second chance. On a network where QUIC/UDP is throttled that means the
-     * user stares at "Connecting" for minutes and then just fails, while Smart
-     * mode (which walks a ladder of shorter, hardened attempts) connects in
-     * seconds. So the chosen protocol now gets:
-     *   1. a first pass exactly as configured, on a capped budget, and
-     *   2. if that fails, the SAME protocol again with anti-DPI hardening
-     *      (obfuscation on, plus HTTP/2 + TLS fragmentation + ECH for MASQUE)
-     *      on the full budget.
-     * The protocol the user chose is never swapped for another one.
+     * MASQUE may retry over HTTP/2 with fragmentation and ECH on the full
+     * budget when its first, capped attempt fails. The selected obfuscation
+     * profile is preserved on EVERY attempt: OFF must never become FIREWALL
+     * just because an endpoint did not answer. A protocol with no distinct
+     * fallback gets one full-budget attempt.
      */
     fun manualProtocol(profile: ConnectionProfile): List<AutoCandidate> {
         val fullBudget = profile.connectTimeoutMs()
-        val hardenedNoize = if (profile.noize == Noize.OFF) Noize.FIREWALL else profile.noize
         val masque = profile.protocol == Protocol.MASQUE
         val hardened = profile.copy(
-            noize = hardenedNoize,
             masqueHttp2 = profile.masqueHttp2 || masque,
             fragment = profile.fragment || masque,
             ech = profile.ech || masque,
@@ -59,7 +49,7 @@ internal object ConnectionPlanner {
             AutoCandidate(
                 hardened,
                 fullBudget,
-                "${profile.protocol.name} · noize=${hardenedNoize.name.lowercase()}" +
+                "${profile.protocol.name} · noize=${hardened.noize.name.lowercase()}" +
                     (if (masque) " · h2 · fragment · ech" else "") + " (anti-DPI pass)",
             ),
         )
