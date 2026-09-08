@@ -42,7 +42,7 @@ internal object MiniHttp {
         limitBytes: Int = ProbeDefaults.MAX_HTTP_RESPONSE_BYTES,
     ): Response {
         socket.getOutputStream().apply {
-            write(request(host, path).toByteArray(Charsets.US_ASCII))
+            write(requestFor(host, path).toByteArray(Charsets.US_ASCII))
             flush()
         }
         val raw = readBounded(socket.getInputStream(), limitBytes)
@@ -50,7 +50,7 @@ internal object MiniHttp {
         return Response(statusOf(text), text.substringAfter(HEADER_END, ""), raw.size)
     }
 
-    private fun request(host: String, path: String): String = buildString {
+    private fun requestFor(host: String, path: String): String = buildString {
         append("GET ").append(path).append(" HTTP/1.1").append(CRLF)
         append("Host: ").append(host).append(CRLF)
         append("User-Agent: ").append(USER_AGENT).append(CRLF)
@@ -59,15 +59,15 @@ internal object MiniHttp {
     }
 
     /**
-     * Reads at most [limit] bytes, stopping at the declared end of the body,
-     * at EOF, or at a read timeout - whichever comes first. Anything the peer
-     * still wants to send is left unread; the caller closes the socket right
-     * after, which tears the connection down.
+     * Reads at most [limit] bytes, stopping at the declared end of the body, at
+     * EOF, or at a read timeout - whichever comes first. Anything the peer still
+     * wants to send is left unread; the caller closes the socket right after,
+     * which tears the connection down.
      */
     private fun readBounded(input: InputStream, limit: Int): ByteArray {
         val out = ByteArrayOutputStream(minOf(limit, CHUNK_BYTES))
         val chunk = ByteArray(CHUNK_BYTES)
-        var expectedTotal = -1
+        var total = -1
         while (out.size() < limit) {
             val want = minOf(chunk.size, limit - out.size())
             val read = try {
@@ -77,19 +77,19 @@ internal object MiniHttp {
             }
             if (read < 0) break
             out.write(chunk, 0, read)
-            if (expectedTotal < 0) expectedTotal = expectedTotal(out.toByteArray())
-            if (expectedTotal in 1..out.size()) break
+            if (total < 0) total = declaredTotalBytes(out.toByteArray())
+            if (total in 1..out.size()) break
         }
         return out.toByteArray()
     }
 
     /**
-     * Total size (headers + body) once the header block AND a Content-Length
-     * are both visible, or -1 while that is still unknown. The length is read
-     * from the HEADER block only, so a body that mentions the header name
+     * Total size (headers + body) once the header block AND a Content-Length are
+     * both visible, or -1 while that is still unknown. The length is read from
+     * the HEADER block only, so a body that happens to mention the header name
      * cannot shorten the read.
      */
-    private fun expectedTotal(buffered: ByteArray): Int {
+    private fun declaredTotalBytes(buffered: ByteArray): Int {
         // Header bytes are ASCII by definition; a byte-preserving charset keeps
         // offsets equal to indices even when the body is not yet complete.
         val text = String(buffered, Charsets.ISO_8859_1)

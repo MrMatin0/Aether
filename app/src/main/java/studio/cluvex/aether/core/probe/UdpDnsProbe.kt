@@ -44,8 +44,8 @@ internal object UdpDnsProbe {
             socket.soTimeout = timeoutMs
             val resolver = InetAddress.getByName(server)
             socket.connect(InetSocketAddress(resolver, ProbeDefaults.DNS_PORT))
-            val query = query()
-            socket.send(DatagramPacket(query, query.size, resolver, ProbeDefaults.DNS_PORT))
+            val request = query()
+            socket.send(DatagramPacket(request, request.size, resolver, ProbeDefaults.DNS_PORT))
             val buffer = ByteArray(REPLY_BUFFER_BYTES)
             val reply = DatagramPacket(buffer, buffer.size)
             socket.receive(reply)

@@ -117,7 +117,7 @@ internal object StrategyLadder {
         return AutoCandidate(
             profile = profile,
             timeoutMs = profile.connectTimeoutMs(),
-            label = label(profile, if (keepUserEndpoint) "" else narrowedRanges),
+            label = describe(profile, if (keepUserEndpoint) "" else narrowedRanges),
         )
     }
 
@@ -135,14 +135,14 @@ internal object StrategyLadder {
         if (!keepUserEndpoint) {
             profile = profile.copy(endpointMode = EndpointMode.AUTO, manualRange = user.manualRange)
         }
-        val label = buildString {
-            append(label(profile, ""))
-            // Only true when we are the ones choosing the endpoint; a pinned
-            // peer or range is left exactly as the user set it.
+        val description = buildString {
+            append(describe(profile, ""))
+            // Only true when we are the ones choosing the endpoint; a pinned peer
+            // or range is left exactly as the user set it.
             if (!keepUserEndpoint) append(" · full built-in ranges")
             append(" (last resort)")
         }
-        return AutoCandidate(profile, profile.connectTimeoutMs(), label)
+        return AutoCandidate(profile, profile.connectTimeoutMs(), description)
     }
 
     /** OFF is a veto, not the weakest level to upgrade automatically. */
@@ -154,7 +154,8 @@ internal object StrategyLadder {
 
     private fun strength(noize: Noize): Int = STRENGTH[noize] ?: noize.ordinal
 
-    private fun label(profile: ConnectionProfile, ranges: String): String = buildString {
+    /** The one-line summary the log prints for a candidate. */
+    private fun describe(profile: ConnectionProfile, ranges: String): String = buildString {
         append(profile.protocol.name)
         append(" · noize=").append(profile.noize.name.lowercase())
         if (profile.masqueHttp2) append(" · h2")
