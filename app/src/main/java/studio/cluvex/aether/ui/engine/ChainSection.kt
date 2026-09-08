@@ -2,6 +2,7 @@ package studio.cluvex.aether.ui.engine
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -354,9 +355,12 @@ private fun CostBadge(mode: ChainMode) {
  * So the list IS the input. Every row carries its flag (derived from the code,
  * see [PsiphonRegions]), Automatic is the first row and the default, and there is
  * no way to enter a value the core will silently ignore.
+ *
+ * A [ColumnScope] receiver because this is a vertical run of four rows - label,
+ * picker, hint, fallback notice - and not a single widget.
  */
 @Composable
-private fun PsiphonExitField(
+private fun ColumnScope.PsiphonExitField(
     value: String,
     onValueChange: (String) -> Unit,
     enabled: Boolean,
