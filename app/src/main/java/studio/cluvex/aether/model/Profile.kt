@@ -114,8 +114,22 @@ data class ConnectionProfile(
 
     // ---- Added in 1.2.0 (engine v1.3.0 feature parity) ----
 
-    /** Anti-DPI obfuscation ("Amnezia"). */
-    val noize: Noize = Noize.OFF,
+    /**
+     * Anti-DPI obfuscation ("Amnezia").
+     *
+     * THE DEFAULT IS ON, and deliberately so. Until the engine was told to
+     * honour an explicit OFF, an OFF profile emitted no `--noize` at all and
+     * the engine fell back to its own defaults - firewall for MASQUE, balanced
+     * for WireGuard. So a default install has always connected WITH junk
+     * packets and fake handshake signatures, which is what carries a MASQUE
+     * scan through a filtered network. Now that OFF really means "no
+     * obfuscation", shipping OFF as the default would quietly take that away
+     * from every user who never opened this setting. FIREWALL maps to exactly
+     * those two native defaults, so the out-of-the-box behaviour is unchanged.
+     *
+     * A user who picks OFF still gets OFF, on every rung of every ladder.
+     */
+    val noize: Noize = Noize.FIREWALL,
     /** Endpoint selection strategy. */
     val endpointMode: EndpointMode = EndpointMode.AUTO,
     /** `ip:port` used when [endpointMode] is MANUAL_PEER. */
@@ -307,6 +321,8 @@ data class ConnectionProfile(
         // OFF is an explicit choice, not the absence of an option: the native
         // defaults are firewall (MASQUE) and balanced (WireGuard). Always send
         // the value so scans, verification and tunnels see the same setting.
+        // Which is also why [noize] defaults to FIREWALL rather than OFF: those
+        // native defaults are what a default install has always connected with.
         args += "--noize"
         args += noize.name.lowercase()
 

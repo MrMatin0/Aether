@@ -32,6 +32,13 @@ class ProfileStore(private val context: Context) {
         val share = booleanPreferencesKey("share")
         // Added in 1.2.0
         val noize = stringPreferencesKey("noize")
+        /**
+         * True once this profile has been written by a build whose engine
+         * honours an explicit OFF. See the obfuscation migration in [profile]:
+         * without it, an OFF stored by an older build cannot be told apart
+         * from a deliberate "run without obfuscation".
+         */
+        val noizeChosen = booleanPreferencesKey("noizeChosen")
         val endpoint = stringPreferencesKey("endpoint")
         val peer = stringPreferencesKey("peer")
         val range = stringPreferencesKey("range")
@@ -89,6 +96,24 @@ class ProfileStore(private val context: Context) {
 
     val profile: Flow<ConnectionProfile> = context.dataStore.data.map { prefs ->
         val d = ConnectionProfile()
+        // MIGRATION (obfuscation): an OFF stored by an older build is NOT a
+        // choice to run bare. Back then OFF meant "emit no --noize", and the
+        // engine then applied its own defaults (firewall for MASQUE, balanced
+        // for WireGuard) - so that profile has always connected WITH
+        // obfuscation. Now that the engine honours OFF verbatim, reading such a
+        // value literally would silently strip the junk packets a filtered
+        // network needs, and a MASQUE scan on it simply finds nothing.
+        //
+        // So a stored OFF is read as the default until this profile is written
+        // by a build that honours OFF ([Keys.noizeChosen], set by [save]).
+        // After that, OFF is respected exactly as chosen.
+        val storedNoize = prefs[Keys.noize]?.let { runCatching { Noize.valueOf(it) }.getOrNull() }
+        val noizeChosen = prefs[Keys.noizeChosen] ?: false
+        val noize = when {
+            storedNoize == null -> d.noize
+            storedNoize == Noize.OFF && !noizeChosen -> d.noize
+            else -> storedNoize
+        }
         ConnectionProfile(
             protocol = prefs[Keys.protocol]
                 ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO,
@@ -101,8 +126,7 @@ class ProfileStore(private val context: Context) {
             quickReconnect = prefs[Keys.quick] ?: true,
             masqueHttp2 = prefs[Keys.h2] ?: false,
             lanShare = prefs[Keys.share] ?: false,
-            noize = prefs[Keys.noize]
-                ?.let { runCatching { Noize.valueOf(it) }.getOrNull() } ?: Noize.OFF,
+            noize = noize,
             endpointMode = prefs[Keys.endpoint]
                 ?.let { runCatching { EndpointMode.valueOf(it) }.getOrNull() } ?: EndpointMode.AUTO,
             manualPeer = prefs[Keys.peer] ?: "",
@@ -160,6 +184,9 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.h2] = profile.masqueHttp2
             prefs[Keys.share] = profile.lanShare
             prefs[Keys.noize] = profile.noize.name
+            // From here on this profile's obfuscation value is taken literally,
+            // OFF included: it was written by a build that honours it.
+            prefs[Keys.noizeChosen] = true
             prefs[Keys.endpoint] = profile.endpointMode.name
             prefs[Keys.peer] = profile.manualPeer
             prefs[Keys.range] = profile.manualRange
