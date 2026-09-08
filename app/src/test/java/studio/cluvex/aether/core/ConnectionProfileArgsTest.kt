@@ -6,6 +6,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.Noize
+import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.TeamAuth
 
@@ -19,6 +21,40 @@ import studio.cluvex.aether.model.TeamAuth
  * assumed.
  */
 class ConnectionProfileArgsTest {
+
+    @Test
+    fun everyProtocolAndEndpointModeExplicitlyPassesEveryNoizeProfile() {
+        for (protocol in Protocol.entries) {
+            for (endpoint in EndpointMode.entries) {
+                for (noize in Noize.entries) {
+                    for (quick in listOf(false, true)) {
+                        val profile = ConnectionProfile(
+                            protocol = protocol,
+                            endpointMode = endpoint,
+                            manualPeer = "162.159.197.1:443",
+                            manualRange = "162.159.197.0/24",
+                            noize = noize,
+                            quickReconnect = quick,
+                        )
+                        val args = profile.toArgs()
+                        assertEquals(1, args.count { it == "--noize" }, "$protocol/$endpoint/$noize")
+                        assertEquals(noize.name.lowercase(), args[args.indexOf("--noize") + 1])
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun offSurvivesTheIntentCodecAndStillReachesTheEngine() {
+        for (protocol in Protocol.entries) {
+            val profile = ConnectionProfile(protocol = protocol, noize = Noize.OFF)
+            val decoded = ProfileCodec.decode(ProfileCodec.encode(profile))
+            assertEquals(Noize.OFF, decoded.noize)
+            assertTrue(decoded.toArgs().windowed(2).contains(listOf("--noize", "off")))
+        }
+        assertTrue(ConnectionProfile().toArgs().windowed(2).contains(listOf("--noize", "off")))
+    }
 
     @Test
     fun accessSecretsGoToTheEnvironmentAndNeverToArgv() {

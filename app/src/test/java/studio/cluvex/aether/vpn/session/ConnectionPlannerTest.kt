@@ -18,7 +18,7 @@ import studio.cluvex.aether.model.Protocol
  */
 class ConnectionPlannerTest {
 
-    /** The 1.2.2 "MASQUE hangs forever" fix, pinned. */
+    /** The transport fallback must not override the obfuscation setting. */
     @Test
     fun `masque gets a capped first pass and a hardened second one`() {
         val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF)
@@ -33,10 +33,36 @@ class ConnectionPlannerTest {
         assertEquals(profile.connectTimeoutMs(), plan[1].timeoutMs)
 
         val hardened = plan[1].profile
-        assertEquals(Noize.FIREWALL, hardened.noize)
+        assertEquals(Noize.OFF, hardened.noize)
+        assertTrue(plan[1].label.contains("noize=off"))
+        assertTrue(hardened.toArgs().windowed(2).contains(listOf("--noize", "off")))
         assertTrue(hardened.masqueHttp2, "the anti-DPI pass turns HTTP/2 on for MASQUE")
         assertTrue(hardened.fragment, "the anti-DPI pass fragments the TLS handshake")
         assertTrue(hardened.ech, "the anti-DPI pass asks for ECH")
+    }
+
+    @Test
+    fun `every manual attempt preserves the selected obfuscation profile`() {
+        for (protocol in Protocol.entries.filter { it != Protocol.AUTO }) {
+            for (noize in Noize.entries) {
+                val profile = ConnectionProfile(protocol = protocol, noize = noize)
+                ConnectionPlanner.manualProtocol(profile).forEach {
+                    assertEquals(noize, it.profile.noize, "$protocol/$noize")
+                    assertTrue(it.profile.toArgs().windowed(2).contains(listOf("--noize", noize.name.lowercase())))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `wireguard and gool with off get one full budget pass rather than forced noise`() {
+        for (protocol in listOf(Protocol.WIREGUARD, Protocol.GOOL)) {
+            val profile = ConnectionProfile(protocol = protocol, noize = Noize.OFF)
+            val plan = ConnectionPlanner.manualProtocol(profile)
+            assertEquals(1, plan.size)
+            assertEquals(profile, plan.single().profile)
+            assertEquals(profile.connectTimeoutMs(), plan.single().timeoutMs)
+        }
     }
 
     /** The protocol the user chose is never swapped for another one. */

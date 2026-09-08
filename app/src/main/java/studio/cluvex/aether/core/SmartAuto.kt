@@ -33,8 +33,8 @@ import javax.net.ssl.SSLSocketFactory
  *  - UDP_THROTTLED : TLS works but UDP gets no answers — the operator drops or
  *                    throttles UDP, which starves WireGuard/QUIC. TCP-shaped
  *                    transports (MASQUE over HTTP/2) are the way in.
- *  - HOSTILE       : both are broken — bring everything: TCP transport, heavy
- *                    obfuscation, fragmentation and ECH.
+ *  - HOSTILE       : both are broken — prefer TCP, fragmentation and ECH;
+ *                    stronger noize only when the user has enabled obfuscation.
  */
 enum class DpiClass { OPEN, SNI_FILTERING, UDP_THROTTLED, HOSTILE }
 
@@ -78,7 +78,8 @@ data class AutoCandidate(
  *  2. CLASSIFY the DPI behaviour into a [DpiClass].
  *  3. PLAN ([buildPlan]) — build an ordered ladder of concrete strategies
  *     (protocol + noize + fragment/ECH + the ranges that actually answered),
- *     most-likely-to-succeed first, plus a full-range last resort.
+ *     most-likely-to-succeed first, plus a full-range last resort. OFF remains
+ *     OFF throughout the ladder, including on Iranian cellular networks.
  *  4. The VpnService then walks the ladder: each candidate gets a real connect
  *     attempt gated by the 4-step self-test; the first one that passes wins.
  *
@@ -157,10 +158,13 @@ object SmartAuto {
             frag: Boolean = false,
             ech: Boolean = false,
         ): AutoCandidate {
-            // Respect a stronger user-chosen obfuscation; bias bare profiles to
-            // LIGHT noize on Iranian cellular where fingerprinting is routine.
-            var mergedNoize = if (user.noize.ordinal >= noize.ordinal) user.noize else noize
-            if (mergedNoize == Noize.OFF && fp.iranCellular) mergedNoize = Noize.LIGHT
+            // OFF is a veto, not the weakest level to upgrade automatically.
+            // Keep the existing strength selection for users who opted in.
+            val mergedNoize = when {
+                user.noize == Noize.OFF -> Noize.OFF
+                user.noize.ordinal >= noize.ordinal -> user.noize
+                else -> noize
+            }
             var p = user.copy(
                 protocol = proto,
                 noize = mergedNoize,
@@ -272,10 +276,9 @@ object SmartAuto {
 
     /**
      * Completes a full TLS handshake to 1.1.1.1:443 with the SNI
-     * "www.cloudflare.com" (no payload is sent). SNI-based DPI middleboxes
-     * kill exactly this step, so a failure here — while plain TCP connects
-     * fine — is a strong SNI-filtering signal. Hostname verification is
-     * enforced, same as the geolocation probes.
+     * "www.cloudflare.com" (with hostname verification, no payload sent).
+     * SNI-based DPI middleboxes kill exactly this step, so a failure here
+     * while other TLS succeeds is a useful filtering signal.
      */
     private fun tlsSniProbe(timeoutMs: Int = TLS_PROBE_TIMEOUT_MS): Boolean = runCatching {
         Socket().use { raw ->

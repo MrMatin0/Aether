@@ -304,11 +304,11 @@ data class ConnectionProfile(
 
         args += if (quickReconnect) "--quick-reconnect" else "--no-quick-reconnect"
 
-        // Anti-DPI obfuscation.
-        if (noize != Noize.OFF) {
-            args += "--noize"
-            args += noize.name.lowercase()
-        }
+        // OFF is an explicit choice, not the absence of an option: the native
+        // defaults are firewall (MASQUE) and balanced (WireGuard). Always send
+        // the value so scans, verification and tunnels see the same setting.
+        args += "--noize"
+        args += noize.name.lowercase()
 
         // Manual endpoint pins one gateway and skips scanning entirely.
         if (hasManualPeer) {
