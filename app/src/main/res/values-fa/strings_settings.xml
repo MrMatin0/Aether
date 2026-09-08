@@ -14,7 +14,7 @@
     <string name="hub_locked_row">تا وقتی وصل هستید قفل است</string>
 
     <!-- مقصدهایی که صفحهٔ خودشان را گرفتند -->
-    <string name="section_chain_note">گام‌های اضافی، برای شبکه‌هایی که یک تونل کافی نیست</string>
+    <string name="hub_chain_sub">گام‌های اضافی، برای شبکه‌هایی که یک تونل کافی نیست</string>
     <string name="hub_automation_sub">چه زمانی Aether بی‌آنکه بخواهید وصل شود</string>
     <string name="hub_history_sub">این دستگاه چه چیزی از نشست‌های شما ثبت کرده است</string>
 
