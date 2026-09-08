@@ -67,9 +67,60 @@ class UiRedesignTest {
         LogLevel.entries.forEach { assertEquals(it == LogLevel.ERROR, matchesLogFilter(it, LogFilter.ERROR)) }
     }
 
-    @Test fun engineSectionsHaveUniqueLabelsAndSurviveEnumRestoration() {
-        assertEquals(7, EnginePage.entries.size)
-        assertEquals(EnginePage.entries.size, EnginePage.entries.map { it.title }.toSet().size)
-        EnginePage.entries.forEach { assertEquals(it, EnginePage.valueOf(it.name)) }
+    /**
+     * A destination in no group is unreachable; a destination in two appears
+     * twice in the index. Both are navigation bugs, not styling ones.
+     */
+    @Test fun everySettingsDestinationIsIndexedExactlyOnce() {
+        val indexed = SettingsGroup.entries.flatMap { it.pages }
+        assertEquals(SettingsPage.entries.size, indexed.size)
+        assertEquals(SettingsPage.entries.toSet(), indexed.toSet())
+    }
+
+    @Test fun everySettingsDestinationSurvivesEnumRestoration() {
+        SettingsPage.entries.forEach { assertEquals(it, SettingsPage.valueOf(it.name)) }
+    }
+
+    /** Only the pages that write the profile may be held back mid-session. */
+    @Test fun connectionOnlyLocksTheDestinationsThatWriteTheProfile() {
+        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.TRANSPORT,
+            SettingsPage.ROUTING, SettingsPage.SECURITY, SettingsPage.ORGANIZATION,
+            SettingsPage.TUNING, SettingsPage.RESET, SettingsPage.SETUPS)
+            .forEach { assertTrue(it.editsProfile, "${it.name} should lock while connected") }
+        listOf(SettingsPage.SHARING, SettingsPage.APPEARANCE, SettingsPage.AUTOMATION,
+            SettingsPage.HISTORY, SettingsPage.ABOUT)
+            .forEach { assertFalse(it.editsProfile, "${it.name} must stay editable while connected") }
+        // Saved setups words the lock itself, so the page must not repeat it.
+        assertFalse(SettingsPage.SETUPS.showsLockNotice)
+        assertTrue(SettingsPage.CONNECTION.showsLockNotice)
+    }
+
+    @Test fun blankQueryMatchesEveryDestination() {
+        assertTrue(matchesSettingsQuery("", listOf("Routing")))
+        assertTrue(matchesSettingsQuery("   ", listOf("Routing")))
+    }
+
+    @Test fun everyTermHasToLandSomewhereInTheEntry() {
+        val entry = listOf("Security & stability", "Kill switch \u00B7 IPv6 guard")
+        assertTrue(matchesSettingsQuery("kill switch", entry))
+        assertTrue(matchesSettingsQuery("  IPV6  ", entry))
+        assertTrue(matchesSettingsQuery("guard stability", entry))
+        assertFalse(matchesSettingsQuery("kill mtu", entry))
+    }
+
+    /**
+     * Persian typed on a phone keyboard is not byte-identical to Persian in a
+     * resource file: Arabic yeh and kaf are everywhere, and a compound word
+     * carries a zero-width non-joiner nobody can type in a search box.
+     */
+    @Test fun persianSearchToleratesArabicLettersAndZeroWidthJoiners() {
+        assertTrue(matchesSettingsQuery("\u0645\u0633\u06cc\u0631\u06cc\u0627\u0628\u06cc", listOf("\u0645\u0633\u064a\u0631\u064a\u0627\u0628\u064a")))
+        assertTrue(matchesSettingsQuery("\u06a9\u0644\u06cc\u062f", listOf("\u0643\u0644\u064a\u062f \u0642\u0637\u0639")))
+        assertTrue(matchesSettingsQuery("\u0632\u0645\u0627\u0646 \u0628\u0646\u062f\u06cc", listOf("\u0632\u0645\u0627\u0646\u200c\u0628\u0646\u062f\u06cc")))
+        assertFalse(matchesSettingsQuery("\u067e\u0631\u0627\u06a9\u0633\u06cc", listOf("\u0645\u0633\u06cc\u0631\u06cc\u0627\u0628\u06cc")))
+    }
+
+    @Test fun normalizationCollapsesWhitespaceAndCase() {
+        assertEquals("kill switch", normalizeSettingsText("  Kill\tSwitch "))
     }
 }

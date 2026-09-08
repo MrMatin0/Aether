@@ -111,10 +111,13 @@ fun HomeScreen(
                             val page = route.page
                             when {
                                 page != null -> SettingsPageBody(page, state, profile, onProfileChange, editable)
-                                route.tab == HomeTab.SETTINGS -> SettingsHub(!editable, { route = route.open(it) }, scrollState = settingsScroll)
+                                route.tab == HomeTab.SETTINGS -> SettingsHub(!editable, profile,
+                                    { route = route.open(it) }, scrollState = settingsScroll)
                                 route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(diagnosticsScroll)
                                 else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
-                                    onOpenEngine = { route = route.open(SettingsPage.ENGINE) },
+                                    // Straight to the page that owns protocol and scan mode,
+                                    // not to a hub the user then has to read.
+                                    onOpenEngine = { route = route.open(SettingsPage.CONNECTION) },
                                     onOpenDiagnostics = { route = route.select(HomeTab.DIAGNOSTICS) })
                             }
                         }
@@ -128,7 +131,7 @@ fun HomeScreen(
                             } else TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                                 Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text(stringResource(R.string.nav_connection) + " · " + stringResource(connectionStatusLabel(state)))
+                                Text(stringResource(R.string.nav_connection) + " \u00B7 " + stringResource(connectionStatusLabel(state)))
                             }
                             if (!rail) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
                                 windowInsets = WindowInsets(0, 0, 0, 0)) {
@@ -154,8 +157,13 @@ private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
             Spacer(Modifier.width(8.dp))
         }
         Column(Modifier.weight(1f)) {
-            if (route.tab != HomeTab.HOME) Text(stringResource(R.string.app_name), style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary)
+            // Inside a settings destination the eyebrow names the section it came
+            // from, so a page called "Transport" is not floating on its own.
+            if (route.tab != HomeTab.HOME) Text(
+                stringResource(if (route.page != null) R.string.nav_settings else R.string.app_name),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
             Text(route.page?.let { settingsPageTitle(it) } ?: stringResource(if (route.tab == HomeTab.HOME) R.string.app_name else tabLabel(route.tab)),
                 style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
         }
