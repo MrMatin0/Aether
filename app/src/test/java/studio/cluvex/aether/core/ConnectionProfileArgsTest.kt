@@ -53,7 +53,26 @@ class ConnectionProfileArgsTest {
             assertEquals(Noize.OFF, decoded.noize)
             assertTrue(decoded.toArgs().windowed(2).contains(listOf("--noize", "off")))
         }
-        assertTrue(ConnectionProfile().toArgs().windowed(2).contains(listOf("--noize", "off")))
+    }
+
+    /**
+     * The DEFAULT profile must still ask for obfuscation.
+     *
+     * Before the engine honoured an explicit OFF, a default profile emitted no
+     * `--noize` at all and the engine applied its own defaults (firewall for
+     * MASQUE, balanced for WireGuard) - so out of the box this app has always
+     * connected WITH junk packets, which is what carries a MASQUE scan through
+     * a filtered network. Now that OFF is passed through verbatim, a default of
+     * OFF would quietly remove it. FIREWALL maps to those same two native
+     * defaults, so the shipped behaviour is unchanged.
+     */
+    @Test
+    fun theDefaultProfileStillAsksTheEngineForObfuscation() {
+        val default = ConnectionProfile()
+        assertEquals(Noize.FIREWALL, default.noize)
+        val args = default.toArgs()
+        assertTrue(args.windowed(2).contains(listOf("--noize", "firewall")))
+        assertFalse(args.windowed(2).contains(listOf("--noize", "off")))
     }
 
     @Test
