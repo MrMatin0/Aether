@@ -36,8 +36,8 @@ object CoreAvailability {
      * The cores and data files this build ships.
      *
      * Deliberately a plain data class with no Context in it: every decision the
-     * UI and the session make from it is then a pure function of these four
-     * booleans, and testable as such.
+     * UI and the session make from it is then a pure function of these booleans,
+     * and testable as such.
      */
     data class Snapshot(
         /** `libpsiphon.so` is in the APK for this device's ABI. */
@@ -46,8 +46,10 @@ object CoreAvailability {
         val torBinary: Boolean,
         /**
          * A Psiphon client config was bundled at build time
-         * (`assets/psiphon.config`). Not a credential and not required: the user
-         * can paste one in Settings instead. See docs/CHAINING.md.
+         * (`assets/psiphon.config`). NOT required for anything any more:
+         * [PsiphonCore] carries its own working config, and this only records
+         * whether the build chose to override it. Kept because "which config is
+         * this session actually using" is a real diagnostics question.
          */
         val psiphonConfigBundled: Boolean,
         /**
@@ -56,8 +58,29 @@ object CoreAvailability {
          * setting has to be disabled rather than pretend to work.
          */
         val torGeoipBundled: Boolean,
+        /**
+         * The Psiphon bootstrap server list was bundled
+         * (`assets/psiphon/server_entries.txt`).
+         *
+         * Appended last, with a default, on purpose: this is a data class other
+         * code constructs, and inserting a field in the middle of the parameter
+         * list would silently re-bind positional call sites.
+         *
+         * This is now the ONLY payload fact that can stop Psiphon from working,
+         * which is why the Chain page reports it directly instead of leaving the
+         * user to discover it from a three-minute connect attempt.
+         */
+        val psiphonServerList: Boolean = false,
     ) {
-        /** The Aether engine is mandatory, so it is available by construction. */
+        /**
+         * The Aether engine is mandatory, so it is available by construction.
+         *
+         * Deliberately binary-only for Psiphon: a build with the core but no
+         * bootstrap list is a DIFFERENT problem from a build with no core, and
+         * reporting it as "no Psiphon core" would send whoever reads it to the
+         * wrong build step. [psiphonServerList] carries that case, and ChainStack
+         * fails with its own reason.
+         */
         fun has(hop: Hop): Boolean = when (hop) {
             Hop.AETHER -> true
             Hop.PSIPHON -> psiphonBinary
@@ -87,10 +110,12 @@ object CoreAvailability {
             torBinary = hasBinary(nativeDir, TorCore.BINARY),
             psiphonConfigBundled = hasAsset(context, PsiphonCore.ASSET_CONFIG),
             torGeoipBundled = hasAsset(context, "${TorCore.ASSET_DIR}/geoip"),
+            psiphonServerList = hasAsset(context, PsiphonCore.ASSET_SERVER_LIST),
         )
         DiagnosticsLog.i(
             TAG,
             "Build payload: psiphon=${snapshot.psiphonBinary} tor=${snapshot.torBinary} " +
+                "psiphonServers=${snapshot.psiphonServerList} " +
                 "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled}",
         )
         return snapshot
