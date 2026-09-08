@@ -32,13 +32,13 @@
     <string name="chain_tor_over_all_desc">هر سه، روی هم. کندترین حالت برنامه و آخرین چیزی که می‌ماند برای امتحان کردن.</string>
 
     <!-- ========================================================= Psiphon == -->
-    <string name="psiphon_region_label">کشور خروج سایفون</string>
-    <string name="psiphon_region_hint">مثلاً NL</string>
-    <string name="psiphon_region_help">کد دو حرفی کشور. خالی بگذارید تا سایفون سریع‌ترین سرورش را انتخاب کند؛ معمولاً همین درست است.</string>
+    <string name="psiphon_ready">سایفون آماده است. چیزی برای تنظیم کردن ندارید.</string>
+    <string name="psiphon_serverlist_missing">این نسخه لیست سرورهای سایفون را ندارد، پس سایفون اجرا نمی‌شود. اسکریپت scripts/fetch-psiphon-serverlist.sh را اجرا کنید و دوباره بیلد بگیرید.</string>
 
-    <string name="psiphon_config_label">کانفیگ سایفون (JSON)</string>
-    <string name="psiphon_config_hint">{\"PropagationChannelId\": …, \"SponsorId\": …}</string>
-    <string name="psiphon_config_help">این فایل را شبکه سایفون صادر می‌کند و همراه برنامه نمی‌آید. اگر بیلد شما آن را دارد، خالی بگذارید. راهنما: docs/CHAINING.md</string>
+    <string name="psiphon_region_label">کشور خروج سایفون</string>
+    <string name="psiphon_region_auto">خودکار (سریع‌ترین سرور)</string>
+    <string name="psiphon_region_help">جایی که ترافیک شما از آن بیرون می‌آید. تا وقتی کشور خاصی لازم ندارید روی «خودکار» بگذارید: سایفون سریع‌ترین سرور در دسترس را انتخاب می‌کند و معمولاً همین درست است.</string>
+    <string name="psiphon_region_fallback">اگر کشوری که انتخاب کرده‌اید همین حالا سرور آزادی نداشته باشد، سایفون جای دیگری وصل می‌شود تا شما بدون اینترنت نمانید.</string>
 
     <!-- ============================================================= Tor == -->
     <string name="tor_note">تور سه رله اضافه می‌کند: تأخیر خیلی بیشتر، و هیچ UDP‌ای؛ پس تماس تصویری و QUIC به TCP برمی‌گردند یا کار نمی‌کنند. اولین اتصال ممکن است چند دقیقه طول بکشد.</string>
@@ -52,7 +52,7 @@
 
     <!-- ========================================================== errors == -->
     <string name="err_core_missing">این بیلد شامل %1$s نیست. هسته‌های نیتیو را بسازید (scripts/build-natives.sh) یا زنجیره‌ای انتخاب کنید که به آن نیاز ندارد.</string>
-    <string name="err_psiphon_config">کانفیگ سایفون موجود نیست. در تنظیمات › زنجیره یکی را بچسبانید، یا از بیلدی استفاده کنید که آن را همراه دارد.</string>
+    <string name="err_psiphon_config">لیست سرورهای سایفون در این نسخه نیست، پس سایفون جایی برای شروع اتصال ندارد. با scripts/fetch-psiphon-serverlist.sh دوباره بیلد بگیرید.</string>
     <string name="err_psiphon_timeout">سایفون سروری پیدا نکرد. «سایفون روی اتر» یا شبکه دیگری را امتحان کنید.</string>
     <string name="err_tor_timeout">تور نتوانست اتصالش را کامل کند. احتمالاً شبکه خودِ تور را بسته است — «تور روی اتر» یا «تور روی سایفون» را امتحان کنید.</string>
     <string name="err_front_bind">پورت پروکسی محلی مشغول است. برنامه تانل دیگری که آن را گرفته ببندید و دوباره وصل شوید.</string>
@@ -73,13 +73,6 @@
 
     <string name="chain_psiphon_options">سایفون</string>
     <string name="chain_tor_options">تور</string>
-
-    <string name="psiphon_config_pasted">از کانفیگی که پایین وارد کرده‌اید استفاده می‌شود.</string>
-    <string name="psiphon_config_bundled">یک کانفیگ سایفون همراه این نسخه ارسال شده است. تنها برای جایگزینی آن، کانفیگ خودتان را وارد کنید.</string>
-    <string name="psiphon_config_absent">این نسخه کانفیگ سایفون ندارد. کانفیگ را پایین وارد کنید، وگرنه حالت‌های سایفون اجرا نمی‌شوند.</string>
-    <string name="psiphon_config_invalid">این کانفیگ JSON معتبری نیست و نادیده گرفته می‌شود.</string>
-    <string name="psiphon_config_invalid_help">کل کانفیگ را از آکولاد اول تا آکولاد آخر وارد کنید.</string>
-    <string name="psiphon_config_clear">پاک کردن کانفیگ</string>
 
     <string name="tor_tradeoffs">تور کند است: اتصال اول معمولاً دو دقیقه یا بیشتر طول می‌کشد. همچنین UDP را منتقل نمی‌کند، پس تماس تصویری از طریق آن کار نمی‌کند.</string>
     <string name="tor_exit_no_geoip">این نسخه پایگاه دادهٔ کشورهای تور را ندارد، پس نمی‌توان کشور خروج را انتخاب کرد.</string>

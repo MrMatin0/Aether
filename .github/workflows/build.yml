@@ -42,7 +42,9 @@ name: Build
 #     users "this build does not include the Psiphon core". A missing core is now
 #     a warning on a branch push or a pull request and a HARD FAILURE on a `v*`
 #     tag, checked twice: after the natives job builds, and against the contents
-#     of the assembled APKs.
+#     of the assembled APKs. The same rule covers Psiphon's bootstrap server
+#     list: a core with nowhere to start dialling advertises a mode that cannot
+#     connect, which is the failure this rule exists to prevent.
 # ---------------------------------------------------------------------------
 
 on:
@@ -434,16 +436,17 @@ jobs:
       # Writing it in the job that actually assembles the APK removes the
       # dependency on a cache entirely.
       #
-      # PropagationChannelId / SponsorId are network-issued and not ours to
-      # commit; see docs/CHAINING.md. A repo without the secret simply builds an
-      # APK whose Chain page asks the user to paste one.
+      # OPTIONAL since Psiphon stopped needing a supplied config at all:
+      # PsiphonCore carries its own (see docs/CHAINING.md). This only overrides
+      # it, for a deployment that has its own network-issued PropagationChannelId
+      # / SponsorId. A repo without the secret builds a fully working APK.
       - name: Bundle the Psiphon client config
         env:
           PSIPHON_CONFIG_B64: ${{ secrets.PSIPHON_CONFIG_B64 }}
         run: |
           set -euo pipefail
           if [ -z "${PSIPHON_CONFIG_B64:-}" ]; then
-            echo "::notice::No PSIPHON_CONFIG_B64 secret - users will paste a Psiphon config in Settings > Chain."
+            echo "::notice::No PSIPHON_CONFIG_B64 secret - Psiphon will use its built-in client config."
             exit 0
           fi
           mkdir -p app/src/main/assets
@@ -453,6 +456,43 @@ jobs:
           python3 -c "import json;json.load(open('app/src/main/assets/psiphon.config'))" \
             || { echo "::error::PSIPHON_CONFIG_B64 did not decode to valid JSON"; exit 1; }
           echo "Bundled a Psiphon client config ($(stat -c%s app/src/main/assets/psiphon.config) bytes)."
+
+      # THE PSIPHON BOOTSTRAP SERVER LIST IS WRITTEN HERE, FOR EXACTLY THE REASON
+      # THE CONFIG ABOVE IS.
+      #
+      # psiphon-tunnel-core is compiled from upstream source, and upstream source
+      # contains no servers. Without this list the core has nowhere to start
+      # dialling: it comes up, finds zero candidates and burns its whole establish
+      # budget saying so in Go - which is exactly what "Psiphon does not work"
+      # looked like from the outside.
+      #
+      # It cannot live in the natives job: that job's cache covers jniLibs and
+      # assets/tor only, so on a cache hit its Psiphon step never runs and
+      # anything else it would have written into assets/ is never produced, never
+      # uploaded and never packaged. This is the job that assembles the APK, so it
+      # is the only place the asset can be guaranteed.
+      #
+      # Rule 7: a warning on a branch, fatal on a `v*` tag. A release may not
+      # advertise a Psiphon mode that cannot connect.
+      - name: Bundle the Psiphon bootstrap server list
+        env:
+          PSIPHON_SERVER_LIST_URL: ${{ secrets.PSIPHON_SERVER_LIST_URL }}
+          PSIPHON_SERVER_LIST_B64: ${{ secrets.PSIPHON_SERVER_LIST_B64 }}
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -uo pipefail
+          if bash scripts/fetch-psiphon-serverlist.sh; then
+            echo "- Psiphon bootstrap server list: present ($(stat -c%s app/src/main/assets/psiphon/server_entries.txt) bytes)" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error::no Psiphon bootstrap server list - a tagged release must not ship a Psiphon mode that cannot connect"
+            exit 1
+          fi
+          echo "::warning::no Psiphon bootstrap server list; the Psiphon chain modes will be unavailable in this build"
+          echo "- :warning: Psiphon bootstrap server list **MISSING** - Psiphon modes unavailable" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       # Fail in five seconds instead of six minutes. An APK that ships only some
       # of the cores runs proxy mode and silently fails full VPN mode.
@@ -687,10 +727,19 @@ jobs:
                 fi
               done
             done
+            # Psiphon's bootstrap list travels as an ASSET, not a native library,
+            # so it needs its own check: an APK with libpsiphon.so and no server
+            # entries offers a Psiphon mode that cannot establish a first tunnel.
+            if printf '%s\n' "$entries" | grep -qx 'assets/psiphon/server_entries.txt'; then
+              echo "OK  $(basename "$apk")  Psiphon bootstrap server list present"
+            else
+              chain_missing=true
+              echo "::warning::$(basename "$apk") has no Psiphon bootstrap server list (Psiphon modes unavailable)"
+            fi
             echo "OK  $(basename "$apk")  cores present for ${abis[*]}"
           done
           if [ "${chain_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
-            echo "::error::a tagged release must not ship an APK without libpsiphon.so and libtor.so"
+            echo "::error::a tagged release must not ship an APK without libpsiphon.so, libtor.so and the Psiphon server list"
             exit 1
           fi
 

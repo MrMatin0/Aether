@@ -1,12 +1,14 @@
 package studio.cluvex.aether.vpn.session
 
 import android.content.Context
+import kotlinx.coroutines.delay
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.DnsRoute
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.PsiphonCore
+import studio.cluvex.aether.core.PsiphonRegions
 import studio.cluvex.aether.core.SocksFront
 import studio.cluvex.aether.core.TorCore
 import studio.cluvex.aether.core.TunnelConfig
@@ -17,12 +19,26 @@ import java.io.File
 
 private const val TAG = "chain"
 
+/** How long a Psiphon being replaced mid-retry gets to exit on its own. */
+private const val PSIPHON_STOP_WAIT_MS = 5_000L
+
+/** Grace for the local SOCKS port to leave TIME_WAIT before the retry binds it. */
+private const val PSIPHON_PORT_RELEASE_MS = 1_500L
+
 /** Why a chain could not be brought up. Mapped to a user-facing string by the service. */
 internal enum class ChainFailure {
     /** This build does not bundle libpsiphon.so. */
     PSIPHON_MISSING,
 
-    /** No Psiphon client config (none pasted in Settings, none bundled). */
+    /**
+     * This build has no Psiphon bootstrap server list, so the core has nothing
+     * to dial and cannot establish a first tunnel.
+     *
+     * Used to mean "no client config", which is no longer a thing that can
+     * happen: [PsiphonCore] carries its own. The constant keeps its name so the
+     * service's mapping and the string resource stay put; only its meaning and
+     * its copy moved.
+     */
     PSIPHON_CONFIG,
 
     /** Psiphon never established a tunnel inside its budget. */
@@ -165,31 +181,78 @@ internal class ChainStack(
 
     // ------------------------------------------------------------------ hops
 
+    /**
+     * Brings Psiphon up, and does not let one unlucky country be the end of it.
+     *
+     * ROOT CAUSE this handles: `EgressRegion` is a HARD filter inside
+     * psiphon-tunnel-core. If no server is currently reachable in the country the
+     * user picked, the controller keeps hunting for an egress that will never
+     * appear; the app sits on "Connecting" for the full readiness budget and then
+     * reports a timeout, with nothing in the log that explains why. A working
+     * tunnel in the wrong country beats no tunnel, so a hand-picked country gets
+     * ONE retry with the filter removed and a fresh datastore. Nothing is retried
+     * when the user already chose Automatic - there is no filter left to relax.
+     *
+     * The retry uses a NEW core rather than restarting the old one: the previous
+     * attempt's datastore is wiped between passes, and a child that is still on
+     * its way out must not be the thing that owns it.
+     */
     private suspend fun startPsiphon(profile: ConnectionProfile, upstream: Int?): Int {
-        val core = PsiphonCore(context, filesDir)
+        var core = PsiphonCore(context, filesDir)
         if (!core.isAvailable) {
             ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED, "not bundled")
             throw ChainException(ChainFailure.PSIPHON_MISSING)
         }
-        if (!core.hasConfig(profile)) {
-            ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED, "no config")
+        if (!core.hasServerList()) {
+            ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED, "no server list")
             throw ChainException(ChainFailure.PSIPHON_CONFIG)
         }
         synchronized(lock) { psiphon = core }
-        ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.STARTING)
-        core.start(profile, upstream)
 
-        val listening = PortProbe.awaitOpen(
-            TunnelConfig.SOCKS_HOST,
-            TunnelConfig.PSIPHON_SOCKS_PORT,
-            VpnTunables.PSIPHON_PORT_WAIT_MS,
-        ) { core.isAlive }
-        if (!listening || !core.awaitReady(VpnTunables.PSIPHON_READY_WAIT_MS)) {
-            ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED)
-            throw ChainException(ChainFailure.PSIPHON_TIMEOUT)
+        val wanted = PsiphonRegions.sanitize(profile.psiphonRegion)
+        val attempts = if (wanted.isEmpty()) listOf("") else listOf(wanted, "")
+
+        for ((index, egress) in attempts.withIndex()) {
+            if (index > 0) {
+                DiagnosticsLog.w(
+                    TAG,
+                    "Psiphon found no usable server in ${PsiphonRegions.name(wanted)} - " +
+                        "retrying with an automatic exit and a fresh datastore.",
+                )
+                val previous = core
+                runCatching { previous.stop() }
+                previous.awaitExit(PSIPHON_STOP_WAIT_MS)
+                previous.resetDataStore()
+                delay(PSIPHON_PORT_RELEASE_MS)
+                core = PsiphonCore(context, filesDir)
+                synchronized(lock) { psiphon = core }
+            }
+
+            val attempt = core
+            ChainRuntime.update(
+                Hop.PSIPHON,
+                ChainRuntime.HopState.STARTING,
+                PsiphonRegions.name(egress),
+            )
+            attempt.start(profile, upstream, egress)
+
+            val listening = PortProbe.awaitOpen(
+                TunnelConfig.SOCKS_HOST,
+                TunnelConfig.PSIPHON_SOCKS_PORT,
+                VpnTunables.PSIPHON_PORT_WAIT_MS,
+            ) { attempt.isAlive }
+            if (listening && attempt.awaitReady(VpnTunables.PSIPHON_READY_WAIT_MS)) {
+                ChainRuntime.update(
+                    Hop.PSIPHON,
+                    ChainRuntime.HopState.READY,
+                    attempt.egressRegion ?: PsiphonRegions.name(egress),
+                )
+                return TunnelConfig.PSIPHON_SOCKS_PORT
+            }
         }
-        ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.READY, core.egressRegion)
-        return TunnelConfig.PSIPHON_SOCKS_PORT
+
+        ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED)
+        throw ChainException(ChainFailure.PSIPHON_TIMEOUT)
     }
 
     private suspend fun startTor(profile: ConnectionProfile, upstream: Int?): Int {

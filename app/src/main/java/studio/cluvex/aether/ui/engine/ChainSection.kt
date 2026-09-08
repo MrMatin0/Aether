@@ -2,6 +2,7 @@ package studio.cluvex.aether.ui.engine
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,10 +14,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.HourglassEmpty
-import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Icon
@@ -33,14 +33,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
-import org.json.JSONObject
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.CoreAvailability
+import studio.cluvex.aether.core.PsiphonRegions
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.ui.chainDescription
 import studio.cluvex.aether.ui.chainLabel
-import studio.cluvex.aether.ui.components.ActionPill
+import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.LtrOutlinedTextField
@@ -74,12 +74,20 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  *  3. **Which direction "over" runs.** "Over" reads both ways in English and in
  *     Persian, so the literal path is printed on every card rather than once
  *     under the selection.
+ *
+ * ### What the Psiphon block used to be
+ *
+ * A multi-line box asking the user to paste a Psiphon client config as JSON.
+ * `PropagationChannelId` and `SponsorId` are issued by the Psiphon network, so
+ * that field was asking for something no user of this app can obtain - and with
+ * nothing pasted and nothing bundled, every Psiphon mode failed before the core
+ * was even started. It is gone: [studio.cluvex.aether.core.PsiphonCore] carries
+ * its own config, and the only thing left to choose is where to come out.
  */
 @Composable
 internal fun ChainSection(
     chain: ChainMode,
     psiphonRegion: String,
-    psiphonConfig: String,
     torExitCountry: String,
     torStrictNodes: Boolean,
     enabled: Boolean,
@@ -127,76 +135,32 @@ internal fun ChainSection(
         }
 
         // Psiphon's own options: only shown when a Psiphon hop exists, because
-        // an egress region for a core that is not running is noise.
+        // an exit country for a core that is not running is noise.
         DependentBlock(visible = chain.usesPsiphon) {
             Spacer(Modifier.height(EngineSpacing.Divider))
             EngineDivider()
             SectionRule(stringResource(R.string.chain_psiphon_options), topSpace = 24)
 
-            val pasted = psiphonConfig.isNotBlank()
-            // The core is the authority on what a valid config is, so this only
-            // asks "does it parse as a JSON object" - which is also exactly the
-            // test PsiphonCore.baseConfig applies before it silently falls back
-            // to the bundled asset. Doing it here means the user finds out while
-            // they are looking at the field.
-            val validJson = remember(psiphonConfig) {
-                !pasted || runCatching { JSONObject(psiphonConfig) }.isSuccess
-            }
-            when {
-                pasted && !validJson -> NoticeBar(
-                    text = stringResource(R.string.psiphon_config_invalid),
+            // The one payload fact that can still stop Psiphon. Said here rather
+            // than discovered from a three-minute connect attempt.
+            if (cores.psiphonServerList) {
+                NoticeBar(
+                    text = stringResource(R.string.psiphon_ready),
+                    tone = accents.protected,
+                    icon = Icons.Rounded.CheckCircle,
+                )
+            } else {
+                NoticeBar(
+                    text = stringResource(R.string.psiphon_serverlist_missing),
                     tone = accents.failed,
                     icon = Icons.Rounded.Warning,
                 )
-                pasted -> NoticeBar(
-                    text = stringResource(R.string.psiphon_config_pasted),
-                    tone = accents.protected,
-                    icon = Icons.Rounded.CheckCircle,
-                )
-                cores.psiphonConfigBundled -> NoticeBar(
-                    text = stringResource(R.string.psiphon_config_bundled),
-                    tone = accents.protected,
-                    icon = Icons.Rounded.CheckCircle,
-                )
-                else -> NoticeBar(
-                    text = stringResource(R.string.psiphon_config_absent),
-                    tone = accents.working,
-                    icon = Icons.Rounded.Info,
-                )
             }
 
             Spacer(Modifier.height(EngineSpacing.Field))
-            ProfileTextField(
-                value = psiphonConfig,
-                onValueChange = { value -> edit { copy(psiphonConfig = value) } },
-                label = stringResource(R.string.psiphon_config_label),
-                placeholder = stringResource(R.string.psiphon_config_hint),
-                helpText = if (pasted && !validJson) {
-                    stringResource(R.string.psiphon_config_invalid_help)
-                } else {
-                    stringResource(R.string.psiphon_config_help)
-                },
-                singleLine = false,
-                enabled = enabled,
-            )
-            if (pasted) {
-                Spacer(Modifier.height(EngineSpacing.Inline))
-                ActionPill(
-                    label = stringResource(R.string.psiphon_config_clear),
-                    onClick = { edit { copy(psiphonConfig = "") } },
-                    icon = Icons.Rounded.Delete,
-                    enabled = enabled,
-                    tint = accents.failed,
-                )
-            }
-
-            Spacer(Modifier.height(EngineSpacing.Field))
-            CountryField(
+            PsiphonExitField(
                 value = psiphonRegion,
-                onValueChange = { value -> edit { copy(psiphonRegion = value) } },
-                label = stringResource(R.string.psiphon_region_label),
-                placeholder = stringResource(R.string.psiphon_region_hint),
-                helpText = stringResource(R.string.psiphon_region_help),
+                onValueChange = { code -> edit { copy(psiphonRegion = code) } },
                 enabled = enabled,
             )
         }
@@ -376,13 +340,69 @@ private fun CostBadge(mode: ChainMode) {
 }
 
 /**
+ * Psiphon's exit country: tap, and pick from the countries Psiphon publishes.
+ *
+ * ### Why this is not a text field any more
+ *
+ * It used to be the same two-letter box Tor still uses, and for Psiphon that was
+ * the wrong shape twice over. `EgressRegion` is a HARD filter in
+ * psiphon-tunnel-core, so a code Psiphon has no servers in does not degrade to
+ * "anywhere" - it hangs establishment until the budget runs out. And the set of
+ * codes that mean anything is a fixed, published list, which a keyboard cannot
+ * express: `IR`, `EN` and `UK` are all things a user would reasonably type and
+ * none of them is a Psiphon exit.
+ *
+ * So the list IS the input. Every row carries its flag (derived from the code,
+ * see [PsiphonRegions]), Automatic is the first row and the default, and there is
+ * no way to enter a value the core will silently ignore.
+ *
+ * A [ColumnScope] receiver because this is a vertical run of four rows - label,
+ * picker, hint, fallback notice - and not a single widget.
+ */
+@Composable
+private fun ColumnScope.PsiphonExitField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+) {
+    // Resolved OUTSIDE the label lambda: it is a string resource, and the
+    // dropdown renders that lambda once per row.
+    val automatic = "${PsiphonRegions.GLOBE}  " + stringResource(R.string.psiphon_region_auto)
+    FieldLabel(stringResource(R.string.psiphon_region_label))
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    DropdownSelector(
+        options = PsiphonRegions.codes,
+        // Sanitised, so a code saved by an older build (or imported in a config)
+        // that Psiphon does not serve shows as Automatic instead of as a row that
+        // is not in the list.
+        selected = PsiphonRegions.sanitize(value),
+        onSelect = onValueChange,
+        label = { code ->
+            if (code == PsiphonRegions.AUTOMATIC) automatic else PsiphonRegions.label(code)
+        },
+        enabled = enabled,
+    )
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    Hint(stringResource(R.string.psiphon_region_help))
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    NoticeBar(
+        text = stringResource(R.string.psiphon_region_fallback),
+        tone = LocalAetherAccents.current.working,
+        icon = Icons.Rounded.Public,
+    )
+}
+
+/**
  * A two-letter country code and nothing else.
  *
- * Both cores take ISO 3166-1 alpha-2 and both silently ignore anything else
- * (PsiphonCore.sanitizedRegion drops it, tor's torrc never receives it), so a
- * free-text field let the user type "Germany", see it persisted, and get no exit
- * country with no explanation. Constraining the input is the difference between
- * a setting that works and a setting that looks like it works.
+ * tor takes ISO 3166-1 alpha-2 and silently ignores anything else (its torrc
+ * never receives it), so a free-text field let the user type "Germany", see it
+ * persisted, and get no exit country with no explanation. Constraining the input
+ * is the difference between a setting that works and a setting that looks like it
+ * works.
+ *
+ * Psiphon used to share this field and no longer does - see [PsiphonExitField]
+ * for why a list beats a keyboard when the valid set is published and finite.
  */
 @Composable
 private fun CountryField(

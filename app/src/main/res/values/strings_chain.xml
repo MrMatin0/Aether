@@ -38,13 +38,18 @@
     <string name="chain_tor_over_all_desc">All three, stacked. The slowest option in the app and the last thing left to try.</string>
 
     <!-- ========================================================= Psiphon == -->
-    <string name="psiphon_region_label">Psiphon exit country</string>
-    <string name="psiphon_region_hint">e.g. NL</string>
-    <string name="psiphon_region_help">Two-letter country code. Leave empty to let Psiphon pick its fastest server, which is usually the right answer.</string>
+    <!--
+      The nine psiphon_config_* strings that used to live here are gone with the
+      field they labelled. Psiphon ships its own client config now, so there is
+      nothing to paste and nothing to explain.
+    -->
+    <string name="psiphon_ready">Psiphon is ready to use. Nothing to configure.</string>
+    <string name="psiphon_serverlist_missing">This build has no Psiphon server list, so Psiphon cannot start. Run scripts/fetch-psiphon-serverlist.sh and rebuild.</string>
 
-    <string name="psiphon_config_label">Psiphon config (JSON)</string>
-    <string name="psiphon_config_hint">{\"PropagationChannelId\": …, \"SponsorId\": …}</string>
-    <string name="psiphon_config_help">Psiphon issues this file; it is not bundled with the app. Leave empty if your build already ships one. See docs/CHAINING.md.</string>
+    <string name="psiphon_region_label">Psiphon exit country</string>
+    <string name="psiphon_region_auto">Automatic (fastest server)</string>
+    <string name="psiphon_region_help">Where your traffic comes out. Leave it on Automatic unless you need a specific country: Psiphon picks its fastest reachable server, which is usually the right answer.</string>
+    <string name="psiphon_region_fallback">If the country you pick has no server free right now, Psiphon connects somewhere else rather than leaving you offline.</string>
 
     <!-- ============================================================= Tor == -->
     <string name="tor_note">Tor adds three relays: expect much higher latency, and no UDP at all, so video calls and QUIC fall back to TCP or stop working. The first connection can take a few minutes.</string>
@@ -58,7 +63,13 @@
 
     <!-- ========================================================== errors == -->
     <string name="err_core_missing">This build does not include: %1$s. Build the native cores (scripts/build-natives.sh) or pick a chain that does not need them.</string>
-    <string name="err_psiphon_config">No Psiphon config. Paste one under Settings › Chain, or use a build that bundles it.</string>
+    <!--
+      Keeps its name because the service maps ChainFailure.PSIPHON_CONFIG to it.
+      What it reports changed: a missing client config is no longer possible, a
+      missing bootstrap server list is - and that is a build problem, not
+      something a user can paste their way out of.
+    -->
+    <string name="err_psiphon_config">This build is missing the Psiphon server list, so Psiphon has nowhere to start dialling. Rebuild with scripts/fetch-psiphon-serverlist.sh.</string>
     <string name="err_psiphon_timeout">Psiphon could not find a server. Try Psiphon over Aether, or another network.</string>
     <string name="err_tor_timeout">Tor could not finish connecting. Your network is likely blocking Tor itself — try Tor over Aether or Tor over Psiphon.</string>
     <string name="err_front_bind">The local proxy port is busy. Close the other tunnel app using it and reconnect.</string>
@@ -82,13 +93,6 @@
 
     <string name="chain_psiphon_options">Psiphon</string>
     <string name="chain_tor_options">Tor</string>
-
-    <string name="psiphon_config_pasted">Using the config you pasted below.</string>
-    <string name="psiphon_config_bundled">A Psiphon config is bundled with this build. Paste one below only to override it.</string>
-    <string name="psiphon_config_absent">This build has no Psiphon config. Paste one below, or the Psiphon modes cannot start.</string>
-    <string name="psiphon_config_invalid">That config is not valid JSON, so it will be ignored.</string>
-    <string name="psiphon_config_invalid_help">Paste the whole config, from the opening brace to the closing one.</string>
-    <string name="psiphon_config_clear">Clear config</string>
 
     <string name="tor_tradeoffs">Tor is slow: the first connection regularly takes two minutes or more. It also carries no UDP, so video calls will not work through it.</string>
     <string name="tor_exit_no_geoip">This build has no Tor country database, so an exit country cannot be requested.</string>
