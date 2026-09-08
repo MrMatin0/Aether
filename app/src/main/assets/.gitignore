@@ -1,13 +1,19 @@
 # Build-time artifacts, never committed - same rule as the native cores and the
 # Vazirmatn font binaries.
 #
-#   tor/geoip, tor/geoip6  <- fetched by scripts/build-overlay-cores.sh
-#   psiphon.config         <- network-issued client identity, supplied through
-#                             PSIPHON_CONFIG_B64 / PSIPHON_CONFIG_FILE at build
-#                             time, or pasted by the user in Settings > Chain.
+#   tor/geoip, tor/geoip6      <- fetched by scripts/build-overlay-cores.sh
+#   psiphon/server_entries.txt <- fetched by scripts/fetch-psiphon-serverlist.sh.
+#                                 Public bootstrap data, ~1 MB, stale the day it
+#                                 lands: exactly the kind of thing that belongs
+#                                 in a build step and not in git history.
+#   psiphon.config             <- OPTIONAL config override, supplied through
+#                                 PSIPHON_CONFIG_B64 / PSIPHON_CONFIG_FILE at
+#                                 build time. Not needed any more: PsiphonCore
+#                                 ships its own working config.
 #
 # This file starts with a dot, so AGP's default asset-ignore pattern keeps it
 # out of the APK; it exists so the assets/ directory itself is present in a
 # fresh checkout and resource merging never sees a missing source dir.
 /tor/
+/psiphon/
 /psiphon.config
