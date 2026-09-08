@@ -704,6 +704,16 @@ fn lastconn_path(config_path: &str) -> String {
 }
 
 async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr) -> bool {
+    quick_verify_masque_peer_with_noize(identity, peer, noize_config()).await
+}
+
+// API/FFI callers carry a per-request profile. Do not replace it with the
+// CLI environment (or its firewall default) when verifying a MASQUE peer.
+async fn quick_verify_masque_peer_with_noize(
+    identity: &account::Identity,
+    peer: SocketAddr,
+    noize: noize::NoizeConfig,
+) -> bool {
     let vp = quic::VerifyParams {
         peer,
         sni: consts::CONNECT_SNI.to_string(),
@@ -712,7 +722,7 @@ async fn quick_verify_masque_peer(identity: &account::Identity, peer: SocketAddr
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
         ech_config_list: None,
-        noize: noize_config(),
+        noize,
         timeout: std::time::Duration::from_secs(5),
         local_ipv4: parse_local_v4(&identity.ipv4),
     };
@@ -870,6 +880,18 @@ async fn run_masque_tunnel(
     ech: Option<Vec<u8>>,
     listen: SocketAddr,
 ) -> Result<()> {
+    run_masque_tunnel_with_noize(identity, peer, ech, listen, noize_config()).await
+}
+
+// Share the tunnel implementation without mutating process-global
+// AETHER_NOIZE for API/FFI calls, which may run concurrently.
+async fn run_masque_tunnel_with_noize(
+    identity: &account::Identity,
+    peer: SocketAddr,
+    ech: Option<Vec<u8>>,
+    listen: SocketAddr,
+    noize: noize::NoizeConfig,
+) -> Result<()> {
     let (chans, internals) = quic::channels();
 
     let cfg = quic::TunnelConfig {
@@ -880,7 +902,7 @@ async fn run_masque_tunnel(
         cert_pem: identity.cert_pem.clone(),
         key_pem: identity.key_pem.clone(),
         ech_config_list: ech,
-        noize: noize_config(),
+        noize,
         local_ipv4: parse_local_v4(&identity.ipv4),
         quiet: false,
     };
@@ -991,26 +1013,46 @@ fn wg_keepalive_secs() -> u16 {
         .unwrap_or(5)
 }
 
-fn wg_profile_candidates() -> Vec<(String, aethernoize::AetherNoizeConfig)> {
-    let primary = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
-    log::info!("[+] aethernoize primary profile: {primary}");
-
-    let mut names = vec![primary.clone()];
-    if std::env::var("AETHER_WG_NO_PROFILE_RETRY").is_err() {
+fn wg_profile_names(primary: &str, retry: bool) -> Vec<String> {
+    let primary = primary.trim().to_ascii_lowercase();
+    // An explicit OFF/NONE is a constraint, not permission to enable noise
+    // after a failed scan. Keep the existing fallback ladder for opt-in users.
+    let allow_fallback = retry && !matches!(primary.as_str(), "off" | "none");
+    let mut names = vec![primary];
+    if allow_fallback {
         for fallback in ["balanced", "aggressive", "light", "off"] {
             if !names.iter().any(|n| n.eq_ignore_ascii_case(fallback)) {
                 names.push(fallback.to_string());
             }
         }
     }
-
     names
+}
+
+fn wg_profile_candidates() -> Vec<(String, aethernoize::AetherNoizeConfig)> {
+    let primary = std::env::var("AETHER_NOIZE").unwrap_or_else(|_| "balanced".to_string());
+    log::info!("[+] aethernoize primary profile: {primary}");
+
+    wg_profile_names(&primary, std::env::var("AETHER_WG_NO_PROFILE_RETRY").is_err())
         .into_iter()
         .map(|n| {
             let cfg = aethernoize::from_profile(&n);
             (n, cfg)
         })
         .collect()
+}
+
+fn wg_cached_candidate<'a>(
+    cached: &str,
+    candidates: &'a [(String, aethernoize::AetherNoizeConfig)],
+) -> &'a (String, aethernoize::AetherNoizeConfig) {
+    // The cache is an endpoint hint, not a settings override. Reuse its
+    // profile only if this session permits it; otherwise verify the same
+    // endpoint with the primary profile before accepting the cached peer.
+    candidates
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(cached.trim()))
+        .unwrap_or(&candidates[0])
 }
 
 async fn hunt_wg_peer_with_profile(
@@ -1148,15 +1190,15 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
         if let Some(cached) = lastconn::load(&lastconn_path) {
             if let Ok(peer) = cached.peer.parse::<SocketAddr>() {
                 if want_quick_reconnect(&cached).await {
-                    let profile = aethernoize::from_profile(&cached.profile);
-                    log::info!("[*] verifying cached WireGuard endpoint {peer} before reuse");
+                    let (name, profile) = wg_cached_candidate(&cached.profile, &candidates);
+                    log::info!("[*] verifying cached WireGuard endpoint {peer} with profile '{name}' before reuse");
                     match wireguard::verify_endpoint(
                         peer,
                         private_key,
                         peer_public,
                         identity.client_id,
                         ipv4,
-                        &profile,
+                        profile,
                         std::time::Duration::from_secs(6),
                         None,
                     )
@@ -1164,7 +1206,7 @@ async fn run_wireguard(identity: account::Identity, listen: SocketAddr, lastconn
                     {
                         Ok(rtt) => {
                             log::info!("[+] cached endpoint {peer} still works (rtt {:?}); skipping scan", rtt);
-                            quick = Some((peer, profile, cached.profile.clone()));
+                            quick = Some((peer, profile.clone(), name.clone()));
                         }
                         Err(e) => {
                             log::warn!("[-] cached endpoint {peer} no longer works ({e}); scanning fresh");
@@ -1754,5 +1796,68 @@ async fn select_ip_version() -> prober::IpScan {
         Some("2") => prober::IpScan::V6,
         Some("3") => prober::IpScan::Both,
         _ => prober::IpScan::V4,
+    }
+}
+
+#[cfg(test)]
+mod obfuscation_tests {
+    use super::*;
+
+    fn candidates(primary: &str, retry: bool) -> Vec<(String, aethernoize::AetherNoizeConfig)> {
+        wg_profile_names(primary, retry)
+            .into_iter()
+            .map(|name| {
+                let config = aethernoize::from_profile(&name);
+                (name, config)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn explicit_off_never_adds_an_enabled_wireguard_fallback() {
+        for primary in ["off", "none", " OFF ", "NONE"] {
+            for retry in [true, false] {
+                let choices = candidates(primary, retry);
+                assert_eq!(choices.len(), 1);
+                assert!(!choices[0].1.is_enabled());
+            }
+        }
+    }
+
+    #[test]
+    fn enabled_profiles_keep_the_existing_fallback_order() {
+        assert_eq!(
+            wg_profile_names("light", true),
+            vec!["light", "balanced", "aggressive", "off"]
+        );
+        assert_eq!(wg_profile_names("light", false), vec!["light"]);
+        assert_eq!(
+            wg_profile_names("balanced", true),
+            vec!["balanced", "aggressive", "light", "off"]
+        );
+    }
+
+    #[test]
+    fn cached_noise_cannot_override_off_or_no_profile_retry() {
+        for primary in ["off", "none"] {
+            let choices = candidates(primary, true);
+            for cached in ["firewall", "balanced", "aggressive", "light", "off", "unknown"] {
+                let (name, config) = wg_cached_candidate(cached, &choices);
+                assert_eq!(name, primary);
+                assert!(!config.is_enabled());
+            }
+        }
+        let choices = candidates("light", false);
+        let (name, config) = wg_cached_candidate("aggressive", &choices);
+        assert_eq!(name, "light");
+        assert_eq!(config.jmax, aethernoize::from_profile("light").jmax);
+    }
+
+    #[test]
+    fn_a_permitted_cached_profile_is_still_reused() {
+        let choices = candidates("balanced", true);
+        let (name, config) = wg_cached_candidate("aggressive", &choices);
+        assert_eq!(name, "aggressive");
+        assert_eq!(config.jmax, aethernoize::from_profile("aggressive").jmax);
     }
 }
