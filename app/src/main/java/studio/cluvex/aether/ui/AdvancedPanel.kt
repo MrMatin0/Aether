@@ -67,8 +67,10 @@ fun AdvancedPanel(profile: ConnectionProfile, onProfileChange: (ConnectionProfil
                 EnginePage.CONNECTION -> ConnectionSection(protocol = profile.protocol, scanMode = profile.scanMode,
                     endpointMode = profile.endpointMode, manualPeer = profile.manualPeer, manualRange = profile.manualRange,
                     ipVersion = profile.ipVersion, enabled = enabled, edit = edit)
+                // psiphonConfig is deliberately NOT passed any more: the Psiphon
+                // core ships its own client config, so there is no field to fill.
                 EnginePage.CHAIN -> ChainSection(chain = profile.chain, psiphonRegion = profile.psiphonRegion,
-                    psiphonConfig = profile.psiphonConfig, torExitCountry = profile.torExitCountry,
+                    torExitCountry = profile.torExitCountry,
                     torStrictNodes = profile.torStrictNodes, enabled = enabled, edit = edit)
                 EnginePage.SECURITY -> {
                     SafetySection(quickReconnect = profile.quickReconnect, killSwitch = profile.killSwitch,
