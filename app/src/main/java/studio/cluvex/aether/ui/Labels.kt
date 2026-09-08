@@ -3,6 +3,8 @@ package studio.cluvex.aether.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.AppLanguage
+import studio.cluvex.aether.data.ThemeMode
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
@@ -118,4 +120,25 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether_desc)
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
+}
+
+/*
+ * Theme and language live here too, because the settings index paints the
+ * CURRENT theme and language on the Appearance row. They were private inside
+ * AppearancePanel, which is the same mistake as the scan labels: one screen
+ * owning a name every other screen also needs.
+ */
+
+@Composable
+internal fun themeModeLabel(mode: ThemeMode): String = when (mode) {
+    ThemeMode.SYSTEM -> stringResource(R.string.theme_system)
+    ThemeMode.DARK -> stringResource(R.string.theme_dark)
+    ThemeMode.LIGHT -> stringResource(R.string.theme_light)
+}
+
+@Composable
+internal fun appLanguageLabel(language: AppLanguage): String = when (language) {
+    AppLanguage.SYSTEM -> stringResource(R.string.language_system)
+    AppLanguage.ENGLISH -> stringResource(R.string.language_english)
+    AppLanguage.PERSIAN -> stringResource(R.string.language_persian)
 }

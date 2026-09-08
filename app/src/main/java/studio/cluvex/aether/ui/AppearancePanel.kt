@@ -2,8 +2,8 @@ package studio.cluvex.aether.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -24,6 +24,9 @@ import studio.cluvex.aether.ui.components.*
  * Automation switches: `behaviour.copy(themeMode = it)` would carry this
  * composition's stale copy of the automation flags and could revert a toggle
  * the user flipped a moment earlier.
+ *
+ * The two labels this used to keep private now live in Labels.kt, because the
+ * settings index shows the current theme and language on its Appearance row.
  */
 @Composable
 fun AppearancePanel(modifier: Modifier = Modifier) {
@@ -33,22 +36,14 @@ fun AppearancePanel(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
         ControlSection(stringResource(R.string.theme_title), stringResource(R.string.theme_subtitle), Icons.Rounded.Palette) {
             SegmentedSelector(listOf(ThemeMode.SYSTEM, ThemeMode.DARK, ThemeMode.LIGHT), behaviour.themeMode,
-                onSelect = { mode -> AppPrefs.mutate(context) { it.copy(themeMode = mode) } }, label = { themeLabel(it) })
+                onSelect = { mode -> AppPrefs.mutate(context) { it.copy(themeMode = mode) } }, label = { themeModeLabel(it) })
             Hint(stringResource(R.string.theme_hint))
         }
         Spacer(Modifier.height(32.dp)); Hairline(); Spacer(Modifier.height(32.dp))
         ControlSection(stringResource(R.string.language_title), stringResource(R.string.language_subtitle), Icons.Rounded.Language) {
             SegmentedSelector(listOf(AppLanguage.SYSTEM, AppLanguage.ENGLISH, AppLanguage.PERSIAN), storedLanguage,
-                onSelect = { switchLanguage(context, it) }, label = { languageLabel(it) })
+                onSelect = { switchLanguage(context, it) }, label = { appLanguageLabel(it) })
             Hint(stringResource(R.string.language_hint))
         }
     }
 }
-@Composable
-private fun themeLabel(mode: ThemeMode): String = stringResource(when (mode) {
-    ThemeMode.SYSTEM -> R.string.theme_system; ThemeMode.DARK -> R.string.theme_dark; ThemeMode.LIGHT -> R.string.theme_light
-})
-@Composable
-private fun languageLabel(language: AppLanguage): String = stringResource(when (language) {
-    AppLanguage.SYSTEM -> R.string.language_system; AppLanguage.ENGLISH -> R.string.language_english; AppLanguage.PERSIAN -> R.string.language_persian
-})

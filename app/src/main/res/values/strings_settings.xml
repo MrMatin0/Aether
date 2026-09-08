@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the rebuilt settings index. Its own file so strings_ui.xml stays a
+     stable diff, same convention as strings_features.xml. -->
+<resources>
+    <!-- Search -->
+    <string name="hub_search_label">Search settings</string>
+    <string name="hub_search_clear">Clear search</string>
+    <string name="hub_search_empty">Nothing in settings matches \u201C%1$s\u201D.</string>
+
+    <!-- Groups, named after what they do to your traffic -->
+    <string name="hub_group_tunnel">The tunnel</string>
+    <string name="hub_group_traffic">What goes through it</string>
+    <string name="hub_group_safety">When it goes wrong</string>
+    <string name="hub_group_app">This app</string>
+    <string name="hub_group_maintenance">Housekeeping</string>
+    <string name="hub_locked_row">Locked while connected</string>
+
+    <!-- Destinations that gained a page of their own -->
+    <string name="section_chain_note">Extra hops, for networks where one tunnel is not enough</string>
+    <string name="hub_automation_sub">When Aether connects without being asked</string>
+    <string name="hub_history_sub">What this device has recorded about your sessions</string>
+
+    <!-- Live state, one line under every row in the index -->
+    <string name="hub_state_on">On</string>
+    <string name="hub_state_off">Off</string>
+    <string name="hub_state_default">Engine defaults</string>
+    <string name="hub_state_unprotected">No protection</string>
+    <string name="hub_state_pinned">Pinned endpoint</string>
+    <string name="hub_state_all_traffic">Everything through the tunnel</string>
+    <string name="hub_state_apps">%1$d apps</string>
+    <string name="hub_state_proxy">Proxy mode</string>
+    <string name="hub_state_rules">Custom rules</string>
+    <string name="hub_state_dns">Custom DNS</string>
+    <string name="hub_state_fragment">Fragmented</string>
+    <string name="hub_state_ech">ECH</string>
+    <string name="hub_state_mtu">MTU %1$d</string>
+    <string name="hub_state_keepalive">Keepalive %1$d s</string>
+    <string name="hub_state_kill">Kill switch</string>
+    <string name="hub_state_kill_strict">Kill switch, strict</string>
+    <string name="hub_state_ipv6">IPv6 guard</string>
+    <string name="hub_state_retry">Retry limit %1$d</string>
+    <string name="hub_state_team">Team %1$s</string>
+    <string name="hub_state_gateway">Gateway</string>
+    <string name="hub_state_launch">On launch</string>
+    <string name="hub_state_boot">After restart</string>
+    <string name="hub_state_manual">Manual only</string>
+    <string name="hub_state_presets">%1$d saved</string>
+    <string name="hub_state_log">Log %1$s</string>
+    <string name="hub_state_timers">Custom timers</string>
+    <string name="hub_state_no_probe">No data probe</string>
+    <string name="hub_state_no_retry">No profile fallback</string>
+    <string name="hub_state_version">%1$s \u00B7 core %2$s</string>
+</resources>

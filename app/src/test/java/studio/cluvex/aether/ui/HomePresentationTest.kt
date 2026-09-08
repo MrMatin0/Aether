@@ -11,9 +11,9 @@ import studio.cluvex.aether.model.ConnectionState
 class HomePresentationTest {
     @Test
     fun engineShortcutSelectsSettingsAndBackReturnsToHub() {
-        val engine = HomeRoute().open(SettingsPage.ENGINE)
+        val engine = HomeRoute().open(SettingsPage.CONNECTION)
         assertEquals(HomeTab.SETTINGS, engine.tab)
-        assertEquals(SettingsPage.ENGINE, engine.page)
+        assertEquals(SettingsPage.CONNECTION, engine.page)
         assertTrue(engine.canGoBack)
         assertEquals(HomeRoute(HomeTab.SETTINGS), engine.back())
         assertEquals(HomeRoute(), engine.back().back())
@@ -22,7 +22,7 @@ class HomePresentationTest {
 
     @Test
     fun diagnosticsNavigationClearsAnySettingsPage() {
-        val route = HomeRoute().open(SettingsPage.ENGINE).select(HomeTab.DIAGNOSTICS)
+        val route = HomeRoute().open(SettingsPage.CONNECTION).select(HomeTab.DIAGNOSTICS)
         assertEquals(HomeTab.DIAGNOSTICS, route.tab)
         assertNull(route.page)
         assertEquals(HomeRoute(), route.back())
@@ -46,14 +46,21 @@ class HomePresentationTest {
     @Test
     fun invalidSavedRoutesRecoverWithoutOpeningTheWrongPage() {
         assertEquals(HomeRoute(), HomeRoute.restore(emptyList()))
-        assertEquals(HomeRoute(), HomeRoute.restore(listOf("removed-tab", "ENGINE")))
+        assertEquals(HomeRoute(), HomeRoute.restore(listOf("removed-tab", "CONNECTION")))
         assertEquals(HomeRoute(HomeTab.SETTINGS), HomeRoute.restore(listOf("SETTINGS", "removed-page")))
-        assertEquals(HomeRoute(HomeTab.DIAGNOSTICS), HomeRoute.restore(listOf("DIAGNOSTICS", "ENGINE")))
+        assertEquals(HomeRoute(HomeTab.DIAGNOSTICS), HomeRoute.restore(listOf("DIAGNOSTICS", "CONNECTION")))
+    }
+
+    /** A saved route from a build whose settings pages were named differently. */
+    @Test
+    fun retiredPageNamesFallBackToTheHubInsteadOfCrashing() {
+        assertEquals(HomeRoute(HomeTab.SETTINGS), HomeRoute.restore(listOf("SETTINGS", "ENGINE")))
+        assertEquals(HomeRoute(HomeTab.SETTINGS), HomeRoute.restore(listOf("SETTINGS", "")))
     }
 
     @Test
     fun settingsPageCannotBelongToAnotherTab() {
-        assertFailsWith<IllegalArgumentException> { HomeRoute(HomeTab.HOME, SettingsPage.ENGINE) }
+        assertFailsWith<IllegalArgumentException> { HomeRoute(HomeTab.HOME, SettingsPage.CONNECTION) }
     }
 
     @Test
@@ -72,7 +79,7 @@ class HomePresentationTest {
 
     @Test
     fun uptimeHandlesMissingOrFutureStart() {
-        assertEquals("…", formatSessionUptime(null, 1000))
+        assertEquals("\u2026", formatSessionUptime(null, 1000))
         assertEquals("00:00:00", formatSessionUptime(2000, 1000))
         assertEquals("00:00:00", formatSessionUptime(1000, 1999))
     }
