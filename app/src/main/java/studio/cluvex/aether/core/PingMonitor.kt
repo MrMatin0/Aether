@@ -1,6 +1,5 @@
 package studio.cluvex.aether.core
 
-import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,9 +7,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import studio.cluvex.aether.core.probe.ProbeDefaults
+import studio.cluvex.aether.core.probe.TcpProbe
 import java.net.InetSocketAddress
 import java.net.Proxy
-import java.net.Socket
 
 /** Result of a single latency measurement. */
 data class PingResult(
@@ -20,16 +20,21 @@ data class PingResult(
 )
 
 /**
- * On-demand TCP latency check, ported from the merged PingRepository and
- * adapted to Aether Mobile's tunnel plumbing ([TunnelConfig]).
+ * On-demand TCP latency check.
  *
  * BATTERY DESIGN: there is deliberately NO periodic polling loop anywhere. A
- * measurement runs only when the user taps the test button next to the
- * latency value. Each run is a single TCP handshake to Cloudflare's anycast
- * resolver (1.1.1.1:53) with a hard 5 s timeout, so one measurement costs one
- * packet round-trip and never keeps the CPU awake.
+ * measurement runs only when the user taps the test button next to the latency
+ * value. Each run is a single TCP handshake to Cloudflare's anycast resolver
+ * with a hard timeout, so one measurement costs one packet round trip and never
+ * keeps the CPU awake.
+ *
+ * The measurement itself is [TcpProbe] - the same helper the port check and the
+ * WARP edge scan use, instead of a third private copy of "connect and time it".
  */
 object PingMonitor {
+
+    private const val TAG = "ping"
+
     private val _state = MutableStateFlow(PingResult())
     val state: StateFlow<PingResult> = _state.asStateFlow()
 
@@ -37,12 +42,12 @@ object PingMonitor {
     private val mutex = Mutex()
 
     /**
-     * Measures TCP handshake latency to 1.1.1.1:53.
+     * Measures TCP handshake latency to the anycast resolver.
      *
      * @param viaTunnel when true the probe socket is opened THROUGH the local
-     * SOCKS5 listener of the running engine, so the number reflects the
-     * tunnel's real end-to-end latency; when false it connects directly and
-     * shows the operator's latency instead.
+     * SOCKS5 listener of the running engine, so the number reflects the tunnel's
+     * real end-to-end latency; when false it connects directly and shows the
+     * operator's latency instead.
      */
     suspend fun pingOnce(viaTunnel: Boolean) {
         if (!mutex.tryLock()) return
@@ -50,13 +55,13 @@ object PingMonitor {
             _state.value = PingResult(running = true)
             val ms = try {
                 withContext(Dispatchers.IO) { measure(viaTunnel) }
-            } catch (e: CancellationException) {
-                // A cancelled probe must still clear the "running" flag, or
-                // the test button stays stuck for the rest of the session.
+            } catch (cancelled: CancellationException) {
+                // A cancelled probe must still clear the "running" flag, or the
+                // test button stays stuck for the rest of the session.
                 _state.value = PingResult(error = true)
-                throw e
+                throw cancelled
             }
-            _state.value = if (ms >= 0) PingResult(ms = ms) else PingResult(error = true)
+            _state.value = if (ms == TcpProbe.UNREACHABLE) PingResult(error = true) else PingResult(ms = ms)
         } finally {
             mutex.unlock()
         }
@@ -68,25 +73,31 @@ object PingMonitor {
     }
 
     private fun measure(viaTunnel: Boolean): Long {
-        val start = SystemClock.elapsedRealtime()
-        return try {
-            val socket = if (viaTunnel) {
-                Socket(
-                    Proxy(
-                        Proxy.Type.SOCKS,
-                        InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
-                    ),
-                )
-            } else {
-                Socket()
-            }
-            socket.use { s ->
-                s.connect(InetSocketAddress("1.1.1.1", 53), 5000)
-            }
-            SystemClock.elapsedRealtime() - start
-        } catch (e: Exception) {
-            DiagnosticsLog.w("ping", "Latency probe failed (viaTunnel=$viaTunnel): ${e.message}")
-            -1L
+        val proxy = if (viaTunnel) {
+            Proxy(
+                Proxy.Type.SOCKS,
+                InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
+            )
+        } else {
+            null
         }
+        val target = "${ProbeDefaults.ANYCAST_RESOLVER_IP}:${ProbeDefaults.DNS_PORT}"
+        val measurement = TcpProbe.connect(
+            host = ProbeDefaults.ANYCAST_RESOLVER_IP,
+            port = ProbeDefaults.DNS_PORT,
+            timeoutMs = ProbeDefaults.LATENCY_TIMEOUT_MS,
+            proxy = proxy,
+        )
+        if (measurement.reachable) {
+            DiagnosticsLog.d(TAG, "Latency to $target = ${measurement.ms} ms (viaTunnel=$viaTunnel)")
+        } else {
+            // The REASON was previously dropped on the floor, leaving the panel
+            // with a red dash and no explanation.
+            DiagnosticsLog.w(
+                TAG,
+                "Latency probe to $target failed (viaTunnel=$viaTunnel): ${measurement.failure}",
+            )
+        }
+        return measurement.ms
     }
 }
