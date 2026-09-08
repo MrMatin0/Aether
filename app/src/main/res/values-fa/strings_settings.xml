@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- جست‌وجو -->
+    <string name="hub_search_label">جست‌وجو در تنظیمات</string>
+    <string name="hub_search_clear">پاک کردن جست‌وجو</string>
+    <string name="hub_search_empty">چیزی در تنظیمات با \u00AB%1$s\u00BB همخوان نیست.</string>
+
+    <!-- گروه‌ها، بر پایهٔ کاری که با ترافیک شما می‌کنند -->
+    <string name="hub_group_tunnel">تونل</string>
+    <string name="hub_group_traffic">چه چیزی از آن عبور کند</string>
+    <string name="hub_group_safety">وقتی چیزی خراب می‌شود</string>
+    <string name="hub_group_app">خودِ برنامه</string>
+    <string name="hub_group_maintenance">نگهداری</string>
+    <string name="hub_locked_row">تا وقتی وصل هستید قفل است</string>
+
+    <!-- مقصدهایی که صفحهٔ خودشان را گرفتند -->
+    <string name="section_chain_note">گام‌های اضافی، برای شبکه‌هایی که یک تونل کافی نیست</string>
+    <string name="hub_automation_sub">چه زمانی Aether بی‌آنکه بخواهید وصل شود</string>
+    <string name="hub_history_sub">این دستگاه چه چیزی از نشست‌های شما ثبت کرده است</string>
+
+    <!-- وضعیت زنده، یک خط زیر هر ردیف فهرست -->
+    <string name="hub_state_on">روشن</string>
+    <string name="hub_state_off">خاموش</string>
+    <string name="hub_state_default">پیش‌فرض هسته</string>
+    <string name="hub_state_unprotected">بدون محافظت</string>
+    <string name="hub_state_pinned">نقطهٔ اتصال ثابت</string>
+    <string name="hub_state_all_traffic">همهٔ ترافیک از تونل</string>
+    <string name="hub_state_apps">%1$d برنامه</string>
+    <string name="hub_state_proxy">حالت پراکسی</string>
+    <string name="hub_state_rules">قواعد سفارشی</string>
+    <string name="hub_state_dns">DNS سفارشی</string>
+    <string name="hub_state_fragment">تکه‌تکه‌شده</string>
+    <string name="hub_state_ech">ECH</string>
+    <string name="hub_state_mtu">MTU %1$d</string>
+    <string name="hub_state_keepalive">زنده‌نگهداری %1$d ثانیه</string>
+    <string name="hub_state_kill">کلید قطع</string>
+    <string name="hub_state_kill_strict">کلید قطع، سخت‌گیرانه</string>
+    <string name="hub_state_ipv6">محافظ IPv6</string>
+    <string name="hub_state_retry">حد تلاش %1$d</string>
+    <string name="hub_state_team">سازمان %1$s</string>
+    <string name="hub_state_gateway">دروازه</string>
+    <string name="hub_state_launch">با باز شدن برنامه</string>
+    <string name="hub_state_boot">پس از راه‌اندازی مجدد</string>
+    <string name="hub_state_manual">فقط دستی</string>
+    <string name="hub_state_presets">%1$d ذخیره‌شده</string>
+    <string name="hub_state_log">لاگ %1$s</string>
+    <string name="hub_state_timers">زمان‌سنج‌های سفارشی</string>
+    <string name="hub_state_no_probe">بدون بررسی داده</string>
+    <string name="hub_state_no_retry">بدون پروفایل جایگزین</string>
+    <string name="hub_state_version">%1$s \u00B7 هسته %2$s</string>
+</resources>
