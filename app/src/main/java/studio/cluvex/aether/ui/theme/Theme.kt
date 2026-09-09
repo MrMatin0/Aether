@@ -68,8 +68,17 @@ fun AetherTheme(content: @Composable () -> Unit) {
             controller.isAppearanceLightNavigationBars = !dark
         }
     }
+    // The language decides BOTH the leading multiplier and the bundled face the
+    // type scale is built from (ui/theme/Type.kt): naskh for Persian, Vazirmatn
+    // for Latin. Distinct FontFamily objects, so Compose's typeface cache cannot
+    // serve the previous script's face after an in-app language switch.
     val persian = AppLocale.effective(context) == AppLanguage.PERSIAN
-    val typography = remember(persian) { aetherTypography(if (persian) PERSIAN_LEADING else 1f) }
+    val typography = remember(persian) {
+        aetherTypography(
+            leading = if (persian) PERSIAN_LEADING else 1f,
+            script = if (persian) UiScript.PERSIAN else UiScript.LATIN,
+        )
+    }
     CompositionLocalProvider(
         LocalAetherAccents provides if (dark) DarkAccents else LightAccents,
         LocalReducedMotion provides rememberSystemReducedMotion(),

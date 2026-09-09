@@ -74,21 +74,36 @@ if (useCiKeystore) {
     }
 }
 
-// =============================================================== VAZIRMATN ==
+// ================================================================ UI FONTS ==
 //
-// The UI face, for BOTH scripts (ui/theme/Type.kt). Font binaries follow the
-// same rule as the native cores: never committed. The five weights the type
-// scale actually uses are downloaded once into a gitignored res source set, so
-// they are compiled INTO the APK.
+// ONE FACE PER SCRIPT (ui/theme/Type.kt):
+//
+//   * Vazirmatn             -> the Latin UI. Five static weights.
+//   * Noto Naskh Arabic UI  -> the Persian UI. ONE variable file: its wght axis
+//     runs 400..700 and Compose instantiates every weight from it, so the whole
+//     Persian type scale costs a single ~200 KB resource.
+//
+// Both are OFL. Provenance, licences and how to move the pins: docs/FONTS.md.
+//
+// Font binaries follow the same rule as the native cores: never committed. They
+// are downloaded once into a gitignored res source set, so they are compiled
+// INTO the APK.
 //
 // Why not Google's downloadable-font provider, which would need no files at
 // all: it resolves over the network through Play Services at runtime. This app
 // exists for people on filtered networks with no Play Services and no route to
 // Google, i.e. it would fall back to the system font in exactly the situation
 // where the app is being used. A bundled font always renders.
+//
+// BOTH SOURCES ARE PINNED - a tag for Vazirmatn, a COMMIT for google/fonts,
+// which has no tags and whose default branch moves several times a day. Rule 2
+// of .github/workflows/build.yml: the APK attached to a tag is the APK that
+// tag's source produces, not whatever a mirror happened to serve that morning.
 val vazirmatnVersion = "33.003"
-val vazirmatnFontDir = layout.projectDirectory.dir("src/main/res-fonts/font").asFile
-val vazirmatnFontPath = vazirmatnFontDir.relativeTo(rootDir).invariantSeparatorsPath
+val notoNaskhArabicCommit = "5fb648bb932bf1cdcd5fd71a73b79097e8666c36"
+val uiFontDir = layout.projectDirectory.dir("src/main/res-fonts/font").asFile
+val uiFontPath = uiFontDir.relativeTo(rootDir).invariantSeparatorsPath
+// Android resource names are lowercase snake_case, upstream ships CamelCase.
 val vazirmatnWeights = mapOf(
     "vazirmatn_regular" to "Vazirmatn-Regular.ttf",
     "vazirmatn_medium" to "Vazirmatn-Medium.ttf",
@@ -96,53 +111,68 @@ val vazirmatnWeights = mapOf(
     "vazirmatn_bold" to "Vazirmatn-Bold.ttf",
     "vazirmatn_extrabold" to "Vazirmatn-ExtraBold.ttf",
 )
+val notoNaskhArabicFonts = mapOf(
+    // The brackets in the upstream name are percent-encoded: URI() rejects them
+    // raw, because square brackets are reserved for IPv6 hosts.
+    "noto_naskh_arabic_ui" to "NotoNaskhArabicUI%5Bwght%5D.ttf",
+)
 
 // Created at configuration time so resource merging never sees a missing dir.
-vazirmatnFontDir.mkdirs()
+uiFontDir.mkdirs()
 
 // Declares its inputs and outputs, so unlike the previous version it is
 // actually up-to-date-checked instead of re-running on every single build, and
 // each download gets three attempts before the build gives up on a flaky link.
-val fetchVazirmatn = tasks.register("fetchVazirmatn") {
+val fetchUiFonts = tasks.register("fetchUiFonts") {
     group = "build setup"
-    description = "Downloads the Vazirmatn weights used by the Compose type scale."
-    val fontDir = vazirmatnFontDir
-    val weights = vazirmatnWeights
-    val version = vazirmatnVersion
-    val relPath = vazirmatnFontPath
-    inputs.property("vazirmatnVersion", version)
-    inputs.property("vazirmatnWeights", weights.toSortedMap().toString())
+    description = "Downloads the bundled UI faces used by the Compose type scale."
+    val fontDir = uiFontDir
+    val relPath = uiFontPath
+    val vazirmatn = vazirmatnWeights
+    val vazirmatnRef = vazirmatnVersion
+    val notoNaskhArabic = notoNaskhArabicFonts
+    val notoNaskhArabicRef = notoNaskhArabicCommit
+    inputs.property("vazirmatnVersion", vazirmatnRef)
+    inputs.property("vazirmatnWeights", vazirmatn.toSortedMap().toString())
+    inputs.property("notoNaskhArabicCommit", notoNaskhArabicRef)
+    inputs.property("notoNaskhArabicFonts", notoNaskhArabic.toSortedMap().toString())
     outputs.dir(fontDir)
     // Network downloads have no business in the remote build cache.
     outputs.cacheIf { false }
     doLast {
         // Host assembled from fragments, same convention as scripts/fetch-natives.sh.
-        val base = "https://" + "raw.githubusercontent.com" +
-            "/rastikerdar/vazirmatn/v" + version + "/fonts/ttf"
+        val raw = "https://" + "raw.githubusercontent.com"
+        val sources = listOf(
+            "$raw/rastikerdar/vazirmatn/v$vazirmatnRef/fonts/ttf" to vazirmatn,
+            "$raw/google/fonts/$notoNaskhArabicRef/ofl/notonaskharabicui" to notoNaskhArabic,
+        )
         val failed = mutableListOf<String>()
-        weights.forEach { (resName, fileName) ->
-            val target = File(fontDir, "$resName.ttf")
-            // Already vendored (previous build, or copied in by hand): leave it.
-            if (target.length() > 1024L) return@forEach
-            var ok = false
-            for (attempt in 1..3) {
-                ok = runCatching {
-                    URI("$base/$fileName").toURL().openStream().use { stream ->
-                        target.outputStream().use { stream.copyTo(it) }
-                    }
-                }.isSuccess && target.length() > 1024L
-                if (ok) break
-                target.delete()
-                logger.lifecycle("Vazirmatn: $fileName attempt $attempt failed, retrying")
+        sources.forEach { (base, files) ->
+            files.forEach { (resName, fileName) ->
+                val target = File(fontDir, "$resName.ttf")
+                // Already vendored (previous build, or copied in by hand): leave it.
+                if (target.length() > 1024L) return@forEach
+                var ok = false
+                for (attempt in 1..3) {
+                    ok = runCatching {
+                        URI("$base/$fileName").toURL().openStream().use { stream ->
+                            target.outputStream().use { stream.copyTo(it) }
+                        }
+                    }.isSuccess && target.length() > 1024L
+                    if (ok) break
+                    target.delete()
+                    logger.lifecycle("UI fonts: $fileName attempt $attempt failed, retrying")
+                }
+                if (!ok) failed += fileName
             }
-            if (!ok) failed += fileName
         }
         if (failed.isNotEmpty()) {
             throw GradleException(
-                "Could not fetch Vazirmatn (${failed.joinToString()}). Run " +
+                "Could not fetch the UI fonts (${failed.joinToString()}). Run " +
                     "scripts/fetch-fonts.sh on a connected machine, or copy the TTFs " +
-                    "into $relPath yourself (lowercase names, e.g. " +
-                    "vazirmatn_regular.ttf), then build again.",
+                    "into $relPath yourself (lowercase names: vazirmatn_regular.ttf, " +
+                    "vazirmatn_medium.ttf, vazirmatn_semibold.ttf, vazirmatn_bold.ttf, " +
+                    "vazirmatn_extrabold.ttf and noto_naskh_arabic_ui.ttf), then build again.",
             )
         }
     }
@@ -213,7 +243,7 @@ android {
     sourceSets {
         getByName("main") {
             // Fetched font binaries live outside res/ so the committed resource
-            // tree stays free of blobs. See fetchVazirmatn above.
+            // tree stays free of blobs. See fetchUiFonts above.
             res.srcDir("src/main/res-fonts")
         }
     }
@@ -319,8 +349,8 @@ android {
     }
 }
 
-// The font has to be on disk before resource merging reads the source set.
-tasks.named("preBuild") { dependsOn(fetchVazirmatn) }
+// The fonts have to be on disk before resource merging reads the source set.
+tasks.named("preBuild") { dependsOn(fetchUiFonts) }
 
 // android.kotlinOptions was removed in Kotlin 2.4; compiler options live here.
 kotlin {
