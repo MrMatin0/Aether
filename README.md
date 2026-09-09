@@ -28,7 +28,7 @@ Aether brings endpoint discovery, encrypted tunneling, and configurable routing 
 - **Three connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains when the required binaries and assets are included.
 - **Device-wide or selective access:** Android `VpnService`, proxy-only mode, per-app split tunneling, and routing controls.
 - **Connection controls:** DNS and MTU settings, reconnection options, optional kill switch, IPv6 leak-protection setting, and advanced transport tuning.
-- **Everyday usability:** English and Persian UI, RTL support, bundled typography per script (Noto Naskh Arabic UI for Persian, Vazirmatn for Latin), live traffic information, session history, diagnostics, Quick Settings tile, and home-screen widget.
+- **Everyday usability:** English and Persian UI, RTL support, bundled Vazirmatn typography, live traffic information, session history, diagnostics, Quick Settings tile, and home-screen widget.
 - **Optional LAN sharing:** expose SOCKS5 and HTTP proxies to other devices on a trusted local network.
 
 Feature availability is not a guarantee of connectivity. Reachability depends on your network, the selected core, and the contents of the installed APK.
@@ -168,7 +168,7 @@ bash scripts/fetch-fonts.sh
 
 Psiphon is compiled from upstream source. Tor is extracted from the published `tor-android` AAR by default; `TOR_FROM_SOURCE=1` selects the alternative source-build path. See [chain-core build notes](docs/CHAIN_CORES.md).
 
-Overlay cores are optional for an Aether-only development build. Omitting their binaries or bootstrap assets makes the corresponding modes unavailable. Font retrieval also runs automatically before the Android build; fetching fonts explicitly is useful when preparing dependencies in advance. Both bundled UI faces and their licenses are described in [the font notes](docs/FONTS.md).
+Overlay cores are optional for an Aether-only development build. Omitting their binaries or bootstrap assets makes the corresponding modes unavailable. Font retrieval also runs automatically before the Android build; fetching fonts explicitly is useful when preparing dependencies in advance.
 
 ### 4. Assemble and test
 
@@ -217,7 +217,7 @@ The executables are packaged under `.so` filenames so Android extracts them into
 - **Psiphon or Tor is unavailable:** install a build containing the required core. For Psiphon, also check the bootstrap server list; changing connection settings cannot repair a missing APK asset.
 - **APK will not install as an update:** confirm the application ID, signing certificate, architecture, and version. Avoid uninstalling until you have considered the loss of application data.
 - **Gradle or native build fails:** compare your installed versions with the checked-in toolchain, verify `ANDROID_NDK_HOME`, and check access to dependency repositories. A plain Android build without the native preparation steps is not a complete runnable VPN build.
-- **UI font download fails:** run `bash scripts/fetch-fonts.sh` with network access, or supply the expected font files in `app/src/main/res-fonts/font/` as described by the build error and in [the font notes](docs/FONTS.md).
+- **Vazirmatn download fails:** run `bash scripts/fetch-fonts.sh` with network access, or supply the expected font files in `app/src/main/res-fonts/font/` as described by the build error.
 
 For a useful bug report, include the app version, Android version, device ABI, selected protocol and chain, reproduction steps, expected versus actual behavior, and redacted diagnostics. State whether you used a release APK or built from source.
 
@@ -237,7 +237,6 @@ Do not commit generated APKs, downloaded native binaries, build caches, private 
 
 - [Chaining architecture and limitations](docs/CHAINING.md)
 - [Chain-core packaging and build notes](docs/CHAIN_CORES.md)
-- [Bundled UI fonts and licenses](docs/FONTS.md)
 - [APK signing and update compatibility](docs/SIGNING.md)
 - [Security review history](docs/)
 - [Vendored engine documentation](native/aether/README.md)
@@ -254,7 +253,6 @@ This project builds on the work of Aether Mobile contributors and these upstream
 - [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel): TUN-to-SOCKS forwarding.
 - [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core): Psiphon connectivity.
 - [Tor Android](https://github.com/guardianproject/tor-android) and the [Tor Project](https://www.torproject.org/): Tor integration.
-- [Noto Naskh Arabic UI](https://github.com/notofonts/arabic): Persian and Arabic-script typography.
-- [Vazirmatn](https://github.com/rastikerdar/vazirmatn): Latin typography.
+- [Vazirmatn](https://github.com/rastikerdar/vazirmatn): Persian and Latin typography.
 
 The repository's [LICENSE](LICENSE) declares **GNU AGPL version 3 or later**, with no warranty. Bundled and downloaded third-party components retain their own licenses and notices; review those obligations before redistribution. Project and product names belong to their respective owners; integration does not imply endorsement.
