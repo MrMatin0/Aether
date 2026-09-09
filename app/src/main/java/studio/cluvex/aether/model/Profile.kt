@@ -282,6 +282,44 @@ data class ConnectionProfile(
      */
     val torStrictNodes: Boolean = false,
 
+    // ---- Added in 1.4.7: Tor bridges ----
+
+    /**
+     * WHERE the bridges in [torBridgeLines] came from, and therefore what the
+     * Bridges page shows when it is reopened. [TorBridgeMode.OFF] means tor
+     * connects to the public relays, which is what every build before this one
+     * did.
+     *
+     * This is provenance and UI state, NOT the thing tor is configured with -
+     * see [activeBridgeLines].
+     */
+    val torBridgeMode: TorBridgeMode = TorBridgeMode.OFF,
+
+    /**
+     * The bridge type the page is working with: which built-in list is shown,
+     * and which transport a personal bridge is requested for.
+     *
+     * obfs4 is the default because it is what the Tor Project hands out first,
+     * it is the cheapest of the obfuscated transports, and it is the one most
+     * bridges actually run.
+     */
+    val torBridgeTransport: BridgeTransport = BridgeTransport.OBFS4,
+
+    /**
+     * The bridge lines tor will be given, one per line.
+     *
+     * THE SINGLE SOURCE OF TRUTH for the torrc. Built-in bridges are COPIED in
+     * here when the user picks them rather than resolved at connect time, so
+     * what is configured is exactly what will run - a catalogue that refreshes
+     * itself between the choice and the connection is a setting that changes
+     * behind the user's back.
+     *
+     * Never trusted: every line is re-validated by
+     * [studio.cluvex.aether.core.BridgeLine] before it reaches the torrc,
+     * because this field can hold anything that was pasted into it.
+     */
+    val torBridgeLines: String = "",
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -290,6 +328,26 @@ data class ConnectionProfile(
     /** True when the user pinned one specific gateway by hand. */
     val hasManualPeer: Boolean
         get() = endpointMode == EndpointMode.MANUAL_PEER && manualPeer.isNotBlank()
+
+    /**
+     * True when this profile asks tor to enter the network through bridges.
+     *
+     * Both halves are required: a mode with no lines is a page the user opened
+     * and left, and turning on `UseBridges` with an empty bridge list gives tor
+     * no way to reach the network at all.
+     */
+    val usesBridges: Boolean
+        get() = torBridgeMode.isOn && torBridgeLines.isNotBlank()
+
+    /**
+     * The bridge lines to configure tor with, unvalidated.
+     *
+     * Returns nothing when bridges are off, so switching them off never depends
+     * on also clearing the list - the lines are kept so turning bridges back on
+     * does not mean fetching them again.
+     */
+    fun activeBridgeLines(): List<String> =
+        if (!torBridgeMode.isOn) emptyList() else torBridgeLines.lines()
 
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {

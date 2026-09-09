@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy for the Tor bridges page.
+
+  Its own file, same reasoning as strings_chain.xml: this is the wording most
+  likely to be revised as transports come and go, and one file per language
+  keeps a translation diff readable.
+
+  A note on tone. Every string here that describes a bridge source also says
+  HOW IT FAILS, because that is the only thing that lets a user pick the next
+  one when the current one stops working - and on this page every option works
+  right up until a censor notices it.
+-->
+<resources>
+
+    <!-- ============================================================ page == -->
+    <string name="section_bridges">Tor bridges</string>
+    <string name="section_bridges_note">A way into the Tor network when the network itself is blocked. Pick a built-in bridge, fetch what works where you are, or ask for one of your own.</string>
+
+    <string name="bridges_no_tor_core">This build does not include the Tor core, so bridges have nothing to configure. Build it with scripts/build-overlay-cores.sh tor.</string>
+    <string name="bridges_chain_has_no_tor">Your current chain does not use Tor, so these bridges are saved but not used yet. Pick a Tor mode on the Chain page to put them to work.</string>
+
+    <!-- ========================================================= sources == -->
+    <string name="bridges_mode_label">Where the bridges come from</string>
+
+    <string name="bridge_mode_off">No bridges</string>
+    <string name="bridge_mode_off_desc">Tor connects straight to the public relays. Fastest, and the right answer unless your network blocks Tor.</string>
+
+    <string name="bridge_mode_builtin">Built-in bridges</string>
+    <string name="bridge_mode_builtin_desc">The public list Tor Browser ships. Always available, and blocked first, because everyone has it.</string>
+
+    <string name="bridge_mode_requested">Personal bridge</string>
+    <string name="bridge_mode_requested_desc">Addresses the Tor Project hands to this device alone. In no public list, but you need a working path to the bridge server to get them.</string>
+
+    <string name="bridge_mode_custom">Paste your own</string>
+    <string name="bridge_mode_custom_desc">Lines you already have, from email, from Telegram, or from someone you trust. Only as good as where they came from.</string>
+
+    <!-- ========================================================== types == -->
+    <string name="bridges_type_title">Bridge type</string>
+    <string name="bridges_type_hint">Start with obfs4. Move to Snowflake or WebTunnel when a network blocks fixed addresses rather than the traffic itself.</string>
+    <!-- %1$s is a comma-separated list of missing plugin names. -->
+    <string name="bridges_plugins_missing">This build does not include these transports: %1$s. Build them with scripts/build-pt-transports.sh.</string>
+    <!-- %1$s is the name of the missing pluggable-transport binary. -->
+    <string name="bridges_type_unavailable">Not available: this build has no %1$s binary.</string>
+    <!-- %1$d is how many built-in bridges of that type are known. -->
+    <string name="bridges_builtin_count">%1$d ready</string>
+
+    <string name="bridge_tr_obfs4">obfs4</string>
+    <string name="bridge_tr_obfs4_desc">Makes the traffic look like random data. The common choice, the cheapest one, and what most bridges run.</string>
+
+    <string name="bridge_tr_snowflake">Snowflake</string>
+    <string name="bridge_tr_snowflake_desc">Hops through short-lived volunteer proxies over WebRTC. Good when fixed bridge addresses are blocked; the speed comes and goes.</string>
+
+    <string name="bridge_tr_webtunnel">WebTunnel</string>
+    <string name="bridge_tr_webtunnel_desc">Looks like an ordinary visit to an HTTPS website. For networks that block anything they cannot recognise.</string>
+
+    <string name="bridge_tr_meek">meek</string>
+    <string name="bridge_tr_meek_desc">Hides the connection behind a large CDN. Slow and heavy on data, and the hardest of these to block.</string>
+
+    <string name="bridge_tr_vanilla">Plain bridge</string>
+    <string name="bridge_tr_vanilla_desc">An address and nothing else: no disguise. The only type that needs no extra binary, so it works in every build.</string>
+
+    <!-- ======================================================== built-in == -->
+    <string name="bridges_builtin_title">Built-in bridges</string>
+    <string name="bridges_builtin_note">These are public, and everybody uses the same ones, so a censor can have them on a list. When they stop working, ask for a personal bridge instead.</string>
+    <string name="bridges_builtin_none">No built-in bridge of this type. Refresh the list, or request a personal one.</string>
+    <string name="bridges_use_all">Select all of them</string>
+
+    <string name="bridges_fetch_title">Fetch from the Tor Project</string>
+    <string name="bridges_fetch_note">The request goes to bridges.torproject.org through your live tunnel when one is up, and directly when it is not. On a network that blocks Tor that address is usually blocked too, so connect with Aether or Psiphon first, then come back and fetch.</string>
+
+    <string name="bridges_country_label">Your country (optional)</string>
+    <string name="bridges_country_hint">e.g. IR</string>
+    <string name="bridges_country_help">Two letters. Leave it empty to let the server guess from your address, which with a tunnel up is the country of the tunnel exit rather than yours.</string>
+    <string name="bridges_country_unknown">your location</string>
+
+    <string name="bridges_working">Working...</string>
+    <string name="bridges_ask">Ask what works here</string>
+    <string name="bridges_refresh">Refresh the built-in list</string>
+    <!-- %1$s is a date and time. -->
+    <string name="bridges_updated">List refreshed %1$s</string>
+    <string name="bridges_updated_never">Never refreshed on this device: the list that ships with the app is in use.</string>
+
+    <!-- ======================================================== personal == -->
+    <string name="bridges_personal_title">Personal bridge</string>
+    <string name="bridges_personal_note">One request returns two or three addresses that are in no public list. The pool is rate-limited per network, so keep whatever you are given.</string>
+    <string name="bridges_request">Request a bridge</string>
+    <string name="bridges_request_vanilla">The Tor Project does not hand out plain bridges this way. Choose an obfuscated type above.</string>
+    <string name="bridges_personal_list">Bridges you have received</string>
+    <string name="bridges_personal_empty">None yet.</string>
+
+    <!-- ========================================================== pasted == -->
+    <string name="bridges_custom_title">Paste your own</string>
+    <string name="bridges_custom_note">One bridge per line, exactly as you received it. Other ways to get bridges: send an empty email to bridges@torproject.org from a Gmail or Riseup address, or message @GetBridgesBot on Telegram.</string>
+    <string name="bridges_custom_label">Bridge lines</string>
+    <string name="bridges_custom_placeholder">obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0</string>
+    <!-- %1$d lines this app understood, %2$d it did not. -->
+    <string name="bridges_custom_count">%1$d usable, %2$d ignored</string>
+
+    <!-- ========================================================== in use == -->
+    <!-- %1$d is how many bridges tor will be given. -->
+    <string name="bridges_active_title">In use (%1$d)</string>
+    <string name="bridges_active_empty">Nothing selected, so Tor will connect the usual way. Tick a bridge above.</string>
+    <!-- %1$d is how many selected bridges this build cannot run. -->
+    <string name="bridges_active_unusable">%1$d of these needs a transport this build does not have, and will be ignored.</string>
+    <string name="bridges_copy_all">Copy all</string>
+    <string name="bridges_clear">Clear selection</string>
+    <string name="bridges_privacy_note">Do not publish a personal bridge. A bridge in a screenshot is a bridge that gets reported and blocked, for you and for whoever else was given it.</string>
+    <string name="bridges_forget">Forget this bridge</string>
+    <string name="bridges_remove">Remove</string>
+
+    <!-- ======================================================= outcomes == -->
+    <string name="bridges_route_tunnel">(through your live tunnel)</string>
+    <string name="bridges_route_direct">(directly, with no tunnel)</string>
+    <!-- %1$d bridges in the refreshed list. -->
+    <string name="bridges_refreshed">Built-in list refreshed: %1$d bridges.</string>
+    <!-- %1$d bridges received, %2$s the country they are for. -->
+    <string name="bridges_recommended">%1$d bridges for %2$s received and selected.</string>
+    <!-- %1$s is a country. -->
+    <string name="bridges_not_needed">The Tor Project reports that no bridge is needed in %1$s: plain Tor should connect.</string>
+    <!-- %1$d bridges received. -->
+    <string name="bridges_received">%1$d personal bridges received and selected.</string>
+
+    <string name="bridges_err_unreachable">Could not reach bridges.torproject.org. Connect with Aether or Psiphon first, then request again.</string>
+    <string name="bridges_err_captcha">That captcha answer was refused. Request another one.</string>
+    <string name="bridges_err_no_transport">No bridge of a type this build supports is available for that country. Try Snowflake, or leave the country empty.</string>
+    <!-- %1$d is the error code the server reported. -->
+    <string name="bridges_err_server">The bridge server refused the request (%1$d). Try again later.</string>
+    <string name="bridges_err_malformed">Something answered, but not the bridge server. Your network is rewriting the connection.</string>
+
+    <!-- ======================================================== captcha == -->
+    <string name="bridges_captcha_title">Request a bridge</string>
+    <string name="bridges_captcha_image">Captcha image</string>
+    <string name="bridges_captcha_prompt">Type the characters in the image.</string>
+    <string name="bridges_captcha_no_image">The captcha image could not be shown. Send the request anyway.</string>
+    <string name="bridges_captcha_label">Answer</string>
+    <string name="bridges_captcha_note">Since the Tor Project retired BridgeDB in 2024 this captcha is a static image and the answer is not checked. The app still follows the documented flow, so it keeps working if that ever changes.</string>
+    <string name="bridges_captcha_send">Get bridges</string>
+
+    <!-- ============================================================ hub == -->
+    <string name="bridges_state_none">On, nothing selected</string>
+    <!-- %1$d is how many bridges are in use. -->
+    <string name="bridges_state_count">%1$d bridges</string>
+
+    <!-- Shown on the Chain page, next to what Tor costs. -->
+    <string name="chain_tor_bridges_hint">If Tor cannot connect at all on your network, the Tor bridges page gives it another way in.</string>
+
+</resources>

@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import studio.cluvex.aether.model.BridgeTransport
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
@@ -18,6 +19,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
+import studio.cluvex.aether.model.TorBridgeMode
 import studio.cluvex.aether.vpn.AetherVpnService
 
 /**
@@ -162,6 +164,10 @@ object ProfileCodec {
         add("psiphonConfig=${flattenJson(p.psiphonConfig)}")
         add("torExit=${flatten(p.torExitCountry)}")
         add("torStrict=${p.torStrictNodes}")
+        // Added in 1.4.7 (Tor bridges)
+        add("torBridgeMode=${p.torBridgeMode.name}")
+        add("torBridgeTransport=${p.torBridgeTransport.name}")
+        add("torBridges=${flattenBridges(p.torBridgeLines)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -230,6 +236,12 @@ object ProfileCodec {
                 psiphonConfig = map["psiphonConfig"] ?: d.psiphonConfig,
                 torExitCountry = map["torExit"] ?: d.torExitCountry,
                 torStrictNodes = map["torStrict"]?.toBooleanStrictOrNull() ?: d.torStrictNodes,
+                // Same reasoning as the two above: an imported config can spell
+                // these the way a human would.
+                torBridgeMode = TorBridgeMode.fromStored(map["torBridgeMode"]) ?: d.torBridgeMode,
+                torBridgeTransport = BridgeTransport.fromStored(map["torBridgeTransport"])
+                    ?: d.torBridgeTransport,
+                torBridgeLines = map["torBridges"]?.let { unflattenBridges(it) } ?: d.torBridgeLines,
             )
         }.getOrDefault(d)
     }
@@ -271,4 +283,26 @@ object ProfileCodec {
      * as any parser is concerned.
      */
     private fun flattenJson(value: String): String = value.lineSequence().joinToString(" ")
+
+    /**
+     * Bridge lines: a THIRD fold, and it has to be.
+     *
+     * [flatten] would join them with commas, and a bridge line contains commas
+     * of its own - a built-in snowflake line carries
+     * `fronts=a.example,b.example` and eight comma-separated `ice=` servers. So
+     * splitting on a comma cannot reconstruct the lines, and the transport most
+     * likely to be reached for when obfs4 is blocked would be the one that
+     * arrives corrupted. [flattenJson] is no better: folding to a space merges
+     * two bridges into one unparseable line.
+     *
+     * '|' is safe: it appears in no bridge-line grammar (a URL must
+     * percent-encode it) and [BridgeLine] rejects any line containing one, so a
+     * round trip is exact. It also cannot be confused with the 1.0/1.1 legacy
+     * payload, which is only tried when the whole document has no '=' in it.
+     */
+    private fun flattenBridges(value: String): String =
+        value.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("|")
+
+    private fun unflattenBridges(value: String): String =
+        value.split('|').map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
 }
