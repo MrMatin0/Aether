@@ -4,13 +4,14 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Stylised "A" shield mark -->
-    <group android:scaleX="0.62" android:scaleY="0.62" android:pivotX="54" android:pivotY="54">
-        <path
-            android:fillColor="#4C8DFF"
-            android:pathData="M54,20L82,86L66,86L54,54L42,86L26,86Z" />
-        <path
-            android:fillColor="#32E0C4"
-            android:pathData="M54,44L64,70L44,70Z" />
-    </group>
+    <!-- Aether orbital-tunnel mark. Keep this layer solid for Android 13+ themed icons. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16,48C18,30 34,17 53,17C72,17 88,29 93,45C84,39 75,31 62,29C49,27 38,32 29,42C24,47 20,50 16,48Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M15,68C24,60 34,52 45,47C57,41 68,42 76,49C82,55 83,63 80,71C77,61 70,56 62,55C53,54 44,60 34,68C26,74 19,78 14,76C11,75 11,71 15,68Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M20,79C31,84 44,84 57,81C70,78 82,70 94,61L94,78C88,83 79,89 68,93C52,99 35,94 24,86C22,84 20,82 20,79Z" />
 </vector>
