@@ -1,10 +1,22 @@
 package studio.cluvex.aether.ui
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AcUnit
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AppLanguage
 import studio.cluvex.aether.data.ThemeMode
+import studio.cluvex.aether.model.BridgeTransport
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
@@ -13,6 +25,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
+import studio.cluvex.aether.model.TorBridgeMode
 
 /*
  * Enum -> localized label, in one place.
@@ -120,6 +133,66 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether_desc)
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
+}
+
+/*
+ * Bridges.
+ *
+ * Same rule as the chain modes: the NAME of a bridge source says nothing about
+ * when to reach for it, and the difference between the three is the whole point.
+ * A built-in bridge is public and therefore the first thing a censor blocks; a
+ * requested one is handed to you alone but needs a working path to the bridge
+ * server; a pasted one is only as good as wherever it came from.
+ */
+
+@Composable
+internal fun bridgeModeLabel(mode: TorBridgeMode): String = when (mode) {
+    TorBridgeMode.OFF -> stringResource(R.string.bridge_mode_off)
+    TorBridgeMode.BUILTIN -> stringResource(R.string.bridge_mode_builtin)
+    TorBridgeMode.REQUESTED -> stringResource(R.string.bridge_mode_requested)
+    TorBridgeMode.CUSTOM -> stringResource(R.string.bridge_mode_custom)
+}
+
+@Composable
+internal fun bridgeModeDescription(mode: TorBridgeMode): String = when (mode) {
+    TorBridgeMode.OFF -> stringResource(R.string.bridge_mode_off_desc)
+    TorBridgeMode.BUILTIN -> stringResource(R.string.bridge_mode_builtin_desc)
+    TorBridgeMode.REQUESTED -> stringResource(R.string.bridge_mode_requested_desc)
+    TorBridgeMode.CUSTOM -> stringResource(R.string.bridge_mode_custom_desc)
+}
+
+internal fun bridgeModeIcon(mode: TorBridgeMode): ImageVector = when (mode) {
+    TorBridgeMode.OFF -> Icons.Rounded.Block
+    TorBridgeMode.BUILTIN -> Icons.Rounded.Public
+    TorBridgeMode.REQUESTED -> Icons.Rounded.Key
+    TorBridgeMode.CUSTOM -> Icons.Rounded.ContentPaste
+}
+
+@Composable
+internal fun bridgeTransportLabel(transport: BridgeTransport): String = when (transport) {
+    BridgeTransport.OBFS4 -> stringResource(R.string.bridge_tr_obfs4)
+    BridgeTransport.SNOWFLAKE -> stringResource(R.string.bridge_tr_snowflake)
+    BridgeTransport.WEBTUNNEL -> stringResource(R.string.bridge_tr_webtunnel)
+    BridgeTransport.MEEK -> stringResource(R.string.bridge_tr_meek)
+    BridgeTransport.VANILLA -> stringResource(R.string.bridge_tr_vanilla)
+}
+
+@Composable
+internal fun bridgeTransportDescription(transport: BridgeTransport): String = when (transport) {
+    BridgeTransport.OBFS4 -> stringResource(R.string.bridge_tr_obfs4_desc)
+    BridgeTransport.SNOWFLAKE -> stringResource(R.string.bridge_tr_snowflake_desc)
+    BridgeTransport.WEBTUNNEL -> stringResource(R.string.bridge_tr_webtunnel_desc)
+    BridgeTransport.MEEK -> stringResource(R.string.bridge_tr_meek_desc)
+    BridgeTransport.VANILLA -> stringResource(R.string.bridge_tr_vanilla_desc)
+}
+
+/** One glyph per transport, so the picker is scannable without reading it. */
+internal fun bridgeTransportIcon(transport: BridgeTransport): ImageVector = when (transport) {
+    BridgeTransport.OBFS4 -> Icons.Rounded.Shield
+    BridgeTransport.SNOWFLAKE -> Icons.Rounded.AcUnit
+    BridgeTransport.WEBTUNNEL -> Icons.Rounded.Language
+    BridgeTransport.MEEK -> Icons.Rounded.Cloud
+    BridgeTransport.VANILLA -> Icons.Rounded.Link
 }
 
 /*

@@ -144,13 +144,12 @@ internal fun BridgeSection(
     var outcome by remember { mutableStateOf<BridgeOutcome?>(null) }
     var challenge by remember { mutableStateOf<BridgeChallenge?>(null) }
 
-    /** Writes a set of lines back, canonicalised, and never while connected. */
-    fun setLines(lines: List<String>) {
+    /** Writes a set of lines back, canonicalised. Refused while connected by [edit]. */
+    val setLines: (List<String>) -> Unit = { lines ->
         val text = BridgeLine.canonicalText(lines)
         edit { copy(torBridgeLines = text) }
     }
-
-    fun toggle(line: String) {
+    val toggle: (String) -> Unit = { line ->
         val current = selected.map { it.line }
         setLines(if (line in current) current - line else current + line)
     }
@@ -216,27 +215,26 @@ internal fun BridgeSection(
                 NoticeBar(
                     text = stringResource(
                         R.string.bridges_plugins_missing,
-                        plugins.missing.mapNotNull { it.plugin?.id }.distinct()
-                            .joinToString(", "),
+                        plugins.missing.mapNotNull { it.plugin?.id }.distinct().joinToString(", "),
                     ),
                     tone = accents.working,
                     icon = Icons.Rounded.Warning,
                 )
             }
 
-            // -------------------------------------------------------- the rows
             Spacer(Modifier.height(EngineSpacing.Divider))
             EngineDivider()
 
             when (bridgeMode) {
                 TorBridgeMode.BUILTIN -> BuiltinBlock(
-                    transport = transport,
                     lines = catalog[transport].orEmpty(),
                     selectedLines = selectedLines,
                     updatedAt = stored.catalogUpdatedAt,
                     busy = busy,
                     enabled = enabled,
-                    onToggle = ::toggle,
+                    country = country,
+                    onCountryChange = { country = it },
+                    onToggle = toggle,
                     onUseAll = { setLines(catalog[transport].orEmpty()) },
                     onRefresh = {
                         busy = true
@@ -247,10 +245,8 @@ internal fun BridgeSection(
                                     count = result.value.values.sumOf { it.size },
                                     viaTunnel = result.viaTunnel,
                                 )
-                                is BridgeResult.Failed -> BridgeOutcome.Failed(
-                                    result.failure,
-                                    result.code,
-                                )
+                                is BridgeResult.Failed ->
+                                    BridgeOutcome.Failed(result.failure, result.code)
                             }
                             busy = false
                         }
@@ -266,24 +262,20 @@ internal fun BridgeSection(
                             outcome = when (result) {
                                 is BridgeResult.Ok -> {
                                     val bundles = result.value.bundles
-                                    val offered = bundles.flatMap { it.lines }
                                     val usable = BridgeLine.usable(
-                                        BridgeLine.parseAll(offered),
+                                        BridgeLine.parseAll(bundles.flatMap { it.lines }),
                                         plugins.supportedTorNames,
                                     ).map { it.line }
                                     // Bridges moat handed over for this client
                                     // alone are kept like a personal request:
-                                    // they are not in any public list and they
-                                    // do not come back on demand.
-                                    val private = bundles.filter { it.isPrivate }
-                                        .flatMap { it.lines }
-                                    if (private.isNotEmpty()) store.addPersonal(private)
+                                    // they are in no public list and they do not
+                                    // come back on demand.
+                                    val handedOver =
+                                        bundles.filter { it.isPrivate }.flatMap { it.lines }
+                                    if (handedOver.isNotEmpty()) store.addPersonal(handedOver)
                                     if (usable.isNotEmpty()) {
-                                        bundles.firstOrNull()?.let { first ->
-                                            BridgeTransport.fromMoatName(first.type)?.let { type ->
-                                                edit { copy(torBridgeTransport = type) }
-                                            }
-                                        }
+                                        BridgeTransport.fromMoatName(bundles.first().type)
+                                            ?.let { type -> edit { copy(torBridgeTransport = type) } }
                                         setLines(usable)
                                     }
                                     if (bundles.isEmpty()) {
@@ -302,8 +294,6 @@ internal fun BridgeSection(
                             busy = false
                         }
                     },
-                    country = country,
-                    onCountryChange = { country = it },
                 )
 
                 TorBridgeMode.REQUESTED -> RequestBlock(
@@ -312,7 +302,7 @@ internal fun BridgeSection(
                     selectedLines = selectedLines,
                     busy = busy,
                     enabled = enabled,
-                    onToggle = ::toggle,
+                    onToggle = toggle,
                     onForget = { line -> scope.launch { store.removePersonal(line) } },
                     onRequest = {
                         busy = true
@@ -322,7 +312,6 @@ internal fun BridgeSection(
                                 is BridgeResult.Ok -> challenge = BridgeChallenge(
                                     token = result.value.challenge,
                                     imageBase64 = result.value.image,
-                                    viaTunnel = result.viaTunnel,
                                 )
                                 is BridgeResult.Failed ->
                                     outcome = BridgeOutcome.Failed(result.failure, result.code)
@@ -406,7 +395,6 @@ internal fun BridgeSection(
     challenge?.let { pending ->
         BridgeRequestDialog(
             challenge = pending,
-            transport = transport,
             onDismiss = { challenge = null },
             onSubmit = { solution ->
                 val token = pending.token
@@ -441,25 +429,20 @@ internal sealed interface BridgeOutcome {
 }
 
 /** A captcha waiting to be answered. */
-internal data class BridgeChallenge(
-    val token: String,
-    val imageBase64: String,
-    val viaTunnel: Boolean,
-)
+internal data class BridgeChallenge(val token: String, val imageBase64: String)
 
 @Composable
 private fun OutcomeNotice(outcome: BridgeOutcome) {
     val accents = LocalAetherAccents.current
-    val route = { viaTunnel: Boolean ->
-        if (viaTunnel) {
-            stringResource(R.string.bridges_route_tunnel)
-        } else {
-            stringResource(R.string.bridges_route_direct)
-        }
-    }
+    // Resolved OUTSIDE the branches: stringResource is a composable call and
+    // cannot be made from a plain lambda.
+    val viaTunnel = stringResource(R.string.bridges_route_tunnel)
+    val direct = stringResource(R.string.bridges_route_direct)
+    val unknownCountry = stringResource(R.string.bridges_country_unknown)
+    val route: (Boolean) -> String = { if (it) " $viaTunnel" else " $direct" }
     when (outcome) {
         is BridgeOutcome.Refreshed -> NoticeBar(
-            text = stringResource(R.string.bridges_refreshed, outcome.count) + " " +
+            text = stringResource(R.string.bridges_refreshed, outcome.count) +
                 route(outcome.viaTunnel),
             tone = accents.protected,
             icon = Icons.Rounded.CheckCircle,
@@ -468,21 +451,21 @@ private fun OutcomeNotice(outcome: BridgeOutcome) {
             text = stringResource(
                 R.string.bridges_recommended,
                 outcome.count,
-                outcome.country?.uppercase() ?: stringResource(R.string.bridges_country_unknown),
-            ) + " " + route(outcome.viaTunnel),
+                outcome.country?.uppercase() ?: unknownCountry,
+            ) + route(outcome.viaTunnel),
             tone = accents.protected,
             icon = Icons.Rounded.CheckCircle,
         )
         is BridgeOutcome.NotNeeded -> NoticeBar(
             text = stringResource(
                 R.string.bridges_not_needed,
-                outcome.country?.uppercase() ?: stringResource(R.string.bridges_country_unknown),
+                outcome.country?.uppercase() ?: unknownCountry,
             ),
             tone = accents.working,
             icon = Icons.Rounded.Info,
         )
         is BridgeOutcome.Received -> NoticeBar(
-            text = stringResource(R.string.bridges_received, outcome.count) + " " +
+            text = stringResource(R.string.bridges_received, outcome.count) +
                 route(outcome.viaTunnel),
             tone = accents.protected,
             icon = Icons.Rounded.CheckCircle,
@@ -492,10 +475,8 @@ private fun OutcomeNotice(outcome: BridgeOutcome) {
                 BridgeFailure.UNREACHABLE -> stringResource(R.string.bridges_err_unreachable)
                 BridgeFailure.CAPTCHA_REFUSED -> stringResource(R.string.bridges_err_captcha)
                 BridgeFailure.NO_TRANSPORT -> stringResource(R.string.bridges_err_no_transport)
-                BridgeFailure.SERVER -> stringResource(
-                    R.string.bridges_err_server,
-                    outcome.code ?: 0,
-                )
+                BridgeFailure.SERVER ->
+                    stringResource(R.string.bridges_err_server, outcome.code ?: 0)
                 BridgeFailure.MALFORMED -> stringResource(R.string.bridges_err_malformed)
             },
             tone = accents.failed,
@@ -542,10 +523,7 @@ private fun BridgeModeCard(
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    text = bridgeModeLabel(mode),
-                    style = MaterialTheme.typography.titleMedium,
-                )
+                Text(bridgeModeLabel(mode), style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     text = bridgeModeDescription(mode),
@@ -640,24 +618,18 @@ private fun TransportCard(
 // --------------------------------------------------------------- the blocks
 
 @Composable
-private fun ColumnScopeBuiltin(
-    content: @Composable () -> Unit,
-) = content()
-
-@Composable
 private fun BuiltinBlock(
-    transport: BridgeTransport,
     lines: List<String>,
     selectedLines: Set<String>,
     updatedAt: Long,
     busy: Boolean,
     enabled: Boolean,
+    country: String,
+    onCountryChange: (String) -> Unit,
     onToggle: (String) -> Unit,
     onUseAll: () -> Unit,
     onRefresh: () -> Unit,
     onAsk: () -> Unit,
-    country: String,
-    onCountryChange: (String) -> Unit,
 ) {
     val accents = LocalAetherAccents.current
     SectionRule(stringResource(R.string.bridges_builtin_title), topSpace = 24)
@@ -676,18 +648,18 @@ private fun BuiltinBlock(
         )
     } else {
         lines.forEach { line ->
-            val parsed = BridgeLine.parse(line)
+            val canonical = BridgeLine.parse(line)
             SelectableBridgeRow(
-                label = parsed?.shortLabel ?: line,
-                line = parsed?.line ?: line,
-                checked = (parsed?.line ?: line) in selectedLines,
+                label = canonical?.shortLabel ?: line,
+                line = canonical?.line ?: line,
+                checked = (canonical?.line ?: line) in selectedLines,
                 enabled = enabled,
-                onToggle = { onToggle(parsed?.line ?: line) },
+                onToggle = { onToggle(canonical?.line ?: line) },
             )
         }
         Spacer(Modifier.height(EngineSpacing.Inline))
         ActionPill(
-            label = stringResource(R.string.bridges_use_all, transport.torName.ifEmpty { "" }),
+            label = stringResource(R.string.bridges_use_all),
             onClick = onUseAll,
             icon = Icons.Rounded.Checklist,
             enabled = enabled,
@@ -719,9 +691,7 @@ private fun BuiltinBlock(
     Spacer(Modifier.height(EngineSpacing.Inline))
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ActionPill(
-            label = stringResource(
-                if (busy) R.string.bridges_working else R.string.bridges_ask,
-            ),
+            label = stringResource(if (busy) R.string.bridges_working else R.string.bridges_ask),
             onClick = onAsk,
             icon = Icons.Rounded.CloudDownload,
             enabled = enabled && !busy,
@@ -764,9 +734,7 @@ private fun RequestBlock(
     )
     Spacer(Modifier.height(EngineSpacing.Field))
     ActionPill(
-        label = stringResource(
-            if (busy) R.string.bridges_working else R.string.bridges_request,
-        ),
+        label = stringResource(if (busy) R.string.bridges_working else R.string.bridges_request),
         onClick = onRequest,
         icon = Icons.Rounded.CloudDownload,
         enabled = enabled && !busy && transport.needsPlugin,
@@ -785,13 +753,13 @@ private fun RequestBlock(
         Hint(stringResource(R.string.bridges_personal_empty))
     } else {
         personal.forEach { line ->
-            val parsed = BridgeLine.parse(line)
+            val canonical = BridgeLine.parse(line)
             SelectableBridgeRow(
-                label = parsed?.shortLabel ?: line,
-                line = parsed?.line ?: line,
-                checked = (parsed?.line ?: line) in selectedLines,
+                label = canonical?.shortLabel ?: line,
+                line = canonical?.line ?: line,
+                checked = (canonical?.line ?: line) in selectedLines,
                 enabled = enabled,
-                onToggle = { onToggle(parsed?.line ?: line) },
+                onToggle = { onToggle(canonical?.line ?: line) },
                 onRemove = { onForget(line) },
             )
         }
@@ -817,7 +785,13 @@ private fun CustomBlock(
         label = { Text(stringResource(R.string.bridges_custom_label)) },
         placeholder = { Text(stringResource(R.string.bridges_custom_placeholder)) },
         supportingText = {
-            Text(stringResource(R.string.bridges_custom_count, parsedCount, raw - parsedCount))
+            Text(
+                stringResource(
+                    R.string.bridges_custom_count,
+                    parsedCount,
+                    (raw - parsedCount).coerceAtLeast(0),
+                ),
+            )
         },
         modifier = Modifier.fillMaxWidth(),
     )
@@ -936,7 +910,7 @@ private fun ActiveBridgeRow(
 }
 
 /**
- * `2026-09-09 21:15`, in the device's own locale-independent form.
+ * `2026-09-09 21:15`.
  *
  * Deliberately not a relative time ("3 days ago"): the only question this answers
  * is "is this list older than the block I am trying to get past", and a date
