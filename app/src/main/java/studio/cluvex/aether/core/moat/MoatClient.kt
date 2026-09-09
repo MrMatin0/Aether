@@ -48,9 +48,18 @@ internal class MoatClient(
     private val timeoutMs: Int = DEFAULT_TIMEOUT_MS,
 ) {
 
-    /** The public built-in list. No arguments, so no body is needed. */
-    fun builtin(): Map<String, List<String>> =
-        MoatPayloads.builtin(post("$BASE/circumvention/builtin", JSON, "{}"))
+    /**
+     * The public built-in list, UNPARSED.
+     *
+     * The raw body is what gets stored (see
+     * [studio.cluvex.aether.data.BridgeStore]): the meaning of a transport key
+     * belongs to [studio.cluvex.aether.core.BridgeCatalog], and a stored map
+     * would have to be migrated every time upstream adds one.
+     */
+    fun builtinBody(): String = post("$BASE/circumvention/builtin", JSON, "{}")
+
+    /** The built-in list, parsed. */
+    fun builtin(): Map<String, List<String>> = MoatPayloads.builtin(builtinBody())
 
     /**
      * What the Tor Project believes works from [country], or from wherever this
@@ -113,7 +122,7 @@ internal class MoatClient(
                 body = body,
                 limitBytes = MAX_RESPONSE_BYTES,
             )
-            DiagnosticsLog.d(TAG, "moat $path -> $response via $route")
+            DiagnosticsLog.d(TAG, "moat $path -> $response")
             // moat answers 200 for its own errors, so a non-2xx here is the
             // infrastructure in front of it (a CDN block page, a rate limiter,
             // a captive portal) and its body is not a moat document at all.

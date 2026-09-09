@@ -71,6 +71,17 @@ object CoreAvailability {
          * user to discover it from a three-minute connect attempt.
          */
         val psiphonServerList: Boolean = false,
+        /**
+         * A refreshed built-in bridge list was bundled
+         * (`assets/tor/bridges.json`, from `scripts/fetch-tor-bridges.sh`).
+         *
+         * Not required: [BridgeCatalog] carries a compiled-in copy, for the same
+         * reason [PsiphonCore] carries its own config - a bridge feature whose
+         * first use needs a successful network request on a censored network is a
+         * feature that does not work when it is needed. This only records whether
+         * this build shipped something fresher.
+         */
+        val torBridgeListBundled: Boolean = false,
     ) {
         /**
          * The Aether engine is mandatory, so it is available by construction.
@@ -111,12 +122,14 @@ object CoreAvailability {
             psiphonConfigBundled = hasAsset(context, PsiphonCore.ASSET_CONFIG),
             torGeoipBundled = hasAsset(context, "${TorCore.ASSET_DIR}/geoip"),
             psiphonServerList = hasAsset(context, PsiphonCore.ASSET_SERVER_LIST),
+            torBridgeListBundled = hasAsset(context, BridgeCatalog.ASSET),
         )
         DiagnosticsLog.i(
             TAG,
             "Build payload: psiphon=${snapshot.psiphonBinary} tor=${snapshot.torBinary} " +
                 "psiphonServers=${snapshot.psiphonServerList} " +
-                "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled}",
+                "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled} " +
+                "bridgeList=${snapshot.torBridgeListBundled}",
         )
         return snapshot
     }

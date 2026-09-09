@@ -71,16 +71,15 @@ object BridgeService {
     private const val TAG = "bridges"
 
     /** Refreshes the built-in list and stores it. Returns what the picker will show. */
-    suspend fun refreshBuiltin(context: Context): BridgeResult<Map<BridgeTransport, List<String>>> =
-        attempt(context) { client ->
-            // Kept as the RAW body: BridgeCatalog owns the meaning of it, and a
-            // stored map would have to be migrated when a transport is added.
-            val body = client.builtinRaw()
-            val parsed = BridgeCatalog.parse(body)
-            if (parsed.isEmpty()) throw JsonLite.JsonException("no built-in bridges in the reply")
-            BridgeStore(context).saveCatalog(body)
-            parsed
-        }
+    suspend fun refreshBuiltin(
+        context: Context,
+    ): BridgeResult<Map<BridgeTransport, List<String>>> = attempt { client ->
+        val body = client.builtinBody()
+        val parsed = BridgeCatalog.parse(body)
+        if (parsed.isEmpty()) throw JsonLite.JsonException("no built-in bridges in the reply")
+        BridgeStore(context).saveCatalog(body)
+        parsed
+    }
 
     /**
      * What the Tor Project recommends for [country] (or for wherever the request
@@ -92,12 +91,10 @@ object BridgeService {
      * list.
      */
     suspend fun recommended(
-        context: Context,
         country: String?,
         transports: List<BridgeTransport>,
-    ): BridgeResult<MoatPayloads.Settings> = attempt(context) { client ->
-        val names = transports.filter { it.needsPlugin || it == BridgeTransport.VANILLA }
-            .map { it.moatName }
+    ): BridgeResult<MoatPayloads.Settings> = attempt { client ->
+        val names = transports.map { it.moatName }
         val answer = client.settings(country, names)
         // A country moat has no specific advice for gets the defaults rather
         // than an empty page: the user asked a question and there is an answer.
@@ -110,9 +107,8 @@ object BridgeService {
 
     /** Step one of a personal request: the captcha. */
     suspend fun challenge(
-        context: Context,
         transport: BridgeTransport,
-    ): BridgeResult<MoatPayloads.Challenge> = attempt(context) { client ->
+    ): BridgeResult<MoatPayloads.Challenge> = attempt { client ->
         client.challenge(listOf(transport.moatName))
     }
 
@@ -122,7 +118,7 @@ object BridgeService {
         transport: BridgeTransport,
         challenge: String,
         solution: String,
-    ): BridgeResult<List<String>> = attempt(context) { client ->
+    ): BridgeResult<List<String>> = attempt { client ->
         val lines = client.bridges(transport.moatName, challenge, solution)
         val usable = BridgeLine.parseAll(lines).map { it.line }
         if (usable.isEmpty()) throw JsonLite.JsonException("no usable bridge lines in the reply")
@@ -140,23 +136,22 @@ object BridgeService {
      * went wrong onto a [BridgeFailure].
      */
     private suspend fun <T> attempt(
-        context: Context,
-        block: (MoatClientFacade) -> T,
-    ): BridgeResult<T> = withContext(Dispatchers.IO) {
-        val routes = buildList {
+        block: suspend (MoatClient) -> T,
+    ): BridgeResult<T> = withContext<BridgeResult<T>>(Dispatchers.IO) {
+        val routes = buildList<Pair<MoatRoute, Boolean>> {
             tunnelRoute()?.let { add(it to true) }
             add(MoatRoute.Direct to false)
         }
-        var last: BridgeResult.Failed = BridgeResult.Failed(BridgeFailure.UNREACHABLE)
+        var last: BridgeResult<T> = BridgeResult.Failed(BridgeFailure.UNREACHABLE)
         for ((route, viaTunnel) in routes) {
             try {
-                val value = block(MoatClientFacade(MoatClient(route)))
+                val value = block(MoatClient(route))
                 DiagnosticsLog.i(TAG, "Bridge request succeeded (viaTunnel=$viaTunnel).")
                 return@withContext BridgeResult.Ok(value, viaTunnel)
             } catch (e: MoatPayloads.MoatError) {
                 DiagnosticsLog.w(TAG, "moat refused the request: ${e.message}")
-                // A server that ANSWERED is a server that is reachable, so there
-                // is nothing another route can fix. Stop here with its own reason.
+                // A server that ANSWERED is reachable, so there is nothing another
+                // route can fix. Stop here, with its own reason.
                 return@withContext BridgeResult.Failed(
                     failure = when (e.code) {
                         419 -> BridgeFailure.CAPTCHA_REFUSED
@@ -170,7 +165,10 @@ object BridgeService {
                 DiagnosticsLog.w(TAG, "Unusable reply from the bridge server: ${e.message}")
                 last = BridgeResult.Failed(BridgeFailure.MALFORMED, detail = e.message)
             } catch (e: IOException) {
-                DiagnosticsLog.w(TAG, "Bridge server unreachable (viaTunnel=$viaTunnel): ${e.message}")
+                DiagnosticsLog.w(
+                    TAG,
+                    "Bridge server unreachable (viaTunnel=$viaTunnel): ${e.message}",
+                )
                 last = BridgeResult.Failed(BridgeFailure.UNREACHABLE, detail = e.message)
             } catch (e: Exception) {
                 DiagnosticsLog.w(TAG, "Bridge request failed: ${e.message}")
@@ -192,18 +190,4 @@ object BridgeService {
         } else {
             null
         }
-
-    /**
-     * Keeps [MoatClient] internal to its own package while still letting the
-     * calls above read as one flow. Nothing here adds behaviour.
-     */
-    private class MoatClientFacade(private val client: MoatClient) {
-        fun builtinRaw(): String = client.builtinBody()
-        fun settings(country: String?, transports: List<String>) =
-            client.settings(country, transports)
-        fun defaults(transports: List<String>) = client.defaults(transports)
-        fun challenge(transports: List<String>) = client.challenge(transports)
-        fun bridges(transport: String, challenge: String, solution: String) =
-            client.bridges(transport, challenge, solution)
-    }
 }
