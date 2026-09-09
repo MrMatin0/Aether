@@ -19,6 +19,12 @@ build/
 app/src/main/jniLibs/
 app/src/main/cpp/hev-socks5-tunnel/
 
+# Built-in Tor bridge list, refreshed at build time by
+# scripts/fetch-tor-bridges.sh. Same rule as every other build-time artifact:
+# the compiled-in fallback in core/BridgeCatalog.kt is the committed source of
+# truth, and a JSON snapshot that is stale the day it lands is not.
+app/src/main/assets/tor/bridges.json
+
 # UI font binaries, same rule as the native cores: never committed. The
 # fetchVazirmatn Gradle task (or scripts/fetch-fonts.sh) populates this res
 # source set on the first build.

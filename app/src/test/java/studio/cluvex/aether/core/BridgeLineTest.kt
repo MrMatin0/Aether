@@ -77,7 +77,9 @@ class BridgeLineTest {
         // Upstream adds transports faster than an app updates. The line is still
         // usable as long as the build has a plugin serving that name.
         val parsed = assertNotNull(
-            BridgeLine.parse("conjure 1.2.3.4:443 AAAABBBBCCCCDDDDEEEEFFFF00001111 url=https://x.invalid"),
+            BridgeLine.parse(
+                "conjure 1.2.3.4:443 AAAABBBBCCCCDDDDEEEEFFFF0000111122223333 url=https://x.invalid",
+            ),
         )
         assertEquals("conjure", parsed.transportName)
         assertNull(parsed.transport)
@@ -111,14 +113,14 @@ class BridgeLineTest {
     fun `an out of range port is dropped rather than handed to tor`() {
         // tor rejects the whole bridge line, so one typo would cost every other
         // bridge in the list too.
-        assertNull(BridgeLine.parse("obfs4 1.2.3.4:99999 AAAA"))
+        assertNull(BridgeLine.parse("obfs4 1.2.3.4:99999 cert=x"))
         assertNull(BridgeLine.parse("obfs4 1.2.3.4:0 cert=x"))
         assertNotNull(BridgeLine.parse("obfs4 1.2.3.4:65535 cert=x"))
     }
 
     @Test
     fun `a line longer than the cap is refused`() {
-        val long = "obfs4 1.2.3.4:443 " + "cert=" + "a".repeat(BridgeLine.MAX_LENGTH)
+        val long = "obfs4 1.2.3.4:443 cert=" + "a".repeat(BridgeLine.MAX_LENGTH)
         assertNull(BridgeLine.parse(long))
     }
 
