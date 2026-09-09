@@ -17,7 +17,7 @@ object MoatPayloads {
     class MoatError(val code: Int, val detail: String) :
         Exception("moat error $code: $detail")
 
-    /** One `bridges` entry of a `/circumvention/*` response. */
+    /** One `bridges` entry of a `/circumvention/...` response. */
     data class Bundle(
         /** moat's transport name (`obfs4`, `snowflake`, `meek`, `vanilla`). */
         val type: String,
