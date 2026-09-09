@@ -85,9 +85,15 @@ object BridgeLine {
      *  - `\` is a torrc LINE CONTINUATION, so a value ending in one silently
      *    swallows the next line;
      *  - `"` starts a torrc quoted value, with its own escaping rules;
-     *  - `#` starts a comment, so it can delete the rest of a line.
+     *  - `#` starts a comment, so it can delete the rest of a line;
+     *  - `|` is what [studio.cluvex.aether.core.ProfileCodec] folds bridge lines
+     *    on when it packs them into a single-line Intent payload. Rejecting it
+     *    here is what makes that round trip EXACT rather than usually exact.
+     *
+     * None of them appears in any bridge-line grammar: a URL has to
+     * percent-encode all four.
      */
-    private const val FORBIDDEN = "\\\"#"
+    private const val FORBIDDEN = "\\\"#|"
 
     /** A validated bridge line, and the pieces the UI wants to show. */
     data class Parsed(
