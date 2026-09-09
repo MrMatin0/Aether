@@ -178,6 +178,11 @@ internal fun ChainSection(
                 icon = Icons.Rounded.HourglassEmpty,
             )
 
+            // Bridges are their own destination, and this is where a user finds
+            // out they exist: the card above says Tor is blocked outright on many
+            // Iranian networks, and without this that is a dead end.
+            Hint(stringResource(R.string.chain_tor_bridges_hint))
+
             Spacer(Modifier.height(EngineSpacing.Field))
             CountryField(
                 value = torExitCountry,
