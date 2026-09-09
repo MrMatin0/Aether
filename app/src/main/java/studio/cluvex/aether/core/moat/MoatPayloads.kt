@@ -11,7 +11,7 @@ package studio.cluvex.aether.core.moat
  *
  * Reference: `doc/moat.md` in tpo/anti-censorship/rdsys.
  */
-internal object MoatPayloads {
+object MoatPayloads {
 
     /** An error object moat answered with. Always HTTP 200, per the spec. */
     class MoatError(val code: Int, val detail: String) :
