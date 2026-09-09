@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import studio.cluvex.aether.model.BridgeTransport
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
@@ -18,6 +19,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
+import studio.cluvex.aether.model.TorBridgeMode
 
 private val Context.dataStore by preferencesDataStore(name = "aether_profile")
 
@@ -79,6 +81,15 @@ class ProfileStore(private val context: Context) {
         val psiphonConfig = stringPreferencesKey("psiphonConfig")
         val torExitCountry = stringPreferencesKey("torExitCountry")
         val torStrictNodes = booleanPreferencesKey("torStrictNodes")
+        // Added in 1.4.7 (Tor bridges)
+        val torBridgeMode = stringPreferencesKey("torBridgeMode")
+        val torBridgeTransport = stringPreferencesKey("torBridgeTransport")
+        /**
+         * Newline separated, exactly as tor will receive them. A preferences
+         * file has no line framing of its own, so unlike the Intent payload
+         * (see ProfileCodec) nothing has to be folded here.
+         */
+        val torBridgeLines = stringPreferencesKey("torBridgeLines")
     }
 
     /**
@@ -91,6 +102,15 @@ class ProfileStore(private val context: Context) {
      * The Psiphon client config deliberately stays HERE: it is a public,
      * network-issued client identity (propagation channel + sponsor + server
      * list URLs), not a user credential, and every Psiphon client ships one.
+     *
+     * Bridge lines stay here too, and that is a deliberate call rather than an
+     * oversight: a bridge address is not a credential (it authenticates nobody
+     * and is shared by everyone using that bridge), and the alternative -
+     * sealing them - would make them unreadable to a user trying to copy their
+     * working bridges to another device, which is a thing people on filtered
+     * networks actually do. What they ARE is sensitive in a different sense: a
+     * personal bridge in a screenshot is a bridge that can be reported. The UI
+     * says so where it matters.
      */
     private val secrets = SecretStore(context)
 
@@ -172,6 +192,14 @@ class ProfileStore(private val context: Context) {
             psiphonConfig = prefs[Keys.psiphonConfig] ?: "",
             torExitCountry = prefs[Keys.torExitCountry] ?: "",
             torStrictNodes = prefs[Keys.torStrictNodes] ?: false,
+            // Not valueOf(): both enums accept the aliases a hand-written or
+            // imported config can carry ("manual", "meek-azure", ...), and a
+            // value neither understands keeps the default instead of throwing
+            // the whole profile away.
+            torBridgeMode = TorBridgeMode.fromStored(prefs[Keys.torBridgeMode]) ?: d.torBridgeMode,
+            torBridgeTransport = BridgeTransport.fromStored(prefs[Keys.torBridgeTransport])
+                ?: d.torBridgeTransport,
+            torBridgeLines = prefs[Keys.torBridgeLines] ?: "",
         )
     }
 
@@ -224,6 +252,9 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.psiphonConfig] = profile.psiphonConfig
             prefs[Keys.torExitCountry] = profile.torExitCountry
             prefs[Keys.torStrictNodes] = profile.torStrictNodes
+            prefs[Keys.torBridgeMode] = profile.torBridgeMode.name
+            prefs[Keys.torBridgeTransport] = profile.torBridgeTransport.name
+            prefs[Keys.torBridgeLines] = profile.torBridgeLines
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which
