@@ -13,4 +13,8 @@
     <string name="passage_session">This session</string>
     <string name="passage_details">Connection details</string>
     <string name="passage_scan_note">Scan time depends on your network and scan mode. Ironclad can take up to 6 minutes.</string>
+
+    <!-- Connection tab: the route card, and the header of the phase track -->
+    <string name="passage_route_title">How you’ll be routed</string>
+    <string name="passage_phase_title">Bringing the tunnel up</string>
 </resources>

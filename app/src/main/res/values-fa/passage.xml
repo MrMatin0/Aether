@@ -13,4 +13,8 @@
     <string name="passage_session">این نشست</string>
     <string name="passage_details">جزئیات اتصال</string>
     <string name="passage_scan_note">زمان جستجو به شبکه و حالت اسکن بستگی دارد. Ironclad ممکن است تا ۶ دقیقه طول بکشد.</string>
+
+    <!-- تب اتصال: کارت مسیر و سرصفحهٔ نوار مراحل -->
+    <string name="passage_route_title">مسیر عبور شما</string>
+    <string name="passage_phase_title">در حال برقراری تونل</string>
 </resources>
