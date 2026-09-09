@@ -65,6 +65,13 @@ internal fun EngineDestination(
                 torExitCountry = profile.torExitCountry, torStrictNodes = profile.torStrictNodes,
                 enabled = enabled, edit = edit,
             )
+            // The chain is passed so the page can say when bridges are
+            // configured but nothing in the current chain will use them.
+            SettingsPage.BRIDGES -> BridgeSection(
+                bridgeMode = profile.torBridgeMode, transport = profile.torBridgeTransport,
+                bridgeLines = profile.torBridgeLines, chain = profile.chain,
+                enabled = enabled, edit = edit,
+            )
             SettingsPage.TRANSPORT -> {
                 TransportSection(
                     noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,

@@ -25,6 +25,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AppLocale
+import studio.cluvex.aether.core.BridgeLine
 import studio.cluvex.aether.core.SessionTracker
 import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.data.PresetStore
@@ -53,7 +54,7 @@ import studio.cluvex.aether.ui.theme.AetherMetaLabel
  * in exactly one group is unreachable, which is what the unit test checks.
  */
 enum class SettingsPage {
-    CONNECTION, CHAIN, TRANSPORT,
+    CONNECTION, CHAIN, BRIDGES, TRANSPORT,
     ROUTING, SHARING,
     SECURITY, ORGANIZATION,
     APPEARANCE, AUTOMATION, HISTORY, SETUPS,
@@ -67,7 +68,8 @@ enum class SettingsPage {
      */
     internal val editsProfile: Boolean
         get() = when (this) {
-            CONNECTION, CHAIN, TRANSPORT, ROUTING, SECURITY, ORGANIZATION, TUNING, RESET, SETUPS -> true
+            CONNECTION, CHAIN, BRIDGES, TRANSPORT, ROUTING, SECURITY, ORGANIZATION, TUNING,
+            RESET, SETUPS -> true
             SHARING, APPEARANCE, AUTOMATION, HISTORY, ABOUT -> false
         }
 
@@ -86,7 +88,12 @@ enum class SettingsPage {
 internal enum class SettingsGroup(val label: Int, val pages: List<SettingsPage>) {
     TUNNEL(
         R.string.hub_group_tunnel,
-        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.TRANSPORT),
+        listOf(
+            SettingsPage.CONNECTION,
+            SettingsPage.CHAIN,
+            SettingsPage.BRIDGES,
+            SettingsPage.TRANSPORT,
+        ),
     ),
     TRAFFIC(
         R.string.hub_group_traffic,
@@ -111,6 +118,7 @@ internal fun settingsPageTitle(page: SettingsPage): String = stringResource(
     when (page) {
         SettingsPage.CONNECTION -> R.string.section_connection
         SettingsPage.CHAIN -> R.string.section_chain
+        SettingsPage.BRIDGES -> R.string.section_bridges
         SettingsPage.TRANSPORT -> R.string.section_transport
         SettingsPage.ROUTING -> R.string.section_routing
         SettingsPage.SHARING -> R.string.share_title
@@ -131,6 +139,7 @@ internal fun settingsPageSubtitle(page: SettingsPage): String = stringResource(
     when (page) {
         SettingsPage.CONNECTION -> R.string.section_connection_note
         SettingsPage.CHAIN -> R.string.section_chain_note
+        SettingsPage.BRIDGES -> R.string.section_bridges_note
         SettingsPage.TRANSPORT -> R.string.section_transport_note
         SettingsPage.ROUTING -> R.string.section_routing_note
         SettingsPage.SHARING -> R.string.page_sharing_sub
@@ -149,6 +158,7 @@ internal fun settingsPageSubtitle(page: SettingsPage): String = stringResource(
 internal fun settingsPageIcon(page: SettingsPage): ImageVector = when (page) {
     SettingsPage.CONNECTION -> Icons.Rounded.Cable
     SettingsPage.CHAIN -> Icons.Rounded.Layers
+    SettingsPage.BRIDGES -> Icons.Rounded.AltRoute
     SettingsPage.TRANSPORT -> Icons.Rounded.SwapVert
     SettingsPage.ROUTING -> Icons.Rounded.Route
     SettingsPage.SHARING -> Icons.Rounded.WifiTethering
@@ -401,6 +411,7 @@ private fun settingsEntries(profile: ConnectionProfile): List<SettingsEntry> {
     return listOf(
         entryOf(SettingsPage.CONNECTION, connectionStateLine(profile)),
         entryOf(SettingsPage.CHAIN, chainLabel(profile.chain)),
+        entryOf(SettingsPage.BRIDGES, bridgeStateLine(profile)),
         entryOf(SettingsPage.TRANSPORT, transportStateLine(profile)),
         entryOf(SettingsPage.ROUTING, routingStateLine(profile)),
         entryOf(
@@ -457,6 +468,25 @@ private fun connectionStateLine(profile: ConnectionProfile): String = listOf(
     },
     ipLabel(profile.ipVersion),
 ).joinToString(DOT)
+
+/**
+ * The bridge row: the type and HOW MANY, because one is a single point of
+ * failure and the count is the only thing on this page that predicts whether a
+ * Tor bootstrap will survive a bridge going down.
+ *
+ * Counted through [BridgeLine] rather than by counting lines, so a half-pasted
+ * line is not advertised on the hub as a working bridge.
+ */
+@Composable
+private fun bridgeStateLine(profile: ConnectionProfile): String {
+    if (!profile.torBridgeMode.isOn) return stringResource(R.string.hub_state_off)
+    val count = BridgeLine.parseAll(profile.torBridgeLines).size
+    if (count == 0) return stringResource(R.string.bridges_state_none)
+    return listOf(
+        bridgeTransportLabel(profile.torBridgeTransport),
+        stringResource(R.string.bridges_state_count, count),
+    ).joinToString(DOT)
+}
 
 @Composable
 private fun transportStateLine(profile: ConnectionProfile): String {
