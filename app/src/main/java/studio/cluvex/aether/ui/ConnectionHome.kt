@@ -372,7 +372,10 @@ private fun StateBadge(state: ConnectionState, tone: Color) {
                     .size(9.dp)
                     .drawBehind {
                         val alpha = blink.value
-                        drawCircle(color = tone.copy(alpha = alpha * 0.28f), radius = size.minDimension / 2f)
+                        drawCircle(
+                            color = tone.copy(alpha = alpha * 0.28f),
+                            radius = size.minDimension / 2f,
+                        )
                         drawCircle(
                             color = tone.copy(alpha = alpha),
                             radius = size.minDimension / 3.2f,
@@ -861,14 +864,19 @@ private fun BentoTile(
 /**
  * A rate, as a bar.
  *
- * Two weighted boxes, so it costs a layout pass and no draw code. The fill never
- * reaches zero width: an idle second should read as "nothing moving", not as a
- * broken widget.
+ * A fractional-width fill inside a track: one Box in one Box, so it costs a
+ * layout pass and no draw code. NOT two weighted children - a saturated meter
+ * would resolve the trailing weight to 0, and Compose rejects a zero weight
+ * outright, which would have turned the fastest connections into a crash on the
+ * one screen that must never fail.
+ *
+ * The fill never reaches zero width either: an idle second should read as
+ * "nothing moving", not as a broken widget.
  */
 @Composable
 private fun MeterBar(fraction: Float, tint: Color) {
     val safe = fraction.coerceIn(0.02f, 1f)
-    Row(
+    Box(
         Modifier
             .fillMaxWidth()
             .height(5.dp)
@@ -877,7 +885,7 @@ private fun MeterBar(fraction: Float, tint: Color) {
     ) {
         Box(
             Modifier
-                .weight(safe)
+                .fillMaxWidth(safe)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(3.dp))
                 .background(
@@ -886,7 +894,6 @@ private fun MeterBar(fraction: Float, tint: Color) {
                     ),
                 ),
         )
-        Spacer(Modifier.weight(1f - safe))
     }
 }
 
