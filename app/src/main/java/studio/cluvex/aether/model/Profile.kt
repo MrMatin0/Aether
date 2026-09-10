@@ -286,14 +286,28 @@ data class ConnectionProfile(
 
     /**
      * WHERE the bridges in [torBridgeLines] came from, and therefore what the
-     * Bridges page shows when it is reopened. [TorBridgeMode.OFF] means tor
-     * connects to the public relays, which is what every build before this one
-     * did.
+     * Bridges page shows when it is reopened.
+     *
+     * ### Why the default is BUILTIN and not OFF
+     *
+     * Because of WHEN this setting is read. It only ever applies to a session
+     * whose chain contains Tor - and the reason somebody in Iran selects a Tor
+     * chain mode is that the ordinary internet is not working for them. Tor's
+     * public relay list is public, so on those exact networks a bridgeless tor
+     * sits at 5% and reports the network as blocked. Shipping OFF meant the
+     * feature that makes the Tor hop work at all was one the user had to go and
+     * find first, in a settings page they had no reason to suspect existed.
+     *
+     * So a Tor chain mode now comes with bridges already on, the built-in list
+     * already selected (see [studio.cluvex.aether.core.BridgePlan]) and obfs4 as
+     * the transport. Turning them OFF is still one tap, and it is honoured
+     * verbatim from then on - see ProfileStore for how a stored OFF from a build
+     * that had no other choice is told apart from a chosen one.
      *
      * This is provenance and UI state, NOT the thing tor is configured with -
      * see [activeBridgeLines].
      */
-    val torBridgeMode: TorBridgeMode = TorBridgeMode.OFF,
+    val torBridgeMode: TorBridgeMode = TorBridgeMode.BUILTIN,
 
     /**
      * The bridge type the page is working with: which built-in list is shown,
@@ -301,7 +315,9 @@ data class ConnectionProfile(
      *
      * obfs4 is the default because it is what the Tor Project hands out first,
      * it is the cheapest of the obfuscated transports, and it is the one most
-     * bridges actually run.
+     * bridges actually run. When a build cannot launch it - no lyrebird - the
+     * ladder in [studio.cluvex.aether.core.BridgePlan] moves on to a transport
+     * it can, so this default can never strand a session.
      */
     val torBridgeTransport: BridgeTransport = BridgeTransport.OBFS4,
 
@@ -312,7 +328,8 @@ data class ConnectionProfile(
      * here when the user picks them rather than resolved at connect time, so
      * what is configured is exactly what will run - a catalogue that refreshes
      * itself between the choice and the connection is a setting that changes
-     * behind the user's back.
+     * behind the user's back. A fresh profile is seeded with the built-in list
+     * for the same reason, by ProfileStore, once.
      *
      * Never trusted: every line is re-validated by
      * [studio.cluvex.aether.core.BridgeLine] before it reaches the torrc,
@@ -332,12 +349,16 @@ data class ConnectionProfile(
     /**
      * True when this profile asks tor to enter the network through bridges.
      *
-     * Both halves are required: a mode with no lines is a page the user opened
-     * and left, and turning on `UseBridges` with an empty bridge list gives tor
-     * no way to reach the network at all.
+     * The MODE alone decides it. This used to also require a non-empty
+     * [torBridgeLines], which was right when an empty list meant tor got
+     * `UseBridges` and nothing to use it with - but it no longer does: with
+     * bridges on and no lines of its own,
+     * [studio.cluvex.aether.core.BridgePlan] falls back to the built-in list for
+     * a transport this build can launch. So "on" really does mean bridges, and a
+     * user who cleared the list has not silently switched the feature off.
      */
     val usesBridges: Boolean
-        get() = torBridgeMode.isOn && torBridgeLines.isNotBlank()
+        get() = torBridgeMode.isOn
 
     /**
      * The bridge lines to configure tor with, unvalidated.
@@ -345,9 +366,19 @@ data class ConnectionProfile(
      * Returns nothing when bridges are off, so switching them off never depends
      * on also clearing the list - the lines are kept so turning bridges back on
      * does not mean fetching them again.
+     *
+     * Blank lines are dropped, and that is load-bearing rather than tidy:
+     * `"".lines()` is a list of ONE empty string, so without this a profile with
+     * bridges on and nothing in the field would hand the parser a line to reject
+     * on every single connect, and "the list is empty" and "the list has one
+     * unparseable entry" would look identical in the log.
      */
     fun activeBridgeLines(): List<String> =
-        if (!torBridgeMode.isOn) emptyList() else torBridgeLines.lines()
+        if (!torBridgeMode.isOn) {
+            emptyList()
+        } else {
+            torBridgeLines.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        }
 
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {
