@@ -138,6 +138,14 @@ internal object Torrc {
  * the meantime. `Bootstrapped 100%` is the only thing that means ready, and the
  * intermediate percentages are worth showing the user, because a Tor bootstrap
  * that has reached 80% is progress and one that sits at 5% is a blocked network.
+ *
+ * ### One process, ONE attempt
+ *
+ * tor reads its torrc once, at startup. Changing which bridges it uses therefore
+ * means a new process, which is why this class takes ONE [BridgeAttempt] and
+ * knows nothing about the ladder: walking it is
+ * [studio.cluvex.aether.vpn.session.ChainStack]'s job, and it does so with a
+ * fresh [TorCore] per rung.
  */
 class TorCore(
     private val context: Context,
@@ -162,10 +170,47 @@ class TorCore(
     val isReady: Boolean get() = bootstrapPercent >= 100
 
     /**
+     * The bridge ladder for [profile]: what to try, and in what order.
+     *
+     * Resolved HERE rather than in [BridgePlan] itself because it needs the
+     * payload - which PT binaries this build ships, and what the bundled
+     * catalogue contains - and [BridgePlan] stays pure so the ordering can be
+     * unit-tested. Never empty; see [BridgePlan.of].
+     */
+    fun attempts(profile: ConnectionProfile): List<BridgeAttempt> {
+        val transports = PluggableTransports.of(context)
+        if (transports.missing.isNotEmpty()) {
+            DiagnosticsLog.w(
+                TAG,
+                "This build cannot launch " +
+                    transports.missing.mapNotNull { it.plugin?.id }.distinct().joinToString(", ") +
+                    " - those bridge types are skipped. Build them with " +
+                    "scripts/build-pt-transports.sh all.",
+            )
+        }
+        val plan = BridgePlan.of(
+            profile = profile,
+            catalog = BridgeCatalog.bundled(context),
+            supportedTorNames = transports.supportedTorNames,
+        )
+        DiagnosticsLog.i(
+            TAG,
+            "Bridge plan: " + plan.joinToString(" -> ") { "${it.label} (${it.lines.size})" },
+        )
+        return plan
+    }
+
+    /**
      * @param upstreamPort local SOCKS5 port tor must make all its connections
      *   through (the previous hop), or null to reach the Tor network directly.
+     * @param attempt which rung of the ladder this process is. Defaults to the
+     *   first, so a caller that does not care about fallback still gets bridges.
      */
-    fun start(profile: ConnectionProfile, upstreamPort: Int?) {
+    fun start(
+        profile: ConnectionProfile,
+        upstreamPort: Int?,
+        attempt: BridgeAttempt = attempts(profile).first(),
+    ) {
         bootstrapPercent = 0
         val geoip = installGeoip("geoip")
         val geoip6 = installGeoip("geoip6")
@@ -176,35 +221,35 @@ class TorCore(
             )
         }
 
-        // BRIDGES. Resolved here because it needs the payload (which PT binaries
-        // this build ships) and [Torrc] must stay pure. The filtering itself
-        // lives in BridgeLine, so the settings page and the torrc agree on what
-        // is runnable - see PluggableTransports for why a wrong answer here does
-        // not degrade the session but ends it.
+        // BRIDGES. [attempt] is already filtered to what this build can launch
+        // (see BridgePlan), and it is filtered AGAIN here through the same
+        // BridgeLine.usable the torrc uses - this method is reachable with a
+        // hand-built attempt, and an obfs4 line with no ClientTransportPlugin
+        // does not degrade the session, it ends it before tor finishes starting.
         val transports = PluggableTransports.of(context)
-        val requested = BridgeLine.parseAll(profile.activeBridgeLines())
-        val usable = BridgeLine.usable(requested, transports.supportedTorNames)
-        if (usable.size != requested.size) {
+        val usable = BridgeLine.usable(
+            BridgeLine.parseAll(attempt.lines),
+            transports.supportedTorNames,
+        )
+        if (usable.size != attempt.lines.size) {
             DiagnosticsLog.w(
                 TAG,
-                "Ignoring ${requested.size - usable.size} bridge(s): this build has no " +
-                    "pluggable transport for them. Build them with " +
-                    "scripts/build-pt-transports.sh, or use plain bridges.",
-            )
-        }
-        if (usable.isEmpty() && requested.isNotEmpty()) {
-            DiagnosticsLog.e(
-                TAG,
-                "No usable bridge is left, so tor will connect to the public relays " +
-                    "instead. On a network that blocks Tor this attempt will fail.",
+                "Ignoring ${attempt.lines.size - usable.size} bridge(s): this build has no " +
+                    "pluggable transport for them.",
             )
         }
         val plugins = transports.pluginsFor(BridgeLine.transportsOf(usable))
         if (usable.isNotEmpty()) {
             DiagnosticsLog.i(
                 TAG,
-                "Using ${usable.size} bridge(s): " +
-                    BridgeLine.transportsOf(usable).ifEmpty { listOf("plain") }.joinToString(", "),
+                "Entering the Tor network through ${usable.size} bridge(s) via " +
+                    "${attempt.label} (plugins: ${plugins.values.distinct().size}).",
+            )
+        } else {
+            DiagnosticsLog.w(
+                TAG,
+                "No usable bridge for this attempt - connecting to the public relays. On a " +
+                    "network that blocks the Tor network itself this will fail.",
             )
         }
 
@@ -255,8 +300,8 @@ class TorCore(
         }
         DiagnosticsLog.e(
             TAG,
-            "Tor stalled at ${bootstrapPercent}% after ${timeoutMs / 1000}s - the network is " +
-                "blocking the Tor network itself. Try bridges, Tor over Aether or Tor over Psiphon.",
+            "Tor stalled at ${bootstrapPercent}% after ${timeoutMs / 1000}s - this transport is " +
+                "not getting through. Trying the next one, or Tor over Aether / Tor over Psiphon.",
         )
         return false
     }
