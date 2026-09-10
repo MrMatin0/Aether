@@ -32,6 +32,59 @@ With a chain underneath (`Tor over Aether`), tor's `Socks5Proxy` line is exporte
 to the transport as `TOR_PT_PROXY`, and both lyrebird and snowflake honour it. So
 "obfs4 over Aether" is one configuration and not two features fighting.
 
+## On by default, and why
+
+Bridges used to default to `OFF`. That was wrong, and not in a matter-of-taste
+way: the setting is only ever read for a session whose chain contains Tor, and
+the reason somebody picks a Tor chain mode is that the ordinary internet is not
+working for them. On those exact networks a bridgeless tor sits at 5% for four
+minutes and reports Tor as blocked. So the feature that makes the Tor hop work
+was one the user had to go and find first, in a page they had no reason to suspect
+existed.
+
+What ships now:
+
+* `ConnectionProfile.torBridgeMode` defaults to `BUILTIN`, with obfs4 selected;
+* `ProfileStore` seeds the bundled catalogue into `torBridgeLines` **once**, while
+  the key is still absent, so the Bridges page opens on a real selection rather
+  than an empty list - and a user who clears it stays cleared;
+* a stored `OFF` from 1.4.7 is read as the new default until the profile has been
+  written by a build that had another option (`torBridgeChosen`), then honoured
+  verbatim. Exactly the migration the obfuscation default got, for the same
+  reason: every profile 1.4.7 saved says `OFF`, and that is not the same fact as
+  a user who chose to run without bridges.
+
+Turning them off is still one tap, and off means off.
+
+## The transport ladder
+
+A blocked TRANSPORT is not a blocked network. obfs4 is what every censor spends
+its effort on, precisely because it is what every client reaches for first, and
+the same DPI box is routinely blind to a snowflake WebRTC flow or a webtunnel
+session that looks like HTTPS to an ordinary website.
+
+So "which bridges" has an ordered answer (`core/BridgePlan.kt`, pure and
+unit-tested):
+
+1. what the profile actually carries - pasted, personal, or a built-in selection
+   the user made. Always first: a personal bridge from moat is scarce and was
+   requested for a reason;
+2. the built-in list for the profile's transport, then the rest of
+   obfs4 -> snowflake -> webtunnel -> meek, skipping every transport this build
+   cannot launch.
+
+`ChainStack.startTor` walks that ladder: a rung that does not reach
+`Bootstrapped 100%` costs a fresh tor process on the next transport instead of
+the whole session. tor reads its torrc exactly once at startup, so each rung is a
+new process by necessity, not by choice.
+
+Budgets are deliberately asymmetric (`VpnTunables`): the LAST rung gets the full
+four minutes, because "is Tor reachable here at all" deserves patience. An earlier
+one gets 90 s, because "is THIS transport getting through" does not - a transport
+that will work is normally past 50% inside a minute, and one being filtered sits
+at 5% forever. The ladder is capped at three rungs; beyond that it stops being a
+fallback and starts being a spinner.
+
 ## Three sources, three failure modes
 
 The Bridges page is built around the fact that these fail differently, and that
@@ -63,8 +116,8 @@ dies instantly, with nothing in the log about bridges. That is why:
 * `core/PluggableTransports.kt` reads the payload once and reports which binaries
   this build actually has;
 * the Bridges page **disables** a type it cannot run and names the missing binary;
-* `BridgeLine.usable()` filters the list, and BOTH the settings page and
-  `Torrc.build` go through it, so they cannot disagree;
+* `BridgeLine.usable()` filters the list, and the settings page, `BridgePlan` and
+  `Torrc.build` all go through it, so they cannot disagree;
 * `UseBridges 1` is only written when at least one line survived, because
   `UseBridges` with an empty bridge list is a tor that cannot reach anything.
 
@@ -140,7 +193,15 @@ blocked.
 
 ## Building the transports
 
-They are **optional**, like the overlay cores.
+They are **NOT optional any more**, and that is the single biggest change here.
+
+Until now nothing in this repository ever called `scripts/build-pt-transports.sh`
+- not the workflow, not Gradle, not the natives job. So **no APK has ever
+contained a pluggable transport**: `PluggableTransports` found none,
+`BridgeLine.usable()` correctly dropped every obfuscated bridge line before the
+torrc, and 1.4.7 shipped a complete, working Bridges page whose every selection
+was silently discarded. The symptom was not an error message. It was a Tor hop
+connecting to the public relays on networks that block them.
 
 ```bash
 export ANDROID_NDK_HOME=/path/to/ndk
@@ -157,16 +218,77 @@ bash scripts/fetch-tor-bridges.sh           # needs no NDK
 All three are plain Go with no C dependency chain, so unlike tor itself there is
 no reason to take a prebuilt binary. They are packaged under `.so` names for the
 same reason the cores are: `nativeLibraryDir` is one of the few places Android
-still allows exec from. One binary serves two transports for lyrebird, which is
-why the torrc gets one `ClientTransportPlugin obfs4,meek_lite exec ...` line
-rather than two.
+still allows exec from, and `packaging { jniLibs { useLegacyPackaging = true } }`
+is what puts them on disk with the exec bit rather than mapping them out of the
+APK. One binary serves two transports for lyrebird, which is why the torrc gets
+one `ClientTransportPlugin obfs4,meek_lite exec ...` line rather than two.
+
+### Where the build steps now live
+
+`app/build.gradle.kts` hooks both scripts into `preBuild`, because the APK is what
+needs these files and a step that exists only in one workflow file is a step that
+stops running the moment anything else assembles the app:
+
+| Task | What it does | When it fails the build |
+|---|---|---|
+| `fetchTorBridges` | `scripts/fetch-tor-bridges.sh` -> `assets/tor/bridges.json` | never - `BridgeCatalog` has a compiled-in floor |
+| `buildPtTransports` | `scripts/build-pt-transports.sh all` -> `jniLibs/<abi>/` | when the NDK + Go toolchain is present and the build fails, or when `-PrequirePluggableTransports=true` / `AETHER_REQUIRE_PT=1` and the binaries are absent |
+
+With no toolchain and no strict flag it prints a loud warning naming exactly which
+`<abi>/<binary>` is missing and what to run. That is the honest outcome for a
+machine that cannot cross-compile Go, and it is never silent again.
+
+### The workflow patch this needs
+
+CI cross-compiles the natives in the `natives` job and hands them to the `app`
+job as an artifact, so by the time Gradle runs the transports have to already be
+in `jniLibs`. That means `.github/workflows/build.yml` needs the step below.
+**It is not in this branch** - the credential that pushed it cannot write workflow
+files - so apply it by hand:
+
+1. Bump the natives cache key `jnilibs-v4-` to `jnilibs-v5-` and add
+   `'scripts/build-pt-transports.sh'` to its `hashFiles(...)`. Every v4 entry was
+   written by a build that could not have contained the transports, so inheriting
+   one would restore a payload without them and skip the step that builds them.
+2. In the "Decide what still has to be built" step, add a `pt` flag next to
+   `psiphon` and `tor` (`liblyrebird.so libsnowflake.so libwebtunnel.so`, both
+   ABIs) and include it in the `build=false` condition.
+3. Change the Go setup step's condition to
+   `if: steps.payload.outputs.psiphon != 'true' || steps.payload.outputs.pt != 'true'`.
+4. After the Tor core step, add - **without** `continue-on-error`:
+
+   ```yaml
+   - name: Build the Tor pluggable transports
+     if: steps.payload.outputs.pt != 'true'
+     run: bash scripts/build-pt-transports.sh all
+     env:
+       ANDROID_API: ${{ env.ANDROID_API }}
+       GOTOOLCHAIN: auto
+   ```
+
+5. In "Verify the built payload", check the three binaries for both ABIs and
+   `exit 1` when any is missing - on every ref, not only on a `v*` tag. A missing
+   chain core reduces the app; a missing transport breaks its default
+   configuration.
+6. In the `app` job, set `AETHER_REQUIRE_PT: "1"` on the assemble step, add the
+   three binaries to "Check the native payload" and to "Verify native libraries
+   inside the APKs" as hard requirements, and run `scripts/fetch-tor-bridges.sh`
+   as its own step (a warning if it fails) next to the Psiphon server list - the
+   natives cache covers `assets/tor`, so on a cache hit nothing else refreshes it.
+
+Until step 4 lands, a CI build still succeeds and warns, exactly as a developer
+machine without Go does.
 
 ## What is not solved
 
 * **No domain fronting.** See above. Fetching bridges needs a path that already
   works, which is a real limitation and is said in the UI rather than hidden.
 * **No Conjure, no WebTunnel bridge discovery.** moat hands out obfs4 and
-  snowflake; a webtunnel bridge has to be pasted.
+  snowflake; a webtunnel bridge has to be pasted, so the webtunnel rung of the
+  ladder only exists for a build whose asset carries some.
+* **The ladder cannot rescue a network that blocks everything.** Three rungs of
+  90 s, then a patient last attempt, and then the honest answer is Tor over Aether
+  or Tor over Psiphon.
 * **Bridges do not make Tor fast.** Three relays plus an obfuscation layer plus
   whatever is underneath it. Snowflake in particular varies by an order of
   magnitude depending on which volunteer answers.
@@ -179,7 +301,9 @@ rather than two.
 | File | Role |
 |---|---|
 | `model/Bridges.kt` | the transports, the binaries that speak them, and provenance |
+| `model/Profile.kt` | the default: bridges on, built-in list, obfs4 |
 | `core/BridgeLine.kt` | the parser (pure, unit-tested) |
+| `core/BridgePlan.kt` | the ladder: what is tried, in what order (pure, unit-tested) |
 | `core/BridgeCatalog.kt` | built-in bridges: compiled in, asset, or refreshed |
 | `core/PluggableTransports.kt` | which PT binaries this build ships |
 | `core/BridgeService.kt` | the suspend API the settings page calls, and the route policy |
@@ -187,8 +311,11 @@ rather than two.
 | `core/moat/MoatPayloads.kt` | the wire format (pure, unit-tested) |
 | `core/moat/MoatClient.kt` | one bounded HTTPS request, direct or through the tunnel |
 | `data/BridgeStore.kt` | the refreshed catalogue and the personal bridges |
+| `data/ProfileStore.kt` | seeds the built-in list once, migrates a stored OFF |
 | `core/TorCore.kt` | `Torrc` emits `UseBridges` / `ClientTransportPlugin` / `Bridge` |
+| `vpn/session/ChainStack.kt` | walks the ladder until tor bootstraps |
 | `ui/engine/BridgeSection.kt` | the page |
 | `ui/engine/BridgeRequestDialog.kt` | the captcha step |
+| `app/build.gradle.kts` | runs both build scripts from `preBuild` |
 | `scripts/build-pt-transports.sh` | the three transport binaries |
 | `scripts/fetch-tor-bridges.sh` | the built-in list |
