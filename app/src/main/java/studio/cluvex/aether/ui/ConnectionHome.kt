@@ -1,8 +1,16 @@
 package studio.cluvex.aether.ui
 
 import android.os.SystemClock
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -14,20 +22,38 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import java.util.Locale
+import kotlin.math.sqrt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
+import studio.cluvex.aether.core.NetProbe
+import studio.cluvex.aether.core.PingMonitor
+import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
@@ -44,72 +70,70 @@ import studio.cluvex.aether.ui.components.NoticeBar
 import studio.cluvex.aether.ui.components.SectionTitle
 import studio.cluvex.aether.ui.components.SignalDiagram
 import studio.cluvex.aether.ui.components.StatTile
-import studio.cluvex.aether.ui.components.TrafficPanel
+import studio.cluvex.aether.ui.components.StatusHint
+import studio.cluvex.aether.ui.components.ValueRow
 import studio.cluvex.aether.ui.components.accentFor
+import studio.cluvex.aether.ui.theme.AetherMetaLabel
+import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.AetherNumeral
+import studio.cluvex.aether.ui.theme.AetherNumeralLarge
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.LocalReducedMotion
 
 /**
  * THE CONNECTION TAB.
  *
- * WHAT WAS WRONG WITH THE OLD ONE
+ * The information architecture from the previous pass stands, and it was the
+ * right one: ONE hero control, ONE answer in words, progress as a track rather
+ * than a list, evidence with a hierarchy, and nothing on screen that the current
+ * state does not need. What this pass changes is how all of that is DRAWN and
+ * how much of it is live.
  *
- * It was an editorial column, and a genuinely tidy one: a state chip, a
- * display-sized sentence, a static topology drawing, four stacked step rows
- * while connecting, and a flat ledger of six equally weighted values once
- * connected. It read top to bottom in one pass.
+ * WHAT WAS STILL WRONG
  *
- * What it could not do is RANK, and it put the primary control somewhere else
- * entirely:
- *
- *   - The largest object on the screen was a DECORATION. The signal diagram is
- *     112dp of canvas that changes exactly once (a dash becomes a tick), and it
- *     sat above the fold in every single state, including the two states where
- *     the user is watching for something to happen.
- *   - The one thing the user came here to do lived in the dock, in a button that
- *     is visually identical whether it is about to protect them or about to drop
- *     their tunnel.
- *   - Connecting took over the whole viewport: four full-width rows, one per
- *     phase, each 48dp+, to communicate a single integer between 0 and 3.
- *   - The ledger ranked nothing. The exit IP - the fact that proves traffic is
- *     actually leaving through the tunnel, and the first thing anyone checks -
- *     had exactly the same weight as the protocol name.
- *   - Idle was almost empty. No IP, no protocol, no scan mode: nothing about the
- *     connection that is about to be attempted.
- *
- * Meanwhile [ConnectButton], [ConnectionMeta] and [TrafficPanel] were already in
- * the tree, already designed for exactly these jobs, and reachable from nothing.
+ *   - THE STATUS CHIP WAS A LABEL. A static pill with an icon and a word, in the
+ *     one spot a screen reader reaches first and the eye reaches second. It never
+ *     told you anything the ring did not, and while a tunnel was coming up it sat
+ *     perfectly still.
+ *   - NO LATENCY UNTIL YOU WENT LOOKING. The number that decides whether a
+ *     connection is usable lived in a tile in the session card, below the fold,
+ *     behind a tap, and only ever appeared if you knew to tap it.
+ *   - THE PHASE TRACK WAS FOUR RECTANGLES. Correct, informative, and completely
+ *     inert: on the screen where the user is watching for movement, the only
+ *     thing moving was the seconds counter.
+ *   - THE EVIDENCE WAS A LEDGER OF CARDS. Two stacked cards, five tiles between
+ *     them, and the live rates - the fact that proves bytes are moving THROUGH
+ *     the tunnel right now - were not on this screen at all. They were in the
+ *     notification.
  *
  * WHAT THIS IS NOW
  *
- *   1. ONE HERO CONTROL. The orb is the button. Its arc is determinate and
- *      driven by the real controller stage, the state word and the elapsed clock
- *      sit at its optical centre, and it already honours reduced motion. Tapping
- *      the biggest state-coloured circle on a VPN screen is what everybody tries
- *      first, so it had better be the control.
- *   2. ONE ANSWER, IN WORDS. Headline plus one supporting line, centred under
- *      the orb. Short word inside the ring, full sentence outside it - the ring
- *      is glanceable, the sentence is readable.
- *   3. PROGRESS AS A TRACK, not a list. Four segments, the current phase named
- *      once, a monotonic clock beside it. Same information, one card instead of
- *      a screenful, and the scan-time note is right there so a long wait is a
- *      known cost rather than a hang.
- *   4. EVIDENCE WITH A HIERARCHY. Connected: the exit IP as a headline with its
- *      flag, then protocol / location / latency / uptime as tiles, then session
- *      volume. Disconnected: the SAME card, answering the other question people
- *      actually have - what address am I coming from right now.
- *   5. STATE-SPECIFIC CONTENT. Every state gets the block it needs and none of
- *      the blocks it does not: the route preview only exists before a connection,
- *      the failure notice only exists after one, telemetry only exists while
- *      there is a session to measure.
+ *   1. A STATUS RAIL. The badge keeps its polite live region and its four words,
+ *      and gains a dot that breathes while work is in flight, plus a latency chip
+ *      that measures once when a session comes up and re-measures on tap. Battery
+ *      contract intact: one probe per tap, one probe per session, never a loop.
+ *   2. THE HERO ORB. Unchanged contract, new depth. See [ConnectButton].
+ *   3. A GLOWING WAVE TRACKER. The same four phases and the same monotonic clock,
+ *      drawn as four capsules with a band of light travelling through the one
+ *      that is running. Completed phases glow; upcoming ones are dim. It is the
+ *      same integer, animated, and it mirrors itself in RTL so the wave always
+ *      travels in the reading direction.
+ *   4. A BENTO TELEMETRY GRID. Exit IP as the wide hero tile with its flag and
+ *      country, then live download and upload rates with their own meters, then
+ *      protocol and session uptime. Compact, scannable, and every readout pinned
+ *      LTR because they are instruments, not prose.
  *
- * Nothing outside this tab is touched. [connectionStep] and
- * [formatSessionUptime] keep their exact contracts, because the presentation
- * tests own them.
+ * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
+ * [phaseProgress] and [formatSessionUptime] keep their exact contracts, because
+ * the presentation tests own them; the state machine, the semantics and the
+ * reduced-motion rules are the same ones the rest of the app obeys.
  */
 
 /** Engine, tunnel, verify, ready. */
 private const val PHASE_COUNT = 4
+
+/** The rate a speed meter treats as "full bar", before the square-root curve. */
+private const val METER_CEILING = 4_000_000f
 
 /**
  * Controller state -> the orb's four visual modes.
@@ -172,7 +196,7 @@ internal fun ConnectionHome(
             .padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(12.dp))
-        StateChip(state, tone)
+        StatusRail(state, tone, connectedSince)
 
         // THE CONTROL. Not a status graphic with a button somewhere else.
         ConnectButton(
@@ -193,17 +217,13 @@ internal fun ConnectionHome(
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(10.dp))
-        Text(
-            connectionHint(state, profile),
-            Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        // StatusHint, not a bare Text: it cross-fades between states and already
+        // collapses to an instant swap under reduced motion.
+        StatusHint(connectionHint(state, profile))
         Spacer(Modifier.height(28.dp))
 
         if (step != null) {
-            PhaseTrack(step, tone, elapsed)
+            PhaseWave(step, tone, elapsed)
             // Only while an endpoint is still being found. Once verification is
             // running the scan is over and the note would be a lie.
             if (step <= 1) {
@@ -237,18 +257,16 @@ internal fun ConnectionHome(
 
         if (state is ConnectionState.Connected) {
             SectionTitle(stringResource(R.string.passage_session))
-            ConnectionMeta(
-                connected = true,
+            SessionBento(
                 connectedSince = connectedSince,
                 ipInfo = ipInfo,
                 ipLoading = ipLoading,
+                tone = tone,
             )
-            Spacer(Modifier.height(12.dp))
-            TrafficPanel(connectedSince = connectedSince)
             Spacer(Modifier.height(28.dp))
         } else if (step == null) {
-            // Disconnected or failed: the same card answers the other question,
-            // which is where the internet currently thinks you are.
+            // Disconnected or failed: the same question, answered the other way
+            // round - where the internet currently thinks you are.
             ConnectionMeta(
                 connected = false,
                 connectedSince = null,
@@ -291,19 +309,52 @@ internal fun ConnectionHome(
 }
 
 /**
- * The status chip.
+ * The top rail: what the connection IS, and how good it is.
  *
- * Kept small and kept at the top: it is the thing a screen reader should reach
- * first, and it is the only element that is announced on every state change
- * (polite live region, merged descendants, so it is one announcement and not
- * three).
+ * The badge is still the first thing a screen reader reaches and still the only
+ * element announced on every state change (polite live region, merged
+ * descendants, so it is one announcement and not three). The latency chip is a
+ * separate node on purpose - it changes on its own schedule, and it must not
+ * make the state badge re-announce itself every time a probe lands.
  */
 @Composable
-private fun StateChip(state: ConnectionState, tone: Color) {
-    val icon = when {
-        state.isConnected -> Icons.Rounded.Check
-        state is ConnectionState.Error -> Icons.Rounded.Warning
-        else -> Icons.Rounded.Shield
+private fun StatusRail(state: ConnectionState, tone: Color, connectedSince: Long?) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StateBadge(state, tone)
+        Spacer(Modifier.weight(1f))
+        if (state is ConnectionState.Connected) LatencyChip(connectedSince)
+    }
+}
+
+/**
+ * The state badge.
+ *
+ * The dot breathes while work is in flight and is steady otherwise, which means
+ * "something is happening" survives being glanced at from outside the orb's
+ * radius. It is drawn in [drawBehind] and driven by an [Animatable], so the loop
+ * costs one repaint of a 9dp box and never a recomposition.
+ */
+@Composable
+private fun StateBadge(state: ConnectionState, tone: Color) {
+    val reduced = LocalReducedMotion.current
+    val busy = state.isBusy
+    val blink = remember { Animatable(1f) }
+    LaunchedEffect(busy, reduced) {
+        if (reduced || !busy) {
+            blink.snapTo(1f)
+            return@LaunchedEffect
+        }
+        blink.snapTo(0.30f)
+        blink.animateTo(
+            1f,
+            infiniteRepeatable(
+                animation = tween(900, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+        )
     }
     Surface(
         color = stateWash(state),
@@ -316,8 +367,22 @@ private fun StateChip(state: ConnectionState, tone: Color) {
                 .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, null, Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+            Box(
+                Modifier
+                    .size(9.dp)
+                    .drawBehind {
+                        val alpha = blink.value
+                        drawCircle(
+                            color = tone.copy(alpha = alpha * 0.28f),
+                            radius = size.minDimension / 2f,
+                        )
+                        drawCircle(
+                            color = tone.copy(alpha = alpha),
+                            radius = size.minDimension / 3.2f,
+                        )
+                    },
+            )
+            Spacer(Modifier.width(9.dp))
             Text(
                 stringResource(connectionStatusLabel(state)),
                 style = MaterialTheme.typography.labelMedium,
@@ -327,19 +392,91 @@ private fun StateChip(state: ConnectionState, tone: Color) {
 }
 
 /**
- * The four phases as ONE object.
+ * Live latency, where the state is.
  *
- * This replaces four stacked full-width rows. The information content was a
- * single integer; the cost was a screenful, on the exact screen where the user
- * also wants to see the elapsed time and the reassurance that a long scan is
- * normal. A segmented track carries the same integer, names the phase that is
- * running once, and leaves room for both.
+ * BATTERY CONTRACT, RESTATED: there is still no polling loop anywhere near this.
+ * A session gets ONE automatic measurement, a second and a bit after it comes up
+ * (long enough that the tunnel has settled, short enough that the number is
+ * there before the user starts looking for it), and one more per tap. That is
+ * two TCP handshakes for a session somebody actually looked at, against a
+ * previous design where the number simply did not exist unless it was hunted
+ * down.
+ *
+ * The colour is the reading: mint under 80ms, amber to 250ms, rose beyond it. A
+ * bare number means nothing to most people; a green number means "fine".
+ */
+@Composable
+private fun LatencyChip(connectedSince: Long?) {
+    val accents = LocalAetherAccents.current
+    val ping by PingMonitor.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(connectedSince) {
+        if (connectedSince == null) return@LaunchedEffect
+        delay(1200L)
+        PingMonitor.pingOnce(viaTunnel = true)
+    }
+
+    val band = when {
+        ping.ms < 0L -> MaterialTheme.colorScheme.onSurfaceVariant
+        ping.ms < 80L -> accents.protected
+        ping.ms < 250L -> accents.working
+        else -> accents.failed
+    }
+    val label = when {
+        ping.running -> "\u2026"
+        ping.ms >= 0L -> String.format(Locale.US, "%d ms", ping.ms)
+        ping.error -> stringResource(R.string.action_retry)
+        else -> stringResource(R.string.meta_latency_test)
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = band,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            Modifier
+                .clickable(
+                    enabled = !ping.running,
+                    onClickLabel = stringResource(R.string.meta_latency_test),
+                    role = Role.Button,
+                ) { scope.launch { PingMonitor.pingOnce(viaTunnel = true) } }
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Speed, null, Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = AetherMono,
+                    textDirection = TextDirection.Ltr,
+                ),
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * The four phases as ONE animated object.
+ *
+ * Four capsules, the running one carrying a band of light that travels through
+ * it, the finished ones glowing, the future ones dim. Same integer as the old
+ * four-row list and the old flat bar; the difference is that a user watching a
+ * three-minute Ironclad scan can now see the screen is alive without reading the
+ * clock.
+ *
+ * RTL: the segments and the wave are mirrored from the draw scope's own layout
+ * direction, so in Persian progress runs right to left and the labels underneath
+ * (a plain Row, which Compose already mirrors) stay attached to their segments.
  *
  * The clock is pinned LTR and monospaced: it is an instrument readout, and in
  * the Persian locale a bidi-reordered duration is worse than no duration.
  */
 @Composable
-private fun PhaseTrack(active: Int, tone: Color, elapsed: String) {
+private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
+    val reduced = LocalReducedMotion.current
     val labels = listOf(
         R.string.phase_engine,
         R.string.phase_tunnel,
@@ -347,6 +484,17 @@ private fun PhaseTrack(active: Int, tone: Color, elapsed: String) {
         R.string.phase_ready,
     )
     val current = active.coerceIn(0, labels.lastIndex)
+    val shimmer = remember { Animatable(0f) }
+    LaunchedEffect(reduced) {
+        if (reduced) {
+            shimmer.snapTo(0f)
+            return@LaunchedEffect
+        }
+        shimmer.snapTo(0f)
+        shimmer.animateTo(1f, infiniteRepeatable(tween(1500, easing = LinearEasing)))
+    }
+    val track = MaterialTheme.colorScheme.outlineVariant
+
     AetherCard {
         Row(
             Modifier
@@ -354,11 +502,18 @@ private fun PhaseTrack(active: Int, tone: Color, elapsed: String) {
                 .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                stringResource(R.string.passage_phase_title),
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.passage_phase_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    stringResource(labels[current]),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = tone,
+                )
+            }
             Spacer(Modifier.width(12.dp))
             Text(
                 elapsed,
@@ -367,24 +522,86 @@ private fun PhaseTrack(active: Int, tone: Color, elapsed: String) {
             )
         }
         Spacer(Modifier.height(16.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            labels.forEachIndexed { index, _ ->
-                val fill = when {
-                    index < current -> tone
-                    index == current -> tone.copy(alpha = 0.55f)
-                    else -> MaterialTheme.colorScheme.outlineVariant
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(18.dp),
+        ) {
+            val gap = 8.dp.toPx()
+            val segmentWidth =
+                ((size.width - gap * (PHASE_COUNT - 1)) / PHASE_COUNT).coerceAtLeast(1f)
+            val barHeight = 10.dp.toPx()
+            val top = (size.height - barHeight) / 2f
+            val radius = CornerRadius(barHeight / 2f)
+            val mirrored = layoutDirection == LayoutDirection.Rtl
+            val phase = shimmer.value
+
+            repeat(PHASE_COUNT) { index ->
+                val slot = if (mirrored) PHASE_COUNT - 1 - index else index
+                val left = slot * (segmentWidth + gap)
+                val done = index < current
+                val running = index == current
+
+                // Glow first, so the capsule sits on top of its own halo.
+                if (done || running) {
+                    val spread = 3.dp.toPx()
+                    drawRoundRect(
+                        color = tone.copy(alpha = if (done) 0.22f else 0.12f),
+                        topLeft = Offset(left - spread, top - spread),
+                        size = Size(segmentWidth + spread * 2f, barHeight + spread * 2f),
+                        cornerRadius = CornerRadius(barHeight / 2f + spread),
+                    )
                 }
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(fill),
+                drawRoundRect(
+                    color = when {
+                        done -> tone
+                        running -> track.copy(alpha = 0.55f)
+                        else -> track.copy(alpha = 0.32f)
+                    },
+                    topLeft = Offset(left, top),
+                    size = Size(segmentWidth, barHeight),
+                    cornerRadius = radius,
                 )
+                if (running) {
+                    if (reduced) {
+                        // No travelling band with motion off: a half-filled
+                        // capsule says "this one is running" just as clearly.
+                        drawRoundRect(
+                            color = tone.copy(alpha = 0.55f),
+                            topLeft = Offset(left, top),
+                            size = Size(segmentWidth, barHeight),
+                            cornerRadius = radius,
+                        )
+                    } else {
+                        val bandWidth = segmentWidth * 0.55f
+                        val travel = -bandWidth + phase * (segmentWidth + bandWidth)
+                        clipRect(
+                            left = left,
+                            top = top - 1f,
+                            right = left + segmentWidth,
+                            bottom = top + barHeight + 1f,
+                        ) {
+                            drawRoundRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        tone,
+                                        Color.Transparent,
+                                    ),
+                                    startX = left + travel,
+                                    endX = left + travel + bandWidth,
+                                ),
+                                topLeft = Offset(left, top),
+                                size = Size(segmentWidth, barHeight),
+                                cornerRadius = radius,
+                            )
+                        }
+                    }
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             labels.forEachIndexed { index, label ->
                 Text(
                     stringResource(label),
@@ -402,6 +619,293 @@ private fun PhaseTrack(active: Int, tone: Color, elapsed: String) {
         }
     }
 }
+
+/**
+ * THE BENTO GRID: everything factual about the live session, ranked.
+ *
+ *   row 1  the exit IP, wide, with its flag and country - the fact that proves
+ *          traffic is leaving through the tunnel, and the first thing anyone
+ *          checks
+ *   row 2  live download and upload rate, each with its own meter and its own
+ *          session total
+ *   row 3  the protocol that actually won, and how long this session has been up
+ *
+ * The rates come from [TrafficMonitor], which the VPN service runs for the
+ * lifetime of the session - so the counters keep accruing while this screen is
+ * closed, and a fresh session can never show the previous one's last reading.
+ *
+ * Every value is monospaced and pinned LTR. That BiDi fix is load-bearing in the
+ * Persian locale, where `104.28.197.15` otherwise renders reordered.
+ */
+@Composable
+private fun SessionBento(
+    connectedSince: Long?,
+    ipInfo: IpEndpoint?,
+    ipLoading: Boolean,
+    tone: Color,
+) {
+    val accents = LocalAetherAccents.current
+    val meta by EngineMeta.state.collectAsStateWithLifecycle()
+    val latest by TrafficMonitor.sample.collectAsStateWithLifecycle()
+
+    // A fresh session must never show the previous one's last reading, not even
+    // for the one frame between "Connected" and the monitor's first tick.
+    val zero = remember(connectedSince) { TrafficMonitor.Sample() }
+    val sample = if (latest.live) latest else zero
+    val uptime = tickingElapsed(connectedSince, connectedSince != null)
+
+    Column(Modifier.fillMaxWidth()) {
+        ExitTile(
+            ipInfo = ipInfo,
+            ipLoading = ipLoading,
+            tone = tone,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth()) {
+            BentoTile(
+                label = stringResource(R.string.traffic_download),
+                value = TrafficMonitor.formatRate(sample.downloadRate),
+                icon = Icons.Rounded.ArrowDownward,
+                tint = accents.protected,
+                meter = meterFraction(sample.downloadRate),
+                footnote = stringResource(
+                    R.string.traffic_total,
+                    TrafficMonitor.formatBytes(sample.downloadBytes),
+                ),
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            BentoTile(
+                label = stringResource(R.string.traffic_upload),
+                value = TrafficMonitor.formatRate(sample.uploadRate),
+                icon = Icons.Rounded.ArrowUpward,
+                tint = accents.brand,
+                meter = meterFraction(sample.uploadRate),
+                footnote = stringResource(
+                    R.string.traffic_total,
+                    TrafficMonitor.formatBytes(sample.uploadBytes),
+                ),
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth()) {
+            BentoTile(
+                label = stringResource(R.string.meta_protocol),
+                value = meta.protocol ?: "\u2014",
+                icon = Icons.Rounded.Shield,
+                tint = tone,
+                mono = false,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            BentoTile(
+                label = stringResource(R.string.connected_for),
+                value = uptime,
+                icon = Icons.Rounded.Schedule,
+                tint = tone,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (!meta.endpoint.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            // Copyable, because its only real use is being pasted into a bug
+            // report.
+            ValueRow(
+                label = stringResource(R.string.meta_endpoint),
+                value = meta.endpoint.orEmpty(),
+            )
+        }
+    }
+}
+
+/** The headline tile: whose network the internet sees you coming out of. */
+@Composable
+private fun ExitTile(
+    ipInfo: IpEndpoint?,
+    ipLoading: Boolean,
+    tone: Color,
+    modifier: Modifier = Modifier,
+) {
+    val accents = LocalAetherAccents.current
+    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
+    val country = ipInfo?.countryCode?.uppercase(Locale.US)
+    val value = when {
+        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
+        ipInfo != null -> ipInfo.ip
+        else -> stringResource(R.string.ip_unavailable)
+    }
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = accents.card,
+        border = BorderStroke(1.dp, accents.cardBorder),
+    ) {
+        Column(Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Public, null, Modifier.size(16.dp), tone)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stringResource(R.string.ip_server_label),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                if (!country.isNullOrBlank()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = tone,
+                        shape = MaterialTheme.shapes.small,
+                    ) {
+                        Text(
+                            country,
+                            Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (flag.isNotBlank()) {
+                    Text(flag, style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text(
+                    value,
+                    Modifier.weight(1f),
+                    style = AetherNumeralLarge.copy(textDirection = TextDirection.Ltr),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.meta_exit_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * One cell of the grid.
+ *
+ * Its own bordered surface rather than a [StatTile] inside a card: the bento is
+ * a grid of objects, and a tile that shares a background with its neighbours is
+ * a table row wearing a grid's spacing.
+ */
+@Composable
+private fun BentoTile(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    mono: Boolean = true,
+    meter: Float? = null,
+    footnote: String? = null,
+) {
+    val accents = LocalAetherAccents.current
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = accents.card,
+        border = BorderStroke(1.dp, accents.cardBorder),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (icon != null) {
+                    Icon(icon, null, Modifier.size(15.dp), tint)
+                    Spacer(Modifier.width(7.dp))
+                }
+                Text(
+                    label,
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                value,
+                style = if (mono) {
+                    AetherNumeral.copy(textDirection = TextDirection.Ltr)
+                } else {
+                    MaterialTheme.typography.titleMedium
+                },
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (meter != null) {
+                Spacer(Modifier.height(10.dp))
+                MeterBar(meter, tint)
+            }
+            if (!footnote.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    footnote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A rate, as a bar.
+ *
+ * A fractional-width fill inside a track: one Box in one Box, so it costs a
+ * layout pass and no draw code. NOT two weighted children - a saturated meter
+ * would resolve the trailing weight to 0, and Compose rejects a zero weight
+ * outright, which would have turned the fastest connections into a crash on the
+ * one screen that must never fail.
+ *
+ * The fill never reaches zero width either: an idle second should read as
+ * "nothing moving", not as a broken widget.
+ */
+@Composable
+private fun MeterBar(fraction: Float, tint: Color) {
+    val safe = fraction.coerceIn(0.02f, 1f)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(5.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(safe)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(3.dp))
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(tint.copy(alpha = 0.95f), tint.copy(alpha = 0.45f)),
+                    ),
+                ),
+        )
+    }
+}
+
+/**
+ * Rate -> bar fill.
+ *
+ * Square root, not linear: mobile throughput spends most of its time in the
+ * bottom tenth of its own range, and a linear meter would sit visually empty for
+ * every ordinary browsing session and only move for a download.
+ */
+private fun meterFraction(rate: Long): Float =
+    sqrt((rate.toFloat() / METER_CEILING).coerceIn(0f, 1f))
 
 /**
  * What is about to happen, before it happens.
@@ -447,20 +951,20 @@ private fun RoutePreview(profile: ConnectionProfile, tone: Color) {
 }
 
 /**
- * The elapsed clock for an in-flight attempt.
+ * A monotonic clock, for an in-flight attempt or a live session.
  *
- * Sleeps to the next whole second OF THE ATTEMPT rather than a flat 1000ms, so
+ * Sleeps to the next whole second OF THE PERIOD rather than a flat 1000ms, so
  * the error does not accumulate into a digit that shows the same second twice
  * and then skips one. Lifecycle-scoped, so a backgrounded app is not redrawing a
- * counter nobody can see - and stopped entirely when nothing is in flight,
- * because an idle screen has no business running a loop.
+ * counter nobody can see - and stopped entirely when nothing is running, because
+ * an idle screen has no business running a loop.
  */
 @Composable
-private fun tickingElapsed(since: Long, running: Boolean): String {
+private fun tickingElapsed(since: Long?, running: Boolean): String {
     var now by remember(since) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(since, running, lifecycle) {
-        if (!running) return@LaunchedEffect
+        if (!running || since == null) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 val tick = SystemClock.elapsedRealtime()
@@ -478,8 +982,8 @@ private fun tickingElapsed(since: Long, running: Boolean): String {
  *
  * Deliberately not [connectionStatusLabel] and not [connectionTitle]: the ring
  * has room for one or two words at headline size, and the full sentence lives
- * under the orb where it can wrap. Same four words the chip and the dock use, so
- * the three never disagree.
+ * under the orb where it can wrap. Same four words the badge and the dock use,
+ * so the three never disagree.
  */
 @Composable
 private fun stateWord(state: ConnectionState): String = stringResource(
