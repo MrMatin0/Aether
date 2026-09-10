@@ -58,12 +58,19 @@ class ProfileCodecBridgeTest {
     }
 
     @Test
-    fun `an older payload with no bridge keys stays off`() {
+    fun `an older payload with no bridge keys picks up the current default`() {
+        // A payload without these keys can only come from a build that predates
+        // them, and "off" is no longer what this app defaults to: bridges are on
+        // with the built-in list, and the ladder resolves the lines at connect
+        // time (see BridgePlan). What must NOT happen is inventing lines here -
+        // the codec transports a profile, it does not decide one.
         val legacy = "protocol=MASQUE\nscan=PRECISE\nchain=TOR"
         val decoded = ProfileCodec.decode(legacy)
-        assertEquals(TorBridgeMode.OFF, decoded.torBridgeMode)
+        assertEquals(TorBridgeMode.BUILTIN, decoded.torBridgeMode)
+        assertEquals(BridgeTransport.OBFS4, decoded.torBridgeTransport)
         assertEquals("", decoded.torBridgeLines)
         assertTrue(decoded.activeBridgeLines().isEmpty())
+        assertTrue(decoded.usesBridges)
     }
 
     @Test
