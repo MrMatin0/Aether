@@ -1,5 +1,6 @@
 package studio.cluvex.aether.vpn.session
 
+import studio.cluvex.aether.core.BridgePlan
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ChainMode
@@ -111,18 +112,43 @@ internal object VpnTunables {
      * chained it does all of that THROUGH another tunnel's added latency. Four
      * minutes is the difference between "Tor is slow here" and a false "Tor is
      * blocked here".
+     *
+     * This is the budget for the LAST rung of the bridge ladder, i.e. the one
+     * that has no fallback left behind it.
      */
     const val TOR_BOOTSTRAP_WAIT_MS = 240_000L
+
+    /**
+     * How long a rung of the bridge ladder that still HAS a fallback gets.
+     *
+     * Deliberately much shorter than [TOR_BOOTSTRAP_WAIT_MS], because the two
+     * answer different questions. "Is Tor reachable from this network at all"
+     * deserves four patient minutes. "Is THIS transport getting through" does
+     * not: a transport that is going to work is normally past 50% inside a
+     * minute, and one that is being filtered sits at 5% forever. Spending the
+     * full window on each rung would turn a three-rung ladder into twelve
+     * minutes of spinner, which is a worse outcome than not falling back.
+     */
+    const val TOR_BRIDGE_ATTEMPT_WAIT_MS = 90_000L
 
     /**
      * Total budget for a chain-only attempt (no Aether hop, so no endpoint
      * scan): the sum of what each core is allowed, plus a little slack for the
      * front to bind and the self-test to run.
+     *
+     * The Tor term is the WORST CASE of a full bridge ladder
+     * ([BridgePlan.MAX_ATTEMPTS] rungs), not of one attempt. It is a ceiling
+     * that only a session in which every transport failed ever reaches; each
+     * individual wait is bounded by the constants above.
      */
     fun chainBudgetMs(mode: ChainMode): Long {
         var budget = 15_000L
         if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
-        if (mode.usesTor) budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS
+        if (mode.usesTor) {
+            budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS
+            budget += (BridgePlan.MAX_ATTEMPTS - 1) *
+                (TOR_PORT_WAIT_MS + TOR_BRIDGE_ATTEMPT_WAIT_MS)
+        }
         return budget
     }
 }
