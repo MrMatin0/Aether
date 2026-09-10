@@ -25,6 +25,11 @@ plugins {
 // continue-on-error, so the release went out with libpsiphon.so missing and the
 // app correctly reported the core as absent. See docs/CHAIN_CORES.md.
 //
+// 1.4.7 shipped the Tor BRIDGES feature the same way: the source, the settings
+// page and the parser, and none of the pluggable-transport binaries, because
+// nothing in the pipeline ever ran scripts/build-pt-transports.sh. See
+// docs/TOR_BRIDGES.md.
+//
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
@@ -148,6 +153,72 @@ val fetchVazirmatn = tasks.register("fetchVazirmatn") {
     }
 }
 
+// ============================================================= TOR BRIDGES ==
+//
+// The BUILT-IN bridge list (assets/tor/bridges.json), refreshed at build time by
+// scripts/fetch-tor-bridges.sh.
+//
+// WHY THIS IS A BUILD STEP AND NOT A COMMITTED FILE: bridge addresses get
+// blocked, replaced and re-hosted, so a list in git history is a list of
+// addresses a censor has had months to find. assets/tor/ is gitignored for the
+// same reason the native cores are.
+//
+// WHY IT RUNS HERE AND NOT ONLY IN CI: it is the app's own build that needs the
+// asset, and a step that only exists in one workflow file is a step that silently
+// stops running the moment anything else assembles the APK. That is exactly how
+// this feature shipped in 1.4.7 with an empty asset.
+//
+// WHY IT IS NON-FATAL: core/BridgeCatalog.kt carries a compiled-in list as the
+// floor, and a build that could not reach bridges.torproject.org is a build made
+// on a filtered network - which is where this app is developed. Same treatment as
+// the geoip database. The script itself also refuses to overwrite a good list
+// with a failed refresh.
+val torBridgesDir = layout.projectDirectory.dir("src/main/assets/tor").asFile
+val fetchTorBridgesScript = rootProject.file("scripts/fetch-tor-bridges.sh")
+val torBridgesFile = File(torBridgesDir, "bridges.json")
+
+// Same reason as the font directory: resource merging must never see a missing
+// source dir on a fresh checkout.
+torBridgesDir.mkdirs()
+
+val fetchTorBridges = tasks.register("fetchTorBridges") {
+    group = "build setup"
+    description = "Refreshes the built-in Tor bridge list into assets/tor/bridges.json."
+    val script = fetchTorBridgesScript
+    val target = torBridgesFile
+    val workingDir = rootProject.layout.projectDirectory.asFile
+    inputs.file(script)
+    outputs.file(target)
+    // A list that is already there and plausible is left alone, so a local
+    // rebuild costs no request. CI checks out fresh, so CI always fetches.
+    outputs.upToDateWhen { target.length() > 200L }
+    // Network downloads have no business in the remote build cache.
+    outputs.cacheIf { false }
+    doLast {
+        target.parentFile.mkdirs()
+        // Plain ProcessBuilder rather than project.exec: that API is deprecated
+        // in Gradle 9 and reaching for the Project object at execution time is
+        // what breaks the configuration cache.
+        val ran = runCatching {
+            val process = ProcessBuilder("bash", script.absolutePath)
+                .directory(workingDir)
+                .redirectErrorStream(true)
+                .start()
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle("bridges: $it") }
+            process.waitFor()
+        }.getOrNull()
+        if (ran != 0 || target.length() <= 200L) {
+            logger.warn(
+                "Could not refresh the built-in Tor bridge list (exit=${ran ?: "no bash"}). " +
+                    "The app will use the list compiled into core/BridgeCatalog.kt, which works " +
+                    "but is only as fresh as the source. Run scripts/fetch-tor-bridges.sh on a " +
+                    "connected machine, or set TOR_BRIDGES_URL / TOR_BRIDGES_FILE / " +
+                    "TOR_BRIDGES_B64.",
+            )
+        }
+    }
+}
+
 android {
     // NOTE: namespace != applicationId on purpose.
     //
@@ -187,6 +258,10 @@ android {
         // while the feature is off.
         resValue("string", "app_label", "Aether (Fork)")
 
+        // BOTH ABIs, and that is load-bearing for more than the engine: the
+        // pluggable transports are cross-compiled per ABI too, and an APK that
+        // carries libtor.so for an ABI without liblyrebird.so is an APK whose
+        // Tor hop exits during startup on any bridge line.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
         // Same value, same precedence as before (env first, then the Gradle
@@ -306,6 +381,14 @@ android {
         // The same is true of libpsiphon.so and libtor.so: all three chain
         // cores are executables under a .so name, not libraries. See
         // core/NativeChild.kt and docs/CHAIN_CORES.md.
+        //
+        // AND of the three pluggable transports - liblyrebird.so,
+        // libsnowflake.so, libwebtunnel.so. Those are not even launched by this
+        // app: tor spawns them itself through `ClientTransportPlugin ... exec
+        // <path>`, which needs a real path on disk with the exec bit set. With
+        // legacy packaging off there is no such path, and every obfuscated
+        // bridge type would fail at startup rather than at configuration time.
+        // See core/PluggableTransports.kt and docs/TOR_BRIDGES.md.
         jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
@@ -319,8 +402,10 @@ android {
     }
 }
 
-// The font has to be on disk before resource merging reads the source set.
-tasks.named("preBuild") { dependsOn(fetchVazirmatn) }
+// Both of these have to be on disk before resource/asset merging reads the
+// source sets, which is what makes preBuild the right hook rather than a
+// dependency of the merge tasks themselves.
+tasks.named("preBuild") { dependsOn(fetchVazirmatn, fetchTorBridges) }
 
 // android.kotlinOptions was removed in Kotlin 2.4; compiler options live here.
 kotlin {
