@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import studio.cluvex.aether.core.BridgePlan
 import studio.cluvex.aether.model.BridgeTransport
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
@@ -85,6 +86,15 @@ class ProfileStore(private val context: Context) {
         val torBridgeMode = stringPreferencesKey("torBridgeMode")
         val torBridgeTransport = stringPreferencesKey("torBridgeTransport")
         /**
+         * True once this profile has been written by a build that could have
+         * stored something other than OFF. Exactly the [noizeChosen] problem:
+         * every profile 1.4.7 ever saved carries `torBridgeMode=OFF`, because
+         * OFF was the default and `save` always writes the key - so without
+         * this marker "bridges are off" and "this profile predates bridges
+         * being on by default" are the same three letters on disk.
+         */
+        val torBridgeChosen = booleanPreferencesKey("torBridgeChosen")
+        /**
          * Newline separated, exactly as tor will receive them. A preferences
          * file has no line framing of its own, so unlike the Intent payload
          * (see ProfileCodec) nothing has to be folded here.
@@ -134,6 +144,38 @@ class ProfileStore(private val context: Context) {
             storedNoize == Noize.OFF && !noizeChosen -> d.noize
             else -> storedNoize
         }
+
+        // MIGRATION (bridges), same shape and same reason. Bridges are now on by
+        // default (see ConnectionProfile.torBridgeMode), and every profile 1.4.7
+        // saved says OFF because that was the only default there was. Reading
+        // those literally would keep the feature switched off for exactly the
+        // users who already went looking for a Tor chain mode.
+        val storedBridgeMode = TorBridgeMode.fromStored(prefs[Keys.torBridgeMode])
+        val bridgeChosen = prefs[Keys.torBridgeChosen] ?: false
+        val bridgeMode = when {
+            storedBridgeMode == null -> d.torBridgeMode
+            storedBridgeMode == TorBridgeMode.OFF && !bridgeChosen -> d.torBridgeMode
+            else -> storedBridgeMode
+        }
+        val storedTransport = BridgeTransport.fromStored(prefs[Keys.torBridgeTransport])
+            ?: d.torBridgeTransport
+        val storedBridgeLines = prefs[Keys.torBridgeLines]
+
+        // SEEDING, exactly once. A default of "built-in bridges" with an empty
+        // list is a page that says bridges are on and shows nothing selected, so
+        // the bundled catalogue is copied in - the same lines the user would have
+        // got by tapping "use all", chosen by the same ladder the session uses.
+        //
+        // The condition is the key being ABSENT, not blank: [save] always writes
+        // it, so a user who cleared their list has an empty string on disk and
+        // stays cleared. It is therefore read at most once per install, which is
+        // also what keeps an asset read out of every recomposition.
+        val seeded = if (storedBridgeLines == null && bridgeMode == TorBridgeMode.BUILTIN) {
+            runCatching { BridgePlan.initialSelection(context, storedTransport) }.getOrNull()
+        } else {
+            null
+        }
+
         ConnectionProfile(
             protocol = prefs[Keys.protocol]
                 ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO,
@@ -195,11 +237,11 @@ class ProfileStore(private val context: Context) {
             // Not valueOf(): both enums accept the aliases a hand-written or
             // imported config can carry ("manual", "meek-azure", ...), and a
             // value neither understands keeps the default instead of throwing
-            // the whole profile away.
-            torBridgeMode = TorBridgeMode.fromStored(prefs[Keys.torBridgeMode]) ?: d.torBridgeMode,
-            torBridgeTransport = BridgeTransport.fromStored(prefs[Keys.torBridgeTransport])
-                ?: d.torBridgeTransport,
-            torBridgeLines = prefs[Keys.torBridgeLines] ?: "",
+            // the whole profile away. The three values below are resolved above,
+            // because the bridge default is a migration and not a plain read.
+            torBridgeMode = bridgeMode,
+            torBridgeTransport = seeded?.first ?: storedTransport,
+            torBridgeLines = seeded?.second ?: storedBridgeLines ?: "",
         )
     }
 
@@ -253,6 +295,9 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.torExitCountry] = profile.torExitCountry
             prefs[Keys.torStrictNodes] = profile.torStrictNodes
             prefs[Keys.torBridgeMode] = profile.torBridgeMode.name
+            // Same contract as noizeChosen: from here on OFF means the user
+            // chose OFF, and the migration above leaves this profile alone.
+            prefs[Keys.torBridgeChosen] = true
             prefs[Keys.torBridgeTransport] = profile.torBridgeTransport.name
             prefs[Keys.torBridgeLines] = profile.torBridgeLines
         }
