@@ -8,8 +8,10 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /** How the front answers a DNS query it has intercepted. */
@@ -55,9 +57,36 @@ internal sealed interface DnsRoute {
  *    of band via [DnsRoute]. The reply is wrapped in the request's own SOCKS5
  *    UDP header, which is what identifies the sender to the client.
  *  - **Any other UDP** is dropped, because there is nothing honest to do with
- *    it: neither core can carry it. In practice that means QUIC / HTTP3 falls
- *    back to TCP, which every browser does automatically.
+ *    it: neither core can carry it. Every dropped datagram is COUNTED, and the
+ *    first UDP/443 one says what it means in the log - see below.
  *  - **BIND** is refused with a proper SOCKS5 error rather than a dead socket.
+ *
+ * ### 1.4.7: why apps said "no internet" on a Psiphon exit
+ *
+ * Two of the three root causes were here (the third was the TUN's IPv6 address;
+ * see TunFactory). Full analysis in `docs/PSIPHON_APP_CONNECTIVITY.md`.
+ *
+ *  - **AAAA was forwarded to a resolver that answers it.** A Psiphon exit is
+ *    IPv4-only in practice, so every AAAA record handed to an app is a
+ *    connection that must fail first. The front now probes the exit ONCE, up
+ *    front, and answers AAAA locally with NODATA only once the exit has PROVEN
+ *    it cannot dial IPv6 ([exitIpv6]). Unknown means "leave it alone": guessing
+ *    would break a v6-capable exit to fix a v4-only one.
+ *  - **Every name cost a new connection.** A fresh SOCKS5 handshake plus a
+ *    fresh TCP connection per lookup, through two chained tunnels, with eight
+ *    workers - so a page needing thirty names simply did not resolve, while
+ *    Telegram (hard-coded IPs) and a warm Instagram (cached addresses) kept
+ *    working. Connections are pooled per resolver and reused, and a reused one
+ *    is only trusted when the answer's transaction id matches the question's.
+ *
+ * ### The QUIC gap, stated rather than hidden
+ *
+ * UDP/443 still cannot be carried: this front's upstream is a CONNECT-only
+ * SOCKS5, so there is no path for a datagram and no way to return an ICMP
+ * port-unreachable that would make a client fall back fast. Clients that pin
+ * HTTP/3 for their own origins read that as a dead link. Carrying it needs a
+ * udpgw-style relay on the Psiphon hop, which is tracked separately - what this
+ * class does now is make the drop VISIBLE instead of silent.
  *
  * ### Security posture
  *
@@ -79,6 +108,31 @@ internal class SocksFront(
     private var running = false
 
     private val liveClients = AtomicInteger(0)
+
+    /**
+     * Whether the exit can dial IPv6 at all: true, false, or null for "not
+     * known yet".
+     *
+     * THREE STATES ON PURPOSE. AAAA is only suppressed on a proven `false`; an
+     * unknown result must behave exactly like the old code did, because a wrong
+     * guess here would take IPv6 away from an exit that has it.
+     */
+    @Volatile
+    private var exitIpv6: Boolean? = null
+
+    // Session accounting. Cheap, and the difference between a bug report that
+    // can be diagnosed and one that cannot.
+    private val quicDropped = AtomicLong(0)
+    private val otherUdpDropped = AtomicLong(0)
+    private val aaaaSuppressed = AtomicLong(0)
+    private val dnsDialled = AtomicLong(0)
+    private val dnsReused = AtomicLong(0)
+
+    /** An idle, already-tunnelled TCP connection to one DNS resolver. */
+    private class PooledDns(val socket: Socket, val idleSince: Long)
+
+    private val dnsPool = HashMap<String, ArrayDeque<PooledDns>>()
+    private val dnsPoolLock = Any()
 
     /**
      * DNS resolution is blocking I/O with a hard timeout, and one stalled
@@ -114,6 +168,7 @@ internal class SocksFront(
                 "(dns: ${describeDns()})",
         )
         thread(name = "socks-front-accept", isDaemon = true) { acceptLoop(socket) }
+        startIpv6Probe()
         return true
     }
 
@@ -123,7 +178,14 @@ internal class SocksFront(
         runCatching { server?.close() }
         server = null
         resolvers.shutdownNow()
-        DiagnosticsLog.i(TAG, "SOCKS front stopped.")
+        closeDnsPool()
+        DiagnosticsLog.i(
+            TAG,
+            "SOCKS front stopped. Session: udp/443 (QUIC) dropped=${quicDropped.get()}, " +
+                "other udp dropped=${otherUdpDropped.get()}, " +
+                "AAAA answered NODATA=${aaaaSuppressed.get()}, " +
+                "dns connections dialled=${dnsDialled.get()} reused=${dnsReused.get()}",
+        )
     }
 
     // --------------------------------------------------------------- accept
@@ -294,6 +356,9 @@ internal class SocksFront(
             if (datagram.port != DNS_PORT) {
                 // Honest silence: neither Psiphon's SOCKS5 nor tor can carry
                 // this, and a fake answer would be worse than a dropped packet.
+                // Counted and, for QUIC, explained once - a silent drop is what
+                // made this cost three bug reports to find.
+                noteUndeliverableUdp(datagram.port)
                 continue
             }
             val source = packet.address
@@ -304,19 +369,58 @@ internal class SocksFront(
         }
     }
 
+    private fun noteUndeliverableUdp(port: Int) {
+        if (port != QUIC_PORT) {
+            otherUdpDropped.incrementAndGet()
+            return
+        }
+        if (quicDropped.incrementAndGet() == 1L) {
+            DiagnosticsLog.w(
+                TAG,
+                "UDP/443 (QUIC) cannot be carried through this chain's entry core, so it is " +
+                    "being dropped. Apps that pin HTTP/3 for their own origins (Instagram, " +
+                    "YouTube, CapCut, the AI apps) can read a black hole as \"no internet\" " +
+                    "instead of falling back to TCP. See docs/PSIPHON_APP_CONNECTIVITY.md.",
+            )
+        }
+    }
+
     private fun resolveAndReply(
         relay: DatagramSocket,
         clientAddress: InetAddress,
         clientPort: Int,
         datagram: UdpRequest,
     ) {
+        // AAAA GUARD: only on a PROVEN IPv4-only exit, and only for a query this
+        // code fully parsed. Anything else is forwarded exactly as before.
+        if (exitIpv6 == false && DnsMessage.isAaaaQuery(datagram.payload)) {
+            val nodata = DnsMessage.nodataResponse(datagram.payload)
+            if (nodata != null) {
+                aaaaSuppressed.incrementAndGet()
+                sendReply(relay, clientAddress, clientPort, datagram, nodata)
+                return
+            }
+        }
         val route = dns
         val answer = when (route) {
             is DnsRoute.LocalUdp -> resolveViaLocalUdp(route, datagram.payload)
             is DnsRoute.OverSocksTcp -> resolveViaSocksTcp(route, datagram.payload)
         } ?: return
-        // The reply carries the request's own header, i.e. "this came from the
-        // address you asked about", which is what the client matches on.
+        sendReply(relay, clientAddress, clientPort, datagram, answer)
+    }
+
+    /**
+     * Sends [answer] back under the request's OWN SOCKS5 UDP header, i.e. "this
+     * came from the address you asked about", which is what the client matches
+     * the reply on.
+     */
+    private fun sendReply(
+        relay: DatagramSocket,
+        clientAddress: InetAddress,
+        clientPort: Int,
+        datagram: UdpRequest,
+        answer: ByteArray,
+    ) {
         val out = datagram.header + answer
         runCatching { relay.send(DatagramPacket(out, out.size, clientAddress, clientPort)) }
     }
@@ -342,46 +446,207 @@ internal class SocksFront(
         }.getOrNull()
 
     /**
-     * DNS over TCP through the upstream SOCKS5. Resolvers are tried in order,
-     * because a single filtered resolver must not be the whole device's DNS.
+     * DNS over TCP through the upstream SOCKS5, on a POOLED connection.
+     *
+     * Resolvers are tried in order, because a single filtered resolver must not
+     * be the whole device's DNS. Per resolver: reuse an idle connection if there
+     * is one, and dial a fresh one if the reused one fails - a pooled connection
+     * can be closed by the far end at any time, and that must cost one retry
+     * rather than one failed lookup.
      */
     private fun resolveViaSocksTcp(route: DnsRoute.OverSocksTcp, query: ByteArray): ByteArray? {
         for (entry in route.resolvers) {
             val target = HostPort.parse(entry, DNS_PORT) ?: continue
-            val answer = runCatching {
-                Socket().use { socket ->
-                    socket.tcpNoDelay = true
-                    socket.connect(InetSocketAddress(upstreamHost, upstreamPort), DIAL_TIMEOUT_MS)
-                    socket.soTimeout = DNS_TIMEOUT_MS
-                    val input = socket.getInputStream()
-                    val output = socket.getOutputStream()
-                    output.write(byteArrayOf(VERSION, 1, 0))
-                    output.flush()
-                    val greeting = readExact(input, 2)
-                        ?: throw IOException("SOCKS5 greeting failed")
-                    if (greeting[0] != VERSION || greeting[1] != 0.toByte()) {
-                        throw IOException("SOCKS5 greeting refused")
-                    }
-                    output.write(connectRequest(target.host, target.port))
-                    output.flush()
-                    if (!skipReply(input)) throw IOException("SOCKS5 connect refused")
-                    // RFC 7766 framing: two-byte length, then the message.
-                    output.write(
-                        byteArrayOf(
-                            ((query.size shr 8) and 0xFF).toByte(),
-                            (query.size and 0xFF).toByte(),
-                        ),
-                    )
-                    output.write(query)
-                    output.flush()
-                    val length = readExact(input, 2) ?: throw IOException("truncated DNS length")
-                    val size = ((length[0].toInt() and 0xFF) shl 8) or (length[1].toInt() and 0xFF)
-                    if (size <= 0 || size > UDP_BUFFER_BYTES) throw IOException("bad DNS length")
-                    readExact(input, size) ?: throw IOException("truncated DNS answer")
+            val key = target.authority()
+
+            val pooled = borrowDns(key)
+            if (pooled != null) {
+                val answer = exchangeDns(pooled, query)
+                if (answer != null) {
+                    dnsReused.incrementAndGet()
+                    releaseDns(key, pooled)
+                    return answer
                 }
-            }.getOrNull()
-            if (answer != null) return answer
+                runCatching { pooled.close() }
+            }
+
+            val fresh = dialThroughUpstream(target, DNS_TIMEOUT_MS) ?: continue
+            val answer = exchangeDns(fresh, query)
+            if (answer != null) {
+                dnsDialled.incrementAndGet()
+                releaseDns(key, fresh)
+                return answer
+            }
+            runCatching { fresh.close() }
         }
+        return null
+    }
+
+    /**
+     * One RFC 7766 query/answer exchange on an established connection.
+     *
+     * The transaction-id check is what makes REUSE safe: if an earlier query on
+     * this connection timed out, its late answer is the next thing in the
+     * stream, and handing that to the caller would answer one name with
+     * another's addresses. A mismatch fails the exchange, and the caller then
+     * closes the connection rather than returning it to the pool.
+     */
+    private fun exchangeDns(socket: Socket, query: ByteArray): ByteArray? = runCatching {
+        val input = socket.getInputStream()
+        val output = socket.getOutputStream()
+        output.write(
+            byteArrayOf(
+                ((query.size shr 8) and 0xFF).toByte(),
+                (query.size and 0xFF).toByte(),
+            ),
+        )
+        output.write(query)
+        output.flush()
+        val length = readExact(input, 2) ?: throw IOException("truncated DNS length")
+        val size = ((length[0].toInt() and 0xFF) shl 8) or (length[1].toInt() and 0xFF)
+        if (size <= 0 || size > UDP_BUFFER_BYTES) throw IOException("bad DNS length")
+        val answer = readExact(input, size) ?: throw IOException("truncated DNS answer")
+        val asked = DnsMessage.transactionId(query)
+        if (asked != null && DnsMessage.transactionId(answer) != asked) {
+            throw IOException("DNS answer id does not match the question")
+        }
+        answer
+    }.getOrNull()
+
+    // ----------------------------------------------------------- dns pooling
+
+    private fun borrowDns(key: String): Socket? = synchronized(dnsPoolLock) {
+        val queue = dnsPool[key] ?: return null
+        var candidate = queue.pollLast()
+        while (candidate != null) {
+            val stale = candidate.socket.isClosed ||
+                candidate.socket.isInputShutdown ||
+                System.currentTimeMillis() - candidate.idleSince > DNS_IDLE_MS
+            if (!stale) return candidate.socket
+            runCatching { candidate.socket.close() }
+            candidate = queue.pollLast()
+        }
+        null
+    }
+
+    private fun releaseDns(key: String, socket: Socket) {
+        if (!running || socket.isClosed) {
+            runCatching { socket.close() }
+            return
+        }
+        synchronized(dnsPoolLock) {
+            val queue = dnsPool.getOrPut(key) { ArrayDeque() }
+            if (queue.size >= DNS_POOL_MAX) {
+                runCatching { socket.close() }
+                return
+            }
+            queue.addLast(PooledDns(socket, System.currentTimeMillis()))
+        }
+    }
+
+    private fun closeDnsPool() = synchronized(dnsPoolLock) {
+        dnsPool.values.forEach { queue ->
+            queue.forEach { runCatching { it.socket.close() } }
+        }
+        dnsPool.clear()
+    }
+
+    // -------------------------------------------------------- ipv6 capability
+
+    /**
+     * Asks the upstream ONCE, on a background thread, whether it can dial IPv6
+     * at all.
+     *
+     * UP FRONT AND ONCE, deliberately. Deciding this lazily means the first two
+     * app flows of every session pay for the discovery, which is exactly the
+     * latency a user reads as "it connects but nothing opens". Only run for a
+     * CONNECT-only upstream we own the resolver path for (Psiphon); tor answers
+     * AAAA itself and can dial IPv6, so its route is left alone.
+     */
+    private fun startIpv6Probe() {
+        if (dns !is DnsRoute.OverSocksTcp) return
+        thread(name = "socks-front-v6probe", isDaemon = true) {
+            val capable = probeExitIpv6()
+            exitIpv6 = capable
+            when (capable) {
+                true -> DiagnosticsLog.i(
+                    TAG,
+                    "The exit can dial IPv6 - AAAA answers are passed through unchanged.",
+                )
+                false -> DiagnosticsLog.i(
+                    TAG,
+                    "The exit cannot dial IPv6 - AAAA queries are answered NODATA locally, so " +
+                        "apps stop preferring addresses that can never connect.",
+                )
+                null -> DiagnosticsLog.w(
+                    TAG,
+                    "Could not establish whether the exit can dial IPv6 (the upstream did not " +
+                        "answer) - leaving AAAA queries alone.",
+                )
+            }
+        }
+    }
+
+    /**
+     * true = a v6 destination was reachable, false = the upstream answered and
+     * refused every one, null = the upstream itself never answered, so nothing
+     * was proven either way.
+     */
+    private fun probeExitIpv6(): Boolean? {
+        var reachedUpstream = false
+        for (literal in IPV6_PROBES) {
+            if (!running) return null
+            val target = HostPort.parse(literal, PROBE_PORT) ?: continue
+            val socket = Socket()
+            val connected = runCatching {
+                socket.tcpNoDelay = true
+                socket.connect(InetSocketAddress(upstreamHost, upstreamPort), DIAL_TIMEOUT_MS)
+                socket.soTimeout = PROBE_TIMEOUT_MS
+                val input = socket.getInputStream()
+                val output = socket.getOutputStream()
+                output.write(byteArrayOf(VERSION, 1, 0))
+                output.flush()
+                val greeting = readExact(input, 2) ?: throw IOException("SOCKS5 greeting failed")
+                if (greeting[0] != VERSION || greeting[1] != 0.toByte()) {
+                    throw IOException("SOCKS5 greeting refused")
+                }
+                // The upstream is alive and speaking SOCKS5: whatever it says
+                // about this destination is now evidence.
+                reachedUpstream = true
+                output.write(connectRequest(target.host, target.port))
+                output.flush()
+                skipReply(input)
+            }.getOrDefault(false)
+            runCatching { socket.close() }
+            if (connected) return true
+        }
+        return if (reachedUpstream) false else null
+    }
+
+    /**
+     * Opens a TCP connection to [target] THROUGH the upstream SOCKS5 and
+     * returns it with the handshake already done, or null when any step failed.
+     */
+    private fun dialThroughUpstream(target: HostPort, readTimeoutMs: Int): Socket? {
+        val socket = Socket()
+        val ready = runCatching {
+            socket.tcpNoDelay = true
+            socket.connect(InetSocketAddress(upstreamHost, upstreamPort), DIAL_TIMEOUT_MS)
+            socket.soTimeout = readTimeoutMs
+            val input = socket.getInputStream()
+            val output = socket.getOutputStream()
+            output.write(byteArrayOf(VERSION, 1, 0))
+            output.flush()
+            val greeting = readExact(input, 2) ?: throw IOException("SOCKS5 greeting failed")
+            if (greeting[0] != VERSION || greeting[1] != 0.toByte()) {
+                throw IOException("SOCKS5 greeting refused")
+            }
+            output.write(connectRequest(target.host, target.port))
+            output.flush()
+            if (!skipReply(input)) throw IOException("SOCKS5 connect refused")
+        }.isSuccess
+        if (ready) return socket
+        runCatching { socket.close() }
         return null
     }
 
@@ -551,6 +816,29 @@ internal class SocksFront(
         const val DNS_PORT = 53
         const val DNS_TIMEOUT_MS = 6_000
         const val DNS_WORKERS = 8
+
+        /**
+         * How long an idle tunnelled DNS connection may be reused for, and how
+         * many may be kept per resolver.
+         *
+         * Both are small on purpose: the point is to make the twenty names of
+         * one page load cost one connection instead of twenty, not to hold
+         * sockets open across a whole session.
+         */
+        const val DNS_IDLE_MS = 30_000L
+        const val DNS_POOL_MAX = 4
+
+        /** The port every dropped-datagram report in the field is about. */
+        const val QUIC_PORT = 443
+
+        /**
+         * Where the IPv6 capability probe dials. Two operators, both anycast,
+         * both answering on 443, and both written as LITERALS so the probe
+         * itself can never trigger a name lookup.
+         */
+        val IPV6_PROBES = listOf("[2606:4700:4700::1111]", "[2001:4860:4860::8888]")
+        const val PROBE_PORT = 443
+        const val PROBE_TIMEOUT_MS = 8_000
 
         const val BACKLOG = 32
         const val MAX_CLIENTS = 256
