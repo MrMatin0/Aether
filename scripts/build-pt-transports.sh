@@ -34,6 +34,16 @@
 # reason to make an exception. They are also the binaries that see hostile
 # traffic first, which is a poor argument for downloading somebody's blob.
 #
+# ============================================================================
+# IDEMPOTENCE
+# ============================================================================
+# Each transport is skipped when its .so already exists and is non-empty for
+# every shipped ABI - the same condition app/build.gradle.kts:buildPtTransports
+# uses for its up-to-date check, so Gradle and this script agree on what
+# "already built" means. Set AETHER_PT_FORCE=1 to rebuild anyway (a ref bump, or
+# a binary you have reason to distrust). Checkouts under .native/ are reused
+# rather than re-cloned for the same reason.
+#
 # Usage:  build-pt-transports.sh [lyrebird|snowflake|webtunnel|all]   (default: all)
 #
 # Requires: ANDROID_NDK_HOME, Go 1.21+, git. Every network access happens here
@@ -49,6 +59,7 @@ JNI_DIR="${PROJECT_DIR}/app/src/main/jniLibs"
 
 API="${ANDROID_API:-26}"
 ABIS=("arm64-v8a" "armeabi-v7a")
+FORCE="${AETHER_PT_FORCE:-0}"
 
 # Host prefixes assembled from fragments, same convention as the other scripts:
 # no full literal URL sits in the file.
@@ -98,6 +109,20 @@ goarch_for_abi() {
     armeabi-v7a) echo "arm" ;;
     *) echo "" ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# Is this transport already built for every ABI we ship?
+# ---------------------------------------------------------------------------
+# Deliberately the SAME condition as buildPtTransports in app/build.gradle.kts
+# (present and non-empty, per ABI). If the two ever disagree, one of them either
+# rebuilds forever or reports a binary that is not there.
+already_built() {
+  local out_name="$1" abi
+  for abi in "${ABIS[@]}"; do
+    [ -s "${JNI_DIR}/${abi}/${out_name}" ] || return 1
+  done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -179,6 +204,15 @@ build_go_transport() {
   local name="$1" repo="$2" ref="$3" pkg="$4" out_name="$5"
   local src="${NATIVE_DIR}/${name}"
 
+  # Nothing below is cheap: a shallow clone, a module graph download and one
+  # cross-compile per ABI. Skip the whole transport when it is already on disk,
+  # so `all` costs only what is actually missing - which is what makes this
+  # script safe to call on every build rather than only on a clean tree.
+  if already_built "${out_name}" && [ "${FORCE}" != "1" ]; then
+    echo "==> [${name}] ${out_name} already present for ${ABIS[*]} - skipping (AETHER_PT_FORCE=1 to rebuild)"
+    return 0
+  fi
+
   if [ ! -d "${src}/.git" ]; then
     rm -rf "${src}"
     echo "==> [${name}] cloning ${repo} @ ${ref}"
@@ -228,6 +262,15 @@ build_go_transport() {
     fi
     mkdir -p "${JNI_DIR}/${abi}"
     out="${JNI_DIR}/${abi}/${out_name}"
+
+    # Per-ABI skip as well as the per-transport one above: a previous run that
+    # died partway through leaves one ABI done and the other missing, and there
+    # is no reason to redo the half that succeeded.
+    if [ -s "${out}" ] && [ "${FORCE}" != "1" ]; then
+      echo "==> [${name}] ${out_name} already present for ${abi} - skipping"
+      continue
+    fi
+
     echo "==> [${name}] building for ${abi} (GOARCH=${goarch}, API ${API})"
 
     # -buildmode=pie is explicit rather than implied: Android refuses to exec a
