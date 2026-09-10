@@ -25,6 +25,10 @@ private const val PSIPHON_STOP_WAIT_MS = 5_000L
 /** Grace for the local SOCKS port to leave TIME_WAIT before the retry binds it. */
 private const val PSIPHON_PORT_RELEASE_MS = 1_500L
 
+/** Same, for a tor being replaced between two rungs of the bridge ladder. */
+private const val TOR_STOP_WAIT_MS = 5_000L
+private const val TOR_PORT_RELEASE_MS = 1_500L
+
 /** Why a chain could not be brought up. Mapped to a user-facing string by the service. */
 internal enum class ChainFailure {
     /** This build does not bundle libpsiphon.so. */
@@ -255,27 +259,72 @@ internal class ChainStack(
         throw ChainException(ChainFailure.PSIPHON_TIMEOUT)
     }
 
+    /**
+     * Brings tor up, walking the bridge ladder until one rung bootstraps.
+     *
+     * ROOT CAUSE this handles: a blocked TRANSPORT is not a blocked network.
+     * obfs4 is what every censor spends its effort on, because it is what every
+     * client tries first - and the same DPI box is routinely blind to a snowflake
+     * WebRTC flow. Before this loop existed, one filtered transport was the end
+     * of the session: tor sat at 5% for four minutes and the user was told Tor
+     * was blocked here, when the next rung would have worked.
+     *
+     * Each rung is a NEW [TorCore], because tor reads its torrc exactly once at
+     * startup - there is no way to change bridges in place - and because the
+     * outgoing process must be reaped before its replacement binds the same local
+     * ports.
+     *
+     * BUDGETS: only the LAST rung gets the full bootstrap window. An earlier one
+     * gets [VpnTunables.TOR_BRIDGE_ATTEMPT_WAIT_MS], which is long enough to tell
+     * a working transport from a filtered one and short enough that three rungs
+     * are not a ten-minute spinner.
+     */
     private suspend fun startTor(profile: ConnectionProfile, upstream: Int?): Int {
-        val core = TorCore(context, filesDir)
+        var core = TorCore(context, filesDir)
         if (!core.isAvailable) {
             ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.FAILED, "not bundled")
             throw ChainException(ChainFailure.TOR_MISSING)
         }
         synchronized(lock) { tor = core }
-        ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.STARTING, "0%")
-        core.start(profile, upstream)
 
-        val listening = PortProbe.awaitOpen(
-            TunnelConfig.SOCKS_HOST,
-            TunnelConfig.TOR_SOCKS_PORT,
-            VpnTunables.TOR_PORT_WAIT_MS,
-        ) { core.isAlive }
-        if (!listening || !core.awaitReady(VpnTunables.TOR_BOOTSTRAP_WAIT_MS)) {
-            ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.FAILED, "${core.bootstrapPercent}%")
-            throw ChainException(ChainFailure.TOR_TIMEOUT)
+        val ladder = core.attempts(profile)
+        for ((index, attempt) in ladder.withIndex()) {
+            if (index > 0) {
+                DiagnosticsLog.w(
+                    TAG,
+                    "Tor did not bootstrap with ${ladder[index - 1].label} - " +
+                        "falling back to ${attempt.label}.",
+                )
+                val previous = core
+                runCatching { previous.stop() }
+                previous.awaitExit(TOR_STOP_WAIT_MS)
+                delay(TOR_PORT_RELEASE_MS)
+                core = TorCore(context, filesDir)
+                synchronized(lock) { tor = core }
+            }
+
+            val rung = core
+            ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.STARTING, attempt.label)
+            rung.start(profile, upstream, attempt)
+
+            val listening = PortProbe.awaitOpen(
+                TunnelConfig.SOCKS_HOST,
+                TunnelConfig.TOR_SOCKS_PORT,
+                VpnTunables.TOR_PORT_WAIT_MS,
+            ) { rung.isAlive }
+            val budget = if (index == ladder.lastIndex) {
+                VpnTunables.TOR_BOOTSTRAP_WAIT_MS
+            } else {
+                VpnTunables.TOR_BRIDGE_ATTEMPT_WAIT_MS
+            }
+            if (listening && rung.awaitReady(budget)) {
+                ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.READY, "100%")
+                return TunnelConfig.TOR_SOCKS_PORT
+            }
         }
-        ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.READY, "100%")
-        return TunnelConfig.TOR_SOCKS_PORT
+
+        ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.FAILED, "${core.bootstrapPercent}%")
+        throw ChainException(ChainFailure.TOR_TIMEOUT)
     }
 
     /**

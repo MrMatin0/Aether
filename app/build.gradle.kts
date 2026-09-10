@@ -25,6 +25,11 @@ plugins {
 // continue-on-error, so the release went out with libpsiphon.so missing and the
 // app correctly reported the core as absent. See docs/CHAIN_CORES.md.
 //
+// 1.4.7 shipped the Tor BRIDGES feature the same way: the source, the settings
+// page and the parser, and none of the pluggable-transport binaries, because
+// nothing in the build ever ran scripts/build-pt-transports.sh. See
+// docs/TOR_BRIDGES.md and the PLUGGABLE TRANSPORTS block below.
+//
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
@@ -41,6 +46,9 @@ val abiVersionCodeOffsets = mapOf(
     "arm64-v8a" to 2,
     "universal" to 3,
 )
+
+/** The ABIs this app ships. Single source of truth for the payload checks. */
+val shippedAbis = listOf("arm64-v8a", "armeabi-v7a")
 
 // ================================================================= SIGNING ==
 //
@@ -148,6 +156,181 @@ val fetchVazirmatn = tasks.register("fetchVazirmatn") {
     }
 }
 
+// ============================================================= TOR BRIDGES ==
+//
+// The BUILT-IN bridge list (assets/tor/bridges.json), refreshed at build time by
+// scripts/fetch-tor-bridges.sh.
+//
+// WHY THIS IS A BUILD STEP AND NOT A COMMITTED FILE: bridge addresses get
+// blocked, replaced and re-hosted, so a list in git history is a list of
+// addresses a censor has had months to find. assets/tor/ is gitignored for the
+// same reason the native cores are.
+//
+// WHY IT RUNS HERE AND NOT ONLY IN CI: it is the app's own build that needs the
+// asset, and a step that only exists in one workflow file is a step that silently
+// stops running the moment anything else assembles the APK. That is exactly how
+// this feature shipped in 1.4.7 with no asset at all.
+//
+// WHY IT IS NON-FATAL: core/BridgeCatalog.kt carries a compiled-in list as the
+// floor, and a build that could not reach bridges.torproject.org is a build made
+// on a filtered network - which is where this app is developed. Same treatment as
+// the geoip database. The script itself also refuses to overwrite a good list
+// with a failed refresh.
+val torBridgesDir = layout.projectDirectory.dir("src/main/assets/tor").asFile
+val fetchTorBridgesScript = rootProject.file("scripts/fetch-tor-bridges.sh")
+val torBridgesFile = File(torBridgesDir, "bridges.json")
+
+// Same reason as the font directory: resource merging must never see a missing
+// source dir on a fresh checkout.
+torBridgesDir.mkdirs()
+
+val fetchTorBridges = tasks.register("fetchTorBridges") {
+    group = "build setup"
+    description = "Refreshes the built-in Tor bridge list into assets/tor/bridges.json."
+    val script = fetchTorBridgesScript
+    val target = torBridgesFile
+    val workingDir = rootProject.layout.projectDirectory.asFile
+    inputs.file(script)
+    outputs.file(target)
+    // A list that is already there and plausible is left alone, so a local
+    // rebuild costs no request. CI checks out fresh, so CI always fetches.
+    outputs.upToDateWhen { target.length() > 200L }
+    // Network downloads have no business in the remote build cache.
+    outputs.cacheIf { false }
+    doLast {
+        target.parentFile.mkdirs()
+        // Plain ProcessBuilder rather than project.exec: that API is deprecated
+        // in Gradle 9 and reaching for the Project object at execution time is
+        // what breaks the configuration cache.
+        val ran = runCatching {
+            val process = ProcessBuilder("bash", script.absolutePath)
+                .directory(workingDir)
+                .redirectErrorStream(true)
+                .start()
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle("bridges: $it") }
+            process.waitFor()
+        }.getOrNull()
+        if (ran != 0 || target.length() <= 200L) {
+            logger.warn(
+                "Could not refresh the built-in Tor bridge list (exit=${ran ?: "no bash"}). " +
+                    "The app will use the list compiled into core/BridgeCatalog.kt, which works " +
+                    "but is only as fresh as the source. Run scripts/fetch-tor-bridges.sh on a " +
+                    "connected machine, or set TOR_BRIDGES_URL / TOR_BRIDGES_FILE / " +
+                    "TOR_BRIDGES_B64.",
+            )
+        }
+    }
+}
+
+// ====================================================== PLUGGABLE TRANSPORTS ==
+//
+// liblyrebird.so (obfs4 + meek_lite), libsnowflake.so and libwebtunnel.so: the
+// binaries tor SPAWNS to reach a bridge, built by scripts/build-pt-transports.sh.
+//
+// THE BUG THIS EXISTS TO CLOSE. Nothing ever called that script. So no APK has
+// ever contained a pluggable transport, core/PluggableTransports.kt found none,
+// and core/BridgeLine.usable() filtered every obfuscated bridge line out of the
+// torrc before tor could see it. That filtering is correct and load-bearing - tor
+// treats a `Bridge obfs4 ...` line with no matching `ClientTransportPlugin` as a
+// FATAL config error and exits during startup - which is exactly why the failure
+// was invisible: 1.4.7 shipped a complete, working Bridges page whose every
+// selection was silently dropped, and the Tor hop went to the public relays on
+// networks that block them.
+//
+// WHY IN GRADLE and not only in .github/workflows/build.yml: the same reason as
+// the bridge list above. The APK is what needs these files, so the thing that
+// builds the APK is where the dependency belongs; a step in one workflow file is
+// a step that does not exist for any other way of building.
+//
+// WHAT IT DOES WHEN IT CANNOT BUILD THEM. Cross-compiling Go for Android needs
+// ANDROID_NDK_HOME and a Go toolchain, and neither is present in every
+// environment that assembles this app (in CI the transports are cross-compiled
+// in the natives job and travel to the app job as artifacts, so by the time
+// Gradle runs they are already in jniLibs and this task is up to date). So:
+//
+//   * all six files present            -> up to date, no work
+//   * missing, toolchain available     -> build them, and FAIL if that fails
+//   * missing, no toolchain, strict    -> FAIL with the exact command to run
+//   * missing, no toolchain, otherwise -> a loud warning naming what is missing
+//
+// Strict is -PrequirePluggableTransports=true or AETHER_REQUIRE_PT=1, and a
+// release pipeline should set it: bridges are ON by default now (see
+// model/Profile.kt), so an APK without these cannot honour its own default
+// configuration on the networks this app exists for.
+val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
+val ptBinaries = listOf("liblyrebird.so", "libsnowflake.so", "libwebtunnel.so")
+val buildPtScript = rootProject.file("scripts/build-pt-transports.sh")
+val requirePt: Boolean =
+    providers.gradleProperty("requirePluggableTransports").orNull?.toBoolean() == true ||
+        providers.environmentVariable("AETHER_REQUIRE_PT").orNull == "1"
+
+val buildPtTransports = tasks.register("buildPtTransports") {
+    group = "build setup"
+    description = "Builds the Tor pluggable transports into jniLibs (lyrebird, snowflake, webtunnel)."
+    val jniDir = jniLibsDir
+    val abis = shippedAbis
+    val binaries = ptBinaries
+    val script = buildPtScript
+    val workingDir = rootProject.layout.projectDirectory.asFile
+    val strict = requirePt
+    val ndkHome = providers.environmentVariable("ANDROID_NDK_HOME").orNull
+    val pathDirs = providers.environmentVariable("PATH").orNull
+
+    // A missing .so is what this task exists to fix, so "missing" must mean
+    // "run", not "up to date". Evaluated before execution, which is exactly
+    // when Gradle asks.
+    val missing: () -> List<String> = {
+        abis.flatMap { abi ->
+            binaries.filterNot { File(jniDir, "$abi/$it").exists() }.map { "$abi/$it" }
+        }
+    }
+    inputs.file(script)
+    outputs.upToDateWhen { missing().isEmpty() }
+    outputs.cacheIf { false }
+
+    doLast {
+        if (missing().isEmpty()) return@doLast
+        val hasGo = pathDirs.orEmpty().split(File.pathSeparatorChar).any { dir ->
+            dir.isNotBlank() && File(dir, "go").canExecute()
+        }
+        val hasToolchain = !ndkHome.isNullOrBlank() && File(ndkHome).isDirectory && hasGo
+        val advice =
+            "Build them with:  export ANDROID_NDK_HOME=<ndk>  &&  bash " +
+                "scripts/build-pt-transports.sh all"
+
+        if (hasToolchain) {
+            val exit = runCatching {
+                val process = ProcessBuilder("bash", script.absolutePath, "all")
+                    .directory(workingDir)
+                    .redirectErrorStream(true)
+                    .start()
+                process.inputStream.bufferedReader().forEachLine { logger.lifecycle("pt: $it") }
+                process.waitFor()
+            }.getOrNull()
+            val stillMissing = missing()
+            if (exit != 0 || stillMissing.isNotEmpty()) {
+                // Hard failure, deliberately: the toolchain was there, so this
+                // is a real build error and not an environment without Go.
+                throw GradleException(
+                    "scripts/build-pt-transports.sh failed (exit=${exit ?: "could not start"}). " +
+                        "Missing: ${stillMissing.joinToString().ifEmpty { "none" }}. Tor cannot " +
+                        "use an obfuscated bridge without these, and bridges are on by default.",
+                )
+            }
+            return@doLast
+        }
+
+        val message =
+            "No pluggable transports in jniLibs (${missing().joinToString()}), and no Go + " +
+                "Android NDK toolchain to build them with. tor cannot use obfs4, snowflake, " +
+                "webtunnel or meek in this build - every such bridge line is dropped before " +
+                "the torrc (see core/PluggableTransports.kt), so the Tor hop will connect to " +
+                "the public relays. $advice"
+        if (strict) throw GradleException(message)
+        logger.warn("WARNING: $message")
+    }
+}
+
 android {
     // NOTE: namespace != applicationId on purpose.
     //
@@ -187,7 +370,11 @@ android {
         // while the feature is off.
         resValue("string", "app_label", "Aether (Fork)")
 
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        // BOTH ABIs, and that is load-bearing for more than the engine: the
+        // pluggable transports are cross-compiled per ABI too, and an APK that
+        // carries libtor.so for an ABI without liblyrebird.so is an APK whose
+        // Tor hop drops every obfuscated bridge on that ABI alone.
+        ndk { abiFilters += shippedAbis }
 
         // Same value, same precedence as before (env first, then the Gradle
         // property, then empty), but read through the provider API.
@@ -306,6 +493,14 @@ android {
         // The same is true of libpsiphon.so and libtor.so: all three chain
         // cores are executables under a .so name, not libraries. See
         // core/NativeChild.kt and docs/CHAIN_CORES.md.
+        //
+        // AND of the three pluggable transports - liblyrebird.so,
+        // libsnowflake.so, libwebtunnel.so. Those are not even launched by this
+        // app: tor spawns them itself through `ClientTransportPlugin ... exec
+        // <path>`, which needs a real path on disk with the exec bit set. With
+        // legacy packaging off there is no such path, and every obfuscated
+        // bridge type would fail at startup rather than at configuration time.
+        // See core/PluggableTransports.kt and docs/TOR_BRIDGES.md.
         jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
@@ -319,8 +514,10 @@ android {
     }
 }
 
-// The font has to be on disk before resource merging reads the source set.
-tasks.named("preBuild") { dependsOn(fetchVazirmatn) }
+// All three have to be on disk before resource/asset merging and JNI packaging
+// read the source sets, which is what makes preBuild the right hook rather than
+// a dependency of the merge tasks themselves.
+tasks.named("preBuild") { dependsOn(fetchVazirmatn, fetchTorBridges, buildPtTransports) }
 
 // android.kotlinOptions was removed in Kotlin 2.4; compiler options live here.
 kotlin {
