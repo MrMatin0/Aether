@@ -515,18 +515,30 @@ internal class SocksFront(
 
     // ----------------------------------------------------------- dns pooling
 
-    private fun borrowDns(key: String): Socket? = synchronized(dnsPoolLock) {
-        val queue = dnsPool[key] ?: return null
-        var candidate = queue.pollLast()
-        while (candidate != null) {
-            val stale = candidate.socket.isClosed ||
-                candidate.socket.isInputShutdown ||
-                System.currentTimeMillis() - candidate.idleSince > DNS_IDLE_MS
-            if (!stale) return candidate.socket
-            runCatching { candidate.socket.close() }
-            candidate = queue.pollLast()
+    /**
+     * Takes an idle connection for [key] out of the pool, or null when there is
+     * no usable one.
+     *
+     * The socket is bound to an immutable local before it is touched: the
+     * previous shape held the entry in a nullable `var` and dereferenced it from
+     * inside a lambda, which is a smart cast on a captured, reassigned local -
+     * exactly the construct whose rules differ between Kotlin frontends, in a
+     * file that only ever gets compiled by CI.
+     */
+    private fun borrowDns(key: String): Socket? {
+        synchronized(dnsPoolLock) {
+            val queue = dnsPool[key] ?: return null
+            var entry = queue.pollLast()
+            while (entry != null) {
+                val socket = entry.socket
+                val idleFor = System.currentTimeMillis() - entry.idleSince
+                val stale = socket.isClosed || socket.isInputShutdown || idleFor > DNS_IDLE_MS
+                if (!stale) return socket
+                runCatching { socket.close() }
+                entry = queue.pollLast()
+            }
         }
-        null
+        return null
     }
 
     private fun releaseDns(key: String, socket: Socket) {
