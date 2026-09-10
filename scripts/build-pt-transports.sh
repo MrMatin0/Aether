@@ -100,6 +100,29 @@ goarch_for_abi() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# Does this toolchain's linker know -checklinkname?
+# ---------------------------------------------------------------------------
+# lyrebird pulls in github.com/wlynxg/anet (and so does snowflake, through
+# pion/transport): it //go:linkname's into net to get working interface
+# enumeration on Android 11+, where the standard library's netlink calls are
+# blocked. Go 1.23 made unsanctioned linknames a hard LINK error, so on any
+# modern toolchain every build attempt dies with
+#
+#   link: github.com/wlynxg/anet: invalid reference to net.zoneCache
+#
+# after compiling everything, which reads like a source error and is not one.
+# -checklinkname=0 is upstream anet's own documented answer and the same escape
+# hatch build-overlay-cores.sh already uses for Psiphon. The flag itself only
+# exists from 1.23 on, hence the version check rather than passing it blindly.
+go_supports_checklinkname() {
+  local have oldest
+  have="$(go env GOVERSION 2>/dev/null | sed 's/^go//')"
+  [ -n "${have}" ] || return 1
+  oldest="$(printf '%s\n%s\n' "1.23" "${have}" | sort -V | head -n1)"
+  [ "${oldest}" = "1.23" ]
+}
+
 # An ELF built for the wrong architecture fails at exec time ON THE DEVICE, only
 # for the users on that ABI, with nothing useful in the log. Same check the
 # overlay cores get, for the same reason.
@@ -181,7 +204,21 @@ build_go_transport() {
     sleep 10
   done
 
-  local abi goarch clang out ok
+  # 16 KB page alignment: Android 15 devices can use a 16 KB page size and a
+  # binary linked for 4 KB will not load there at all.
+  local base_ldflags="-s -w -extldflags=-Wl,-z,max-page-size=16384"
+
+  # Prefer the linkname escape hatch where it exists, and keep the plain link as
+  # a fallback so a toolchain that does not know the flag still builds.
+  local -a ldflag_variants
+  if go_supports_checklinkname; then
+    ldflag_variants=("${base_ldflags} -checklinkname=0" "${base_ldflags}")
+    echo "==> [${name}] linking with -checklinkname=0 (go $(go env GOVERSION 2>/dev/null | sed 's/^go//'), anet linknames into net)"
+  else
+    ldflag_variants=("${base_ldflags}")
+  fi
+
+  local abi goarch clang out ldflags ok
   for abi in "${ABIS[@]}"; do
     goarch="$(goarch_for_abi "${abi}")"
     clang="$(clang_for_abi "${abi}")"
@@ -193,22 +230,24 @@ build_go_transport() {
     out="${JNI_DIR}/${abi}/${out_name}"
     echo "==> [${name}] building for ${abi} (GOARCH=${goarch}, API ${API})"
 
+    # -buildmode=pie is explicit rather than implied: Android refuses to exec a
+    # non-PIE binary, and the default has moved between Go releases.
+    build_one() {
+      ( cd "${src}" && \
+        CGO_ENABLED=1 GOOS=android GOARCH="${goarch}" GOARM=7 \
+        CC="${clang}" \
+        CGO_LDFLAGS="-Wl,-z,max-page-size=16384" \
+        go build -trimpath -buildvcs=false -buildmode=pie \
+          -ldflags "$1" \
+          -o "${out}" "./${pkg}" )
+    }
+
     ok=0
     for attempt in 1 2 3; do
-      # -buildmode=pie is explicit rather than implied: Android refuses to exec a
-      # non-PIE binary, and the default has moved between Go releases.
-      # 16 KB page alignment: Android 15 devices can use a 16 KB page size and a
-      # binary linked for 4 KB will not load there at all.
-      if ( cd "${src}" && \
-           CGO_ENABLED=1 GOOS=android GOARCH="${goarch}" GOARM=7 \
-           CC="${clang}" \
-           CGO_LDFLAGS="-Wl,-z,max-page-size=16384" \
-           go build -trimpath -buildvcs=false -buildmode=pie \
-             -ldflags "-s -w -extldflags=-Wl,-z,max-page-size=16384" \
-             -o "${out}" "./${pkg}" ); then
-        ok=1
-        break
-      fi
+      for ldflags in "${ldflag_variants[@]}"; do
+        if build_one "${ldflags}"; then ok=1; break; fi
+      done
+      [ "${ok}" = 1 ] && break
       echo "    build attempt ${attempt} failed"
       [ "${attempt}" -lt 3 ] && sleep 10
     done
