@@ -9,18 +9,26 @@ package studio.cluvex.aether.core.log
  * echoes back - a command line, an HTTP header, a rejected request - can carry
  * one of those, and "copy logs" then quietly publishes it.
  *
- * DELIBERATELY BLUNT: a redaction that is sometimes skipped is worse than one
- * that occasionally eats a harmless value, so a match wins. The patterns are
- * pure functions over one line, which is the only reason this behaviour is
- * testable at all.
+ * DELIBERATELY BLUNT IN ONE DIRECTION ONLY. A match wins, because a redaction
+ * that is sometimes skipped is worse than one that occasionally eats a harmless
+ * value. But the diagnosis has to survive: timestamps, levels, tags, IPv4
+ * addresses, ports, MTUs and file paths are the entire value of an export, so
+ * none of the patterns can reach them. Both directions are asserted in
+ * LogSanitizerTest.
+ *
+ * IDEMPOTENT BY CONSTRUCTION: [REDACTED] contains no character the value
+ * pattern stops at, so sanitizing an already-sanitized line reproduces it
+ * exactly. That matters because the in-memory export and the streamed disk log
+ * are separate paths and a line can pass through both.
  */
 object LogSanitizer {
 
-    const val REDACTED = "[redacted]"
+    const val REDACTED = "<redacted>"
 
     /**
      * Keys whose value is never safe to publish. Matched case-insensitively on
-     * a word boundary, so `key` does not fire on `keyboard`.
+     * a word boundary, so `session` does not fire on `sessions` and the longer
+     * keys are listed BEFORE the shorter ones they contain.
      */
     private val SENSITIVE_KEYS = listOf(
         "authorization", "auth", "access_token", "refresh_token", "id_token",
@@ -33,10 +41,10 @@ object LogSanitizer {
     /**
      * `key=value`, `key: value`, `"key":"value"`.
      *
-     * The value stops at whitespace so one leaked token cannot blank the rest
-     * of the line - EXCEPT when it opens with a scheme word, because
+     * The value stops at whitespace so one leaked token cannot blank the rest of
+     * the line - EXCEPT when it opens with a scheme word, because
      * `Authorization: Bearer <jwt>` is two tokens and redacting only the first
-     * publishes the part that matters.
+     * publishes the one that matters.
      */
     private val keyedValue = Regex(
         "(?i)\\b(" + SENSITIVE_KEYS.joinToString("|") { Regex.escape(it) } + ")\\b" +
@@ -53,7 +61,9 @@ object LogSanitizer {
     /**
      * A long mixed-case-plus-digits run: what a JWT, a base64 key or a hex
      * secret looks like, and what ordinary log prose never does. All three
-     * lookaheads must hold, so file paths and hostnames are left alone.
+     * lookaheads must hold, and the class excludes `.` and `/`, so IPv4
+     * addresses, hostnames and file paths are split into short runs and left
+     * alone.
      */
     private val opaqueBlob = Regex(
         "\\b(?=[A-Za-z0-9=_\\-]*[a-z])(?=[A-Za-z0-9=_\\-]*[A-Z])(?=[A-Za-z0-9=_\\-]*[0-9])" +

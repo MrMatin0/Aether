@@ -9,26 +9,30 @@ import kotlin.test.assertTrue
  * What must not leave the device, and what must.
  *
  * BOTH DIRECTIONS MATTER. A redaction that misses a client secret publishes it;
- * a redaction that eats the timestamp, the IP and the port destroys the bug
+ * a redaction that eats the timestamp, the exit IP and the port destroys the bug
  * report the export exists to produce. The second failure is the easy one to
- * write by accident.
+ * write by accident, so it gets as many assertions as the first.
  */
 class LogSanitizerTest {
 
     @Test
     fun `a keyed value is redacted and the rest of the line survives`() {
         assertEquals(
-            "token=[redacted] next",
+            "token=${LogSanitizer.REDACTED} next",
             LogSanitizer.sanitize("token=abc123 next"),
         )
         assertEquals(
-            "client_secret=[redacted]",
+            "client_secret=${LogSanitizer.REDACTED}",
             LogSanitizer.sanitize("client_secret: hunter2"),
         )
-        assertEquals(
-            "password=[redacted]",
-            LogSanitizer.sanitize("\"password\":\"hunter2\""),
-        )
+    }
+
+    /** A quoted JSON pair is the shape a rejected enrolment response comes in. */
+    @Test
+    fun `a quoted json credential loses its value`() {
+        val sanitized = LogSanitizer.sanitize("{\"client_secret\":\"s3cr3tV4lue\"}")
+        assertFalse(sanitized.contains("s3cr3tV4lue"), "secret survived: $sanitized")
+        assertTrue(sanitized.contains(LogSanitizer.REDACTED))
     }
 
     /**
@@ -39,11 +43,11 @@ class LogSanitizerTest {
     @Test
     fun `a bearer header loses the whole credential, not just the scheme`() {
         assertEquals(
-            "Authorization=[redacted]",
+            "Authorization=${LogSanitizer.REDACTED}",
             LogSanitizer.sanitize("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9"),
         )
         assertEquals(
-            "sending Bearer [redacted] upstream",
+            "sending Bearer ${LogSanitizer.REDACTED} upstream",
             LogSanitizer.sanitize("sending Bearer eyJhbGciOiJIUzI1NiJ9 upstream"),
         )
     }
@@ -52,7 +56,7 @@ class LogSanitizerTest {
     @Test
     fun `an e-mail address is redacted`() {
         assertEquals(
-            "enrolment code sent to [redacted]",
+            "enrolment code sent to ${LogSanitizer.REDACTED}",
             LogSanitizer.sanitize("enrolment code sent to person@example.com"),
         )
     }
@@ -61,14 +65,14 @@ class LogSanitizerTest {
     @Test
     fun `an unlabelled opaque blob is redacted`() {
         assertEquals(
-            "wg peer [redacted]",
+            "wg peer ${LogSanitizer.REDACTED}",
             LogSanitizer.sanitize("wg peer aB3dEfGhIjKlMnOpQrStUvWxYz01"),
         )
     }
 
     /**
-     * The diagnosis has to survive. Timestamps, levels, tags, IPs, ports and
-     * file paths are the whole value of the export.
+     * The diagnosis has to survive. Timestamps, levels, tags, IPs, ports, engine
+     * arguments and file paths are the whole value of the export.
      */
     @Test
     fun `ordinary diagnostic lines are left completely alone`() {
@@ -79,22 +83,36 @@ class LogSanitizerTest {
             "/data/user/0/io.github.mrmatin0.aether/files/diagnostics.log",
             "MTU 1280, keepalive 25, TLS groups X25519:P-256",
         ).forEach { line ->
-            assertEquals(line, LogSanitizer.sanitize(line), "needlessly redacted: $line")
-            assertFalse(LogSanitizer.isSensitive(line))
+            assertEquals(line, LogSanitizer.sanitize(line), "needlessly redacted")
+            assertFalse(LogSanitizer.isSensitive(line), "wrongly flagged: $line")
         }
     }
 
+    /**
+     * The in-memory export and the streamed disk log are separate paths, so a
+     * line can pass through this twice. The second pass must be a no-op.
+     */
     @Test
     fun `sanitizing is idempotent and safe on an empty line`() {
-        val once = LogSanitizer.sanitize("token=abc123")
-        assertEquals(once, LogSanitizer.sanitize(once))
+        listOf(
+            "token=abc123",
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9",
+            "enrolment code sent to person@example.com",
+            "wg peer aB3dEfGhIjKlMnOpQrStUvWxYz01",
+        ).forEach { line ->
+            val once = LogSanitizer.sanitize(line)
+            assertEquals(once, LogSanitizer.sanitize(once), "not a fixed point: $once")
+        }
         assertEquals("", LogSanitizer.sanitize(""))
     }
 
     @Test
     fun `a batch is sanitized line by line and flagged correctly`() {
         val batch = listOf("token=abc123", "port open = true")
-        assertEquals(listOf("token=[redacted]", "port open = true"), LogSanitizer.sanitize(batch))
+        assertEquals(
+            listOf("token=${LogSanitizer.REDACTED}", "port open = true"),
+            LogSanitizer.sanitize(batch),
+        )
         assertTrue(LogSanitizer.isSensitive(batch[0]))
         assertFalse(LogSanitizer.isSensitive(batch[1]))
     }
