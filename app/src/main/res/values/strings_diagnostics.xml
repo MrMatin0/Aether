@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the redesigned diagnostics destination. Kept in its own file so
+     strings.xml and strings_ui.xml stay stable diffs, same convention as the
+     rest of the redesigned surfaces. -->
+<resources>
+    <!-- Hero: telemetry radar -->
+    <string name="diag_integrity">Tunnel integrity</string>
+    <string name="diag_integrity_value">%1$d of %2$d checks passed</string>
+    <string name="diag_end_to_end">End-to-end latency</string>
+    <string name="diag_local_proxy">Local SOCKS5 proxy</string>
+    <string name="diag_layer_verified">Encrypted \u00B7 verified end to end</string>
+    <string name="diag_layer_probing">Probing the tunnel\u2026</string>
+    <string name="diag_layer_fault">Fault detected in the pipeline</string>
+    <string name="diag_layer_idle">Not measured yet</string>
+    <string name="diag_hero_idle">Run the self-test to measure the tunnel end to end.</string>
+    <string name="diag_hero_working">Probing the pipeline. Nothing has been concluded yet.</string>
+    <string name="diag_hero_passed">Every stage answered. Traffic should flow.</string>
+    <string name="diag_hero_failed">Read the first failing step \u2014 that is where the pipeline breaks.</string>
+    <string name="diag_unmeasured">\u2014</string>
+
+    <!-- Self-test pipeline -->
+    <string name="diag_pipeline">Self-test pipeline</string>
+    <string name="diag_pipeline_note">Tap a step for what was measured, or re-run just that step</string>
+    <string name="diag_retest_one">Re-test this step</string>
+    <string name="diag_no_facts">Nothing measured yet. Run the test.</string>
+
+    <!-- Log inspector -->
+    <string name="log_tunnel">Tunnel</string>
+    <string name="log_dns">DNS</string>
+    <string name="diag_search">Filter lines</string>
+    <string name="diag_search_hint">text, or a pattern with regex on</string>
+    <string name="diag_search_note">Matches the whole rendered line, ignoring case.</string>
+    <string name="diag_search_clear">Clear filter</string>
+    <string name="diag_regex">Regex</string>
+    <string name="diag_regex_bad">Not a valid pattern yet \u2014 matching as plain text.</string>
+    <string name="diag_no_matches">No lines match this filter.</string>
+    <string name="diag_follow">Auto-scroll</string>
+    <string name="diag_follow_note">Stay pinned to the newest line</string>
+    <string name="diag_jump_bottom">Jump to newest</string>
+    <string name="diag_export">Copy sanitized</string>
+    <string name="diag_export_note">Tokens, secrets, keys and e-mail addresses are removed before the log leaves this device.</string>
+    <string name="diag_exported">Sanitized log copied</string>
+    <string name="diag_clear_title">Clear the log?</string>
+    <string name="diag_clear_body">This session\u2019s lines are removed from the panel. The file is rotated aside first, so a crash log stays recoverable.</string>
+</resources>

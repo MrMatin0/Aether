@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- قهرمان: رادار تلمتری -->
+    <string name="diag_integrity">سلامت تونل</string>
+    <string name="diag_integrity_value">%1$d از %2$d بررسی موفق</string>
+    <string name="diag_end_to_end">تأخیر انتها‌به‌انتها</string>
+    <string name="diag_local_proxy">پراکسی SOCKS5 محلی</string>
+    <string name="diag_layer_verified">رمزنگاری‌شده \u00B7 انتها‌به‌انتها تأیید شد</string>
+    <string name="diag_layer_probing">در حال آزمودن تونل\u2026</string>
+    <string name="diag_layer_fault">خرابی در خط لوله شناسایی شد</string>
+    <string name="diag_layer_idle">هنوز اندازه‌گیری نشده</string>
+    <string name="diag_hero_idle">برای اندازه‌گیری انتها‌به‌انتهای تونل، خودآزمون را اجرا کنید.</string>
+    <string name="diag_hero_working">خط لوله در حال آزمودن است. هنوز نتیجه‌ای قطعی نیست.</string>
+    <string name="diag_hero_passed">همهٔ مراحل پاسخ دادند. ترافیک باید عبور کند.</string>
+    <string name="diag_hero_failed">نخستین مرحلهٔ ناموفق را بخوانید \u2014 خط لوله همان‌جا می‌شکند.</string>
+    <string name="diag_unmeasured">\u2014</string>
+
+    <!-- خط لولهٔ خودآزمون -->
+    <string name="diag_pipeline">خط لولهٔ خودآزمون</string>
+    <string name="diag_pipeline_note">روی هر مرحله بزنید تا اندازه‌گیری‌ها را ببینید، یا فقط همان مرحله را دوباره اجرا کنید</string>
+    <string name="diag_retest_one">آزمون مجدد این مرحله</string>
+    <string name="diag_no_facts">هنوز چیزی اندازه‌گیری نشده. آزمون را اجرا کنید.</string>
+
+    <!-- بازرس لاگ -->
+    <string name="log_tunnel">تونل</string>
+    <string name="log_dns">DNS</string>
+    <string name="diag_search">پالایش خطوط</string>
+    <string name="diag_search_hint">متن، یا الگو در حالت regex</string>
+    <string name="diag_search_note">با کل خط نمایش‌داده‌شده مطابقت می‌کند، بدون حساسیت به بزرگی و کوچکی حروف.</string>
+    <string name="diag_search_clear">پاک کردن پالایه</string>
+    <string name="diag_regex">Regex</string>
+    <string name="diag_regex_bad">الگو هنوز معتبر نیست \u2014 به‌صورت متن ساده تطبیق می‌شود.</string>
+    <string name="diag_no_matches">هیچ خطی با این پالایه مطابقت ندارد.</string>
+    <string name="diag_follow">پیمایش خودکار</string>
+    <string name="diag_follow_note">همیشه روی تازه‌ترین خط بمان</string>
+    <string name="diag_jump_bottom">پرش به تازه‌ترین</string>
+    <string name="diag_export">رونوشت پاک‌سازی‌شده</string>
+    <string name="diag_export_note">توکن‌ها، کلیدها، رمزها و نشانی‌های ایمیل پیش از خروج لاگ از این دستگاه حذف می‌شوند.</string>
+    <string name="diag_exported">لاگ پاک‌سازی‌شده رونوشت شد</string>
+    <string name="diag_clear_title">لاگ پاک شود؟</string>
+    <string name="diag_clear_body">خطوط این نشست از پنل حذف می‌شوند. فایل ابتدا کنار گذاشته می‌شود، بنابراین لاگ یک کرش همچنان قابل بازیابی است.</string>
+</resources>
