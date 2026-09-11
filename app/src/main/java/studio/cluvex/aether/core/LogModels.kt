@@ -9,7 +9,7 @@ import java.util.Locale
  *
  * These live in their own file (and NOT inside DiagnosticsLog) because they are
  * the only part of the logger the UI is allowed to know about. The plumbing -
- * ring buffer, write queue, writer thread, file rotation - is internal to
+ * ring buffer, write queue, writer coroutine, file rotation - is internal to
  * core/log.
  */
 
@@ -48,9 +48,22 @@ private val LogLevel.symbol: String
 
 enum class CheckState { PENDING, RUNNING, PASS, FAIL }
 
+/**
+ * One drill-down row under a pipeline node: what was actually measured.
+ *
+ * Values are technical and rendered LTR monospace on purpose (an IP, a port, a
+ * resolver, a timeout), so they are NOT translated - a Persian reader pasting
+ * `exit ip 104.28.x.x` into a bug report needs the same string an English one
+ * would. Only the section headings around them come from string resources.
+ */
+data class CheckFact(val label: String, val value: String)
+
 data class ComponentCheck(
     val id: String,
     val label: String,
     val state: CheckState = CheckState.PENDING,
     val detail: String = "",
+    /** Wall time the probe took, in ms. Null until it has run. */
+    val latencyMs: Long? = null,
+    val facts: List<CheckFact> = emptyList(),
 )
