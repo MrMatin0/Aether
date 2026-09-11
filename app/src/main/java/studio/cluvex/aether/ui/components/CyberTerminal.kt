@@ -213,26 +213,17 @@ internal fun CyberTerminal(
                     }
                 }
             }
-            AnimatedVisibility(
+            JumpToNewest(
                 visible = !atBottom,
+                accents = accents,
+                onClick = {
+                    follow = true
+                    scope.launch {
+                        if (shown.isNotEmpty()) listState.scrollToItem(shown.lastIndex)
+                    }
+                },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-            ) {
-                SmallFloatingActionButton(
-                    onClick = {
-                        follow = true
-                        scope.launch {
-                            if (shown.isNotEmpty()) listState.scrollToItem(shown.lastIndex)
-                        }
-                    },
-                    containerColor = accents.brand,
-                    contentColor = accents.onBrand,
-                ) {
-                    Icon(
-                        Icons.Rounded.ArrowDownward,
-                        stringResource(R.string.diag_jump_bottom),
-                    )
-                }
-            }
+            )
         }
     }
 
@@ -256,6 +247,42 @@ internal fun CyberTerminal(
                 }
             },
         )
+    }
+}
+
+/**
+ * The jump-to-newest FAB, deliberately its OWN composable rather than an inline
+ * AnimatedVisibility inside the Box above.
+ *
+ * WHY: that Box is nested in a Column, so ColumnScope is still an implicit
+ * receiver at that point. Kotlin then resolves AnimatedVisibility to the
+ * ColumnScope overload while the innermost receiver is BoxScope, which K2 rejects
+ * (DSL_SCOPE_VIOLATION) instead of falling back to the top-level overload. Here
+ * there is no layout scope in play at all, so the top-level overload - the one
+ * that is actually wanted, since the FAB is positioned by the caller's align()
+ * modifier and not by any Column/Row arrangement - is the only candidate.
+ *
+ * The modifier still comes from the call site, so alignment and padding stay a
+ * BoxScope concern where they belong.
+ */
+@Composable
+private fun JumpToNewest(
+    visible: Boolean,
+    accents: AetherAccents,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(visible = visible, modifier = modifier) {
+        SmallFloatingActionButton(
+            onClick = onClick,
+            containerColor = accents.brand,
+            contentColor = accents.onBrand,
+        ) {
+            Icon(
+                Icons.Rounded.ArrowDownward,
+                stringResource(R.string.diag_jump_bottom),
+            )
+        }
     }
 }
 
