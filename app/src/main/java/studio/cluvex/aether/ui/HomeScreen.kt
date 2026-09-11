@@ -177,9 +177,30 @@ private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
         LanguageToggle(accent = LocalAetherAccents.current.brand)
     }
 }
+
+/**
+ * The diagnostics destination.
+ *
+ * EDGE-TO-EDGE: the root inserts the status bar, the navigation bar and the IME,
+ * which covers the vertical edges and nothing else. A display cutout in
+ * landscape and a rounded-corner inset both land on the HORIZONTAL edges, and
+ * this destination is the one screen whose content runs right up to them - a
+ * monospace console with no natural margin, so a clipped column loses
+ * characters rather than whitespace.
+ *
+ * safeDrawing's horizontal side is resolved by the layout direction, so one
+ * modifier is correct in Persian and English; a mirrored start/end pair would
+ * be a second thing to keep in sync.
+ */
 @Composable
 private fun DiagnosticsDestination(scrollState: ScrollState) {
-    Column(Modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 24.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+            .padding(horizontal = 24.dp),
+    ) {
         DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 420.dp)
         Spacer(Modifier.height(40.dp))
     }
