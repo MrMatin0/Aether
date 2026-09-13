@@ -161,6 +161,22 @@ internal fun bridgeModeDescription(mode: TorBridgeMode): String = when (mode) {
     TorBridgeMode.CUSTOM -> stringResource(R.string.bridge_mode_custom_desc)
 }
 
+/**
+ * The one-line form of [bridgeModeDescription].
+ *
+ * Both exist because the picker shows the full description only for the source
+ * that is actually selected. Four two-line descriptions stacked is most of a
+ * phone screen spent on three options the user has already rejected, and the
+ * detail only decides anything at the moment of choosing.
+ */
+@Composable
+internal fun bridgeModeTag(mode: TorBridgeMode): String = when (mode) {
+    TorBridgeMode.OFF -> stringResource(R.string.bridge_mode_off_tag)
+    TorBridgeMode.BUILTIN -> stringResource(R.string.bridge_mode_builtin_tag)
+    TorBridgeMode.REQUESTED -> stringResource(R.string.bridge_mode_requested_tag)
+    TorBridgeMode.CUSTOM -> stringResource(R.string.bridge_mode_custom_tag)
+}
+
 internal fun bridgeModeIcon(mode: TorBridgeMode): ImageVector = when (mode) {
     TorBridgeMode.OFF -> Icons.Rounded.Block
     TorBridgeMode.BUILTIN -> Icons.Rounded.Public
