@@ -121,9 +121,6 @@ fun HomeScreen(
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onToggleConnection()
                                     },
-                                    // Straight to the page that owns protocol and scan mode,
-                                    // not to a hub the user then has to read.
-                                    onOpenEngine = { route = route.open(SettingsPage.CONNECTION) },
                                     onOpenDiagnostics = { route = route.select(HomeTab.DIAGNOSTICS) })
                             }
                         }
