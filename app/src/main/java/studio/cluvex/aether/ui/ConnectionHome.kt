@@ -61,15 +61,10 @@ import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.ActionPill
 import studio.cluvex.aether.ui.components.AetherCard
 import studio.cluvex.aether.ui.components.ButtonMode
-import studio.cluvex.aether.ui.components.CardHeader
 import studio.cluvex.aether.ui.components.ConnectButton
 import studio.cluvex.aether.ui.components.ConnectionMeta
-import studio.cluvex.aether.ui.components.Hairline
-import studio.cluvex.aether.ui.components.NavRow
 import studio.cluvex.aether.ui.components.NoticeBar
 import studio.cluvex.aether.ui.components.SectionTitle
-import studio.cluvex.aether.ui.components.SignalDiagram
-import studio.cluvex.aether.ui.components.StatTile
 import studio.cluvex.aether.ui.components.StatusHint
 import studio.cluvex.aether.ui.components.ValueRow
 import studio.cluvex.aether.ui.components.accentFor
@@ -105,6 +100,13 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
  *     them, and the live rates - the fact that proves bytes are moving THROUGH
  *     the tunnel right now - were not on this screen at all. They were in the
  *     notification.
+ *
+ * WHAT IS NOT HERE ANY MORE: the route card and the two navigation rows under
+ * it. Both destinations they led to - engine settings and diagnostics - are one
+ * tap away in the bottom navigation, so the rows were a second, longer route to
+ * a place the user could already reach, and the card described a topology that
+ * never changes. The error state still offers diagnostics directly, because
+ * there the log is the answer and not a detour.
  *
  * WHAT THIS IS NOW
  *
@@ -175,7 +177,6 @@ internal fun ConnectionHome(
     ipLoading: Boolean,
     scrollState: ScrollState,
     onToggleConnection: () -> Unit,
-    onOpenEngine: () -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
@@ -273,31 +274,10 @@ internal fun ConnectionHome(
                 ipInfo = ipInfo,
                 ipLoading = ipLoading,
             )
-            Spacer(Modifier.height(12.dp))
-            RoutePreview(profile, tone)
             Spacer(Modifier.height(28.dp))
         }
 
-        Hairline()
-        NavRow(
-            title = stringResource(R.string.page_engine_title),
-            onClick = onOpenEngine,
-            // Straight to the page that owns protocol and scan mode, painted
-            // with what is currently set, so the row answers before it is opened.
-            subtitle = protocolLabel(profile.protocol) + " \u00B7 " + scanLabel(profile.scanMode),
-            icon = Icons.Rounded.Tune,
-        )
-        Hairline()
-        NavRow(
-            title = stringResource(R.string.nav_diagnostics),
-            onClick = onOpenDiagnostics,
-            subtitle = stringResource(R.string.diag_console_note),
-            icon = Icons.Rounded.Terminal,
-        )
-        Hairline()
-
         if (state is ConnectionState.Idle) {
-            Spacer(Modifier.height(20.dp))
             Text(
                 stringResource(R.string.passage_privacy),
                 style = MaterialTheme.typography.bodySmall,
@@ -906,49 +886,6 @@ private fun MeterBar(fraction: Float, tint: Color) {
  */
 private fun meterFraction(rate: Long): Float =
     sqrt((rate.toFloat() / METER_CEILING).coerceIn(0f, 1f))
-
-/**
- * What is about to happen, before it happens.
- *
- * Idle used to be the emptiest state on the screen, which is backwards: it is
- * the only state where the user still has a decision to make. The topology
- * drawing earns its space here (it is a diagram of the thing being described,
- * next to the words describing it) and the two tiles name the protocol and scan
- * mode that this tap will actually use - the two settings that decide whether
- * the attempt succeeds at all.
- */
-@Composable
-private fun RoutePreview(profile: ConnectionProfile, tone: Color) {
-    AetherCard {
-        CardHeader(
-            title = stringResource(R.string.passage_route_title),
-            subtitle = stringResource(R.string.passage_route),
-            icon = Icons.Rounded.Public,
-            tint = tone,
-        )
-        SignalDiagram(tone, verified = false, modifier = Modifier.padding(top = 4.dp))
-        Row(Modifier.fillMaxWidth()) {
-            StatTile(
-                label = stringResource(R.string.meta_protocol),
-                value = protocolLabel(profile.protocol),
-                icon = Icons.Rounded.Shield,
-                tint = tone,
-                mono = false,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            StatTile(
-                label = stringResource(R.string.scan_mode),
-                value = scanLabel(profile.scanMode),
-                icon = Icons.Rounded.Tune,
-                tint = tone,
-                mono = false,
-                footnote = scanEta(profile.scanMode),
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
 
 /**
  * A monotonic clock, for an in-flight attempt or a live session.
