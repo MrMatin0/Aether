@@ -9,10 +9,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -21,7 +19,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -45,7 +42,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.Locale
-import kotlin.math.sqrt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
@@ -53,7 +49,6 @@ import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
-import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
@@ -96,10 +91,8 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
  *   - THE PHASE TRACK WAS FOUR RECTANGLES. Correct, informative, and completely
  *     inert: on the screen where the user is watching for movement, the only
  *     thing moving was the seconds counter.
- *   - THE EVIDENCE WAS A LEDGER OF CARDS. Two stacked cards, five tiles between
- *     them, and the live rates - the fact that proves bytes are moving THROUGH
- *     the tunnel right now - were not on this screen at all. They were in the
- *     notification.
+ *   - THE EVIDENCE WAS A LEDGER OF CARDS. Two stacked cards and five tiles
+ *     between them, for facts that fit in a grid.
  *
  * WHAT IS NOT HERE ANY MORE: the route card and the two navigation rows under
  * it. Both destinations they led to - engine settings and diagnostics - are one
@@ -107,6 +100,12 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
  * a place the user could already reach, and the card described a topology that
  * never changes. The error state still offers diagnostics directly, because
  * there the log is the answer and not a detour.
+ *
+ * AND: the live download and upload tiles. A rate readout is only useful while
+ * it is being watched, and the place it can be watched without holding the app
+ * open is the session notification, which has carried both figures all along.
+ * Two places for one fact is one place too many, and it cost this screen a
+ * TrafficMonitor subscription for a number the user already had.
  *
  * WHAT THIS IS NOW
  *
@@ -121,9 +120,9 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
  *      same integer, animated, and it mirrors itself in RTL so the wave always
  *      travels in the reading direction.
  *   4. A BENTO TELEMETRY GRID. Exit IP as the wide hero tile with its flag and
- *      country, then live download and upload rates with their own meters, then
- *      protocol and session uptime. Compact, scannable, and every readout pinned
- *      LTR because they are instruments, not prose.
+ *      country, then the protocol that actually won and how long this session has
+ *      been up. Compact, scannable, and every readout pinned LTR because they are
+ *      instruments, not prose.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
  * [phaseProgress] and [formatSessionUptime] keep their exact contracts, because
@@ -133,9 +132,6 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
 
 /** Engine, tunnel, verify, ready. */
 private const val PHASE_COUNT = 4
-
-/** The rate a speed meter treats as "full bar", before the square-root curve. */
-private const val METER_CEILING = 4_000_000f
 
 /**
  * Controller state -> the orb's four visual modes.
@@ -606,13 +602,14 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
  *   row 1  the exit IP, wide, with its flag and country - the fact that proves
  *          traffic is leaving through the tunnel, and the first thing anyone
  *          checks
- *   row 2  live download and upload rate, each with its own meter and its own
- *          session total
- *   row 3  the protocol that actually won, and how long this session has been up
+ *   row 2  the protocol that actually won, and how long this session has been up
  *
- * The rates come from [TrafficMonitor], which the VPN service runs for the
- * lifetime of the session - so the counters keep accruing while this screen is
- * closed, and a fresh session can never show the previous one's last reading.
+ * WHAT WAS HERE AND IS NOT: a row of live download and upload rates, each with a
+ * meter and a session total. They were the one readout on this screen that had to
+ * be WATCHED to mean anything, and the surface that can be watched without the
+ * app in the foreground is the session notification - which has carried both
+ * figures since the service first ran. Keeping them here was a second place to
+ * look for one fact, plus a TrafficMonitor subscription per composition.
  *
  * Every value is monospaced and pinned LTR. That BiDi fix is load-bearing in the
  * Persian locale, where `104.28.197.15` otherwise renders reordered.
@@ -624,14 +621,7 @@ private fun SessionBento(
     ipLoading: Boolean,
     tone: Color,
 ) {
-    val accents = LocalAetherAccents.current
     val meta by EngineMeta.state.collectAsStateWithLifecycle()
-    val latest by TrafficMonitor.sample.collectAsStateWithLifecycle()
-
-    // A fresh session must never show the previous one's last reading, not even
-    // for the one frame between "Connected" and the monitor's first tick.
-    val zero = remember(connectedSince) { TrafficMonitor.Sample() }
-    val sample = if (latest.live) latest else zero
     val uptime = tickingElapsed(connectedSince, connectedSince != null)
 
     Column(Modifier.fillMaxWidth()) {
@@ -641,34 +631,6 @@ private fun SessionBento(
             tone = tone,
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth()) {
-            BentoTile(
-                label = stringResource(R.string.traffic_download),
-                value = TrafficMonitor.formatRate(sample.downloadRate),
-                icon = Icons.Rounded.ArrowDownward,
-                tint = accents.protected,
-                meter = meterFraction(sample.downloadRate),
-                footnote = stringResource(
-                    R.string.traffic_total,
-                    TrafficMonitor.formatBytes(sample.downloadBytes),
-                ),
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            BentoTile(
-                label = stringResource(R.string.traffic_upload),
-                value = TrafficMonitor.formatRate(sample.uploadRate),
-                icon = Icons.Rounded.ArrowUpward,
-                tint = accents.brand,
-                meter = meterFraction(sample.uploadRate),
-                footnote = stringResource(
-                    R.string.traffic_total,
-                    TrafficMonitor.formatBytes(sample.uploadBytes),
-                ),
-                modifier = Modifier.weight(1f),
-            )
-        }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth()) {
             BentoTile(
@@ -787,8 +749,6 @@ private fun BentoTile(
     icon: ImageVector? = null,
     tint: Color = MaterialTheme.colorScheme.onSurface,
     mono: Boolean = true,
-    meter: Float? = null,
-    footnote: String? = null,
 ) {
     val accents = LocalAetherAccents.current
     Surface(
@@ -823,69 +783,9 @@ private fun BentoTile(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (meter != null) {
-                Spacer(Modifier.height(10.dp))
-                MeterBar(meter, tint)
-            }
-            if (!footnote.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    footnote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
     }
 }
-
-/**
- * A rate, as a bar.
- *
- * A fractional-width fill inside a track: one Box in one Box, so it costs a
- * layout pass and no draw code. NOT two weighted children - a saturated meter
- * would resolve the trailing weight to 0, and Compose rejects a zero weight
- * outright, which would have turned the fastest connections into a crash on the
- * one screen that must never fail.
- *
- * The fill never reaches zero width either: an idle second should read as
- * "nothing moving", not as a broken widget.
- */
-@Composable
-private fun MeterBar(fraction: Float, tint: Color) {
-    val safe = fraction.coerceIn(0.02f, 1f)
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(5.dp)
-            .clip(RoundedCornerShape(3.dp))
-            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth(safe)
-                .fillMaxHeight()
-                .clip(RoundedCornerShape(3.dp))
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(tint.copy(alpha = 0.95f), tint.copy(alpha = 0.45f)),
-                    ),
-                ),
-        )
-    }
-}
-
-/**
- * Rate -> bar fill.
- *
- * Square root, not linear: mobile throughput spends most of its time in the
- * bottom tenth of its own range, and a linear meter would sit visually empty for
- * every ordinary browsing session and only move for a download.
- */
-private fun meterFraction(rate: Long): Float =
-    sqrt((rate.toFloat() / METER_CEILING).coerceIn(0f, 1f))
 
 /**
  * A monotonic clock, for an in-flight attempt or a live session.
