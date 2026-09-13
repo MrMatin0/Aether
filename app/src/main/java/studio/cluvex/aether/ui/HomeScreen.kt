@@ -198,7 +198,7 @@ private fun DiagnosticsDestination(scrollState: ScrollState) {
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
             .padding(horizontal = 24.dp),
     ) {
-        DiagnosticsPanel(alwaysExpanded = true, consoleMaxHeight = 420.dp)
+        DiagnosticsPanel(consoleMaxHeight = 420.dp)
         Spacer(Modifier.height(40.dp))
     }
 }
