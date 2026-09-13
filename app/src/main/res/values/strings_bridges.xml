@@ -10,6 +10,10 @@
   HOW IT FAILS, because that is the only thing that lets a user pick the next
   one when the current one stops working - and on this page every option works
   right up until a censor notices it.
+
+  Two lengths per source. The page shows the full description only for the
+  option that is selected and the _tag line for the rest, so a tag has to be
+  the shortest true version of the same warning, not a restatement of the name.
 -->
 <resources>
 
@@ -20,20 +24,36 @@
     <string name="bridges_no_tor_core">This build does not include the Tor core, so bridges have nothing to configure. Build it with scripts/build-overlay-cores.sh tor.</string>
     <string name="bridges_chain_has_no_tor">Your current chain does not use Tor, so these bridges are saved but not used yet. Pick a Tor mode on the Chain page to put them to work.</string>
 
+    <!-- ========================================================== status == -->
+    <string name="bridges_status_off">Bridges are off</string>
+    <string name="bridges_status_off_note">Tor goes straight to the public relays. Turn bridges on only when it cannot get through at all.</string>
+    <string name="bridges_status_empty">No bridge picked yet</string>
+    <string name="bridges_status_empty_note">Tick one below, or fetch a set. Until then Tor connects the usual way.</string>
+    <!-- %1$d is how many bridges tor will be given. -->
+    <string name="bridges_status_ready">%1$d bridges ready</string>
+    <string name="bridges_status_ready_note">Tor will try these in order the next time it starts.</string>
+    <!-- %1$d is how many selected bridges this build cannot run. -->
+    <string name="bridges_tag_unusable">%1$d unusable</string>
+    <string name="bridges_tag_no_tor">Not used by this chain</string>
+
     <!-- ========================================================= sources == -->
     <string name="bridges_mode_label">Where the bridges come from</string>
 
     <string name="bridge_mode_off">No bridges</string>
     <string name="bridge_mode_off_desc">Tor connects straight to the public relays. Fastest, and the right answer unless your network blocks Tor.</string>
+    <string name="bridge_mode_off_tag">Fastest, until Tor is blocked</string>
 
     <string name="bridge_mode_builtin">Built-in bridges</string>
     <string name="bridge_mode_builtin_desc">The public list Tor Browser ships. Always available, and blocked first, because everyone has it.</string>
+    <string name="bridge_mode_builtin_tag">Public list, blocked first</string>
 
     <string name="bridge_mode_requested">Personal bridge</string>
     <string name="bridge_mode_requested_desc">Addresses the Tor Project hands to this device alone. In no public list, but you need a working path to the bridge server to get them.</string>
+    <string name="bridge_mode_requested_tag">Yours alone, needs a way out first</string>
 
     <string name="bridge_mode_custom">Paste your own</string>
     <string name="bridge_mode_custom_desc">Lines you already have, from email, from Telegram, or from someone you trust. Only as good as where they came from.</string>
+    <string name="bridge_mode_custom_tag">Lines you already have</string>
 
     <!-- ========================================================== types == -->
     <string name="bridges_type_title">Bridge type</string>
@@ -42,6 +62,8 @@
     <string name="bridges_plugins_missing">This build does not include these transports: %1$s. Build them with scripts/build-pt-transports.sh.</string>
     <!-- %1$s is the name of the missing pluggable-transport binary. -->
     <string name="bridges_type_unavailable">Not available: this build has no %1$s binary.</string>
+    <!-- %1$s is the binary a bridge of this type needs and this build lacks. -->
+    <string name="bridges_needs">Needs %1$s</string>
     <!-- %1$d is how many built-in bridges of that type are known. -->
     <string name="bridges_builtin_count">%1$d ready</string>
 
@@ -64,7 +86,10 @@
     <string name="bridges_builtin_title">Built-in bridges</string>
     <string name="bridges_builtin_note">These are public, and everybody uses the same ones, so a censor can have them on a list. When they stop working, ask for a personal bridge instead.</string>
     <string name="bridges_builtin_none">No built-in bridge of this type. Refresh the list, or request a personal one.</string>
-    <string name="bridges_use_all">Select all of them</string>
+    <!-- %1$d is how many bridges of the chosen type this app knows about. -->
+    <string name="bridges_available">%1$d available</string>
+    <string name="bridges_use_all">Select all</string>
+    <string name="bridges_use_none">Clear these</string>
 
     <string name="bridges_fetch_title">Fetch from the Tor Project</string>
     <string name="bridges_fetch_note">The request goes to bridges.torproject.org through your live tunnel when one is up, and directly when it is not. On a network that blocks Tor that address is usually blocked too, so connect with Aether or Psiphon first, then come back and fetch.</string>
@@ -75,6 +100,7 @@
     <string name="bridges_country_unknown">your location</string>
 
     <string name="bridges_working">Working...</string>
+    <string name="bridges_busy_note">Reaching bridges.torproject.org. On a blocked network this can take a minute before it gives up.</string>
     <string name="bridges_ask">Ask what works here</string>
     <string name="bridges_refresh">Refresh the built-in list</string>
     <!-- %1$s is a date and time. -->
@@ -87,7 +113,7 @@
     <string name="bridges_request">Request a bridge</string>
     <string name="bridges_request_vanilla">The Tor Project does not hand out plain bridges this way. Choose an obfuscated type above.</string>
     <string name="bridges_personal_list">Bridges you have received</string>
-    <string name="bridges_personal_empty">None yet.</string>
+    <string name="bridges_personal_empty">Nothing yet. A request puts two or three addresses here, and they stay across a settings reset.</string>
 
     <!-- ========================================================== pasted == -->
     <string name="bridges_custom_title">Paste your own</string>
@@ -96,6 +122,9 @@
     <string name="bridges_custom_placeholder">obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0</string>
     <!-- %1$d lines this app understood, %2$d it did not. -->
     <string name="bridges_custom_count">%1$d usable, %2$d ignored</string>
+    <string name="bridges_custom_type_note">A pasted line carries its own type, so there is no type to pick here.</string>
+    <string name="bridges_paste">Paste from the clipboard</string>
+    <string name="bridges_paste_none">Nothing on the clipboard.</string>
 
     <!-- ========================================================== in use == -->
     <!-- %1$d is how many bridges tor will be given. -->
@@ -106,8 +135,16 @@
     <string name="bridges_copy_all">Copy all</string>
     <string name="bridges_clear">Clear selection</string>
     <string name="bridges_privacy_note">Do not publish a personal bridge. A bridge in a screenshot is a bridge that gets reported and blocked, for you and for whoever else was given it.</string>
-    <string name="bridges_forget">Forget this bridge</string>
+    <string name="bridges_forget">Forget</string>
     <string name="bridges_remove">Remove</string>
+
+    <!-- ============================================================ row == -->
+    <string name="bridges_show_line">Show the whole line</string>
+    <string name="bridges_hide_line">Hide the whole line</string>
+    <string name="bridges_copy_one">Copy</string>
+    <!-- %1$d is how many key=value parameters the line carries. -->
+    <string name="bridges_params">%1$d options</string>
+    <string name="bridges_dismiss">Dismiss</string>
 
     <!-- ======================================================= outcomes == -->
     <string name="bridges_route_tunnel">(through your live tunnel)</string>
