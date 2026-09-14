@@ -96,6 +96,83 @@ enum class TeamAuth { OFF, SERVICE_TOKEN, EMAIL, TOKEN }
 enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("warn"), INFO("info"), DEBUG("debug") }
 
 /**
+ * Where the engine's OWN tor sits in the path. New in engine v2.0.0, which
+ * embeds Arti rather than shelling out to a tor binary.
+ *
+ *  - [OFF]       : no engine tor (default). The app's Tor CHAIN modes are
+ *                  unaffected - they drive the bundled tor binary instead.
+ *  - [IN_TUNNEL] : `--tor`. WARP first, Tor inside it. Composes with any
+ *                  transport, so `--wg --tor` and `--masque --tor` are both
+ *                  real configurations.
+ *  - [REVERSE]   : `--tor-reverse`. The other order: Tor first, WARP reached
+ *                  FROM a Tor exit, so the local network never sees WARP at
+ *                  all. Tor carries TCP only, so the engine runs MASQUE over
+ *                  HTTP/2 for this and refuses `--wg`/`--gool`.
+ *  - [ONLY]      : `--tor-only`. Plain Tor, no WARP - useful for proving the
+ *                  Tor half works on a network before adding anything to it.
+ *
+ * The engine has to be built with its `tor` cargo feature for any of these to
+ * do anything; a build without it rejects the flag at startup, which is why
+ * the UI labels the setting as requiring a Tor-enabled engine.
+ */
+enum class EngineTor {
+    OFF, IN_TUNNEL, REVERSE, ONLY,
+    ;
+
+    companion object {
+        /**
+         * Reads a placement from a persisted / imported value, or null when it
+         * means nothing. Aliases are accepted because a hand-written or shared
+         * config says "chain" or "reverse", the words the engine's own
+         * `AETHER_TOR` variable uses, rather than this enum's names.
+         */
+        fun fromStored(raw: String?): EngineTor? {
+            val name = raw?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+            entries.firstOrNull { it.name == name }?.let { return it }
+            return when (name) {
+                "CHAIN", "TOR", "ON", "IN-TUNNEL", "IN_TUNNEL" -> IN_TUNNEL
+                "TOR_REVERSE", "TOR-REVERSE" -> REVERSE
+                "TOR_ONLY", "TOR-ONLY" -> ONLY
+                "NONE" -> OFF
+                else -> null
+            }
+        }
+    }
+}
+
+/**
+ * Where the engine's own tor gets its entry points (engine v2.0.0).
+ *
+ *  - [AUTO]   : the engine's own behaviour - try the public relays, fall back
+ *               to bridges from bridgedb when that is blocked. The right
+ *               answer almost everywhere, and the default here for that
+ *               reason.
+ *  - [ALWAYS] : `--tor-bridges`. Skip the direct attempt entirely. On a
+ *               network that is known to block Tor this saves the minute or
+ *               so the direct try would spend failing.
+ *  - [OFF]    : `--no-tor-bridges`. Public relays only, never bridges.
+ *  - [CUSTOM] : the user's own bridge lines, passed one `--tor-bridge` each.
+ */
+enum class EngineTorBridges {
+    AUTO, ALWAYS, OFF, CUSTOM,
+    ;
+
+    companion object {
+        fun fromStored(raw: String?): EngineTorBridges? {
+            val name = raw?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+            entries.firstOrNull { it.name == name }?.let { return it }
+            return when (name) {
+                "DEFAULT", "FALLBACK" -> AUTO
+                "ON", "FORCE", "IMMEDIATE" -> ALWAYS
+                "NONE", "DIRECT" -> OFF
+                "MANUAL", "OWN" -> CUSTOM
+                else -> null
+            }
+        }
+    }
+}
+
+/**
  * User-tunable connection profile. Knows how to turn itself into the engine's
  * CLI arguments and environment variables.
  */
@@ -337,6 +414,91 @@ data class ConnectionProfile(
      */
     val torBridgeLines: String = "",
 
+    // ---- Added in 2.0.0 (engine v2.0.0 feature parity) ----
+
+    /**
+     * MASQUE-in-MASQUE: two MASQUE hops, the second established THROUGH the
+     * first, so the address the destination sees is not the edge this device
+     * talked to. It is to MASQUE what `gool` is to WireGuard.
+     *
+     * Only meaningful once the transport has resolved to MASQUE, which is why
+     * [usesMim] gates it rather than this flag being sent on its own - sending
+     * `--mim` alongside `--wg` would be a configuration the engine has to
+     * reject instead of a setting the user can leave on.
+     */
+    val masqueInMasque: Boolean = false,
+
+    /** Outer hop `ip:port` for [masqueInMasque]. Blank = the engine scans for it. */
+    val mimOuterPeer: String = "",
+
+    /** Inner hop `ip:port` for [masqueInMasque]. Blank = the engine scans for it. */
+    val mimInnerPeer: String = "",
+
+    /**
+     * QUIC v2 version negotiation on the opening packet, which gets HTTP/3
+     * through boxes that recognise and drop QUIC v1 but pass v2.
+     *
+     * ON by default because that is the engine's own default in v2.0.0; the
+     * only reason to turn it off is a network that drops QUIC v2 specifically,
+     * where negotiating costs a round trip for nothing.
+     */
+    val quicV2Opener: Boolean = true,
+
+    /**
+     * `SO_MARK` for the engine's own sockets (engine `--mark`, hex or decimal).
+     *
+     * Lets a tun front end on the same Linux host route around the engine's
+     * traffic instead of feeding it back into the tunnel it came out of.
+     * Requires root / CAP_NET_ADMIN, so on a normal Android device this stays
+     * blank and the UI says why.
+     */
+    val socketMark: String = "",
+
+    /**
+     * Where the engine's own tor sits, if anywhere. Mutually exclusive with the
+     * app's Tor chain modes - see [usesEngineTor].
+     */
+    val engineTor: EngineTor = EngineTor.OFF,
+
+    /** How the engine's tor enters the network (bridgedb, always, never, own lines). */
+    val engineTorBridges: EngineTorBridges = EngineTorBridges.AUTO,
+
+    /**
+     * Bridge lines for the ENGINE's tor, one per line. Blank falls back to
+     * [torBridgeLines], so a user who already configured bridges for the
+     * bundled tor core does not have to paste them twice.
+     */
+    val engineTorBridgeLines: String = "",
+
+    /**
+     * Two-letter country hint for bridgedb (engine `AETHER_TOR_COUNTRY`), e.g.
+     * "ir". Bridgedb hands out bridges known to work from that country.
+     */
+    val engineTorCountry: String = "",
+
+    /**
+     * Local port for the engine's second, Tor-only SOCKS5 listener (engine
+     * `--tor-bind`, default 1820). 0 = the engine's default.
+     */
+    val engineTorBindPort: Int = 0,
+
+    /**
+     * Cap on concurrent proxy clients (engine `AETHER_MAX_CLIENTS`). 0 = the
+     * engine's own sizing, which scales with the process fd limit it raised at
+     * startup. Only worth setting on a device where something is holding
+     * hundreds of sockets open.
+     */
+    val maxClients: Int = 0,
+
+    /** Half-closed connection timeout, seconds (engine env). 0 = engine default (30). */
+    val halfCloseSecs: Int = 0,
+
+    /** TCP keep-alive on relayed sockets, seconds (engine env). 0 = engine default (60). */
+    val tcpKeepaliveSecs: Int = 0,
+
+    /** Upstream TCP connect timeout, seconds (engine env). 0 = engine default (30). */
+    val tcpConnectSecs: Int = 0,
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -361,6 +523,37 @@ data class ConnectionProfile(
         get() = torBridgeMode.isOn
 
     /**
+     * True when the ENGINE's own tor should be configured.
+     *
+     * Requires the plain [ChainMode.AETHER] chain, and that is the whole point:
+     * the app already carries its own tor binary, bridge catalogue and
+     * pluggable transports, and the Tor chain modes drive them. Two tor
+     * instances on one phone would race each other's bootstrap, ask bridgedb
+     * for the same bridges twice and drain the battery doing it - so selecting
+     * a Tor chain mode leaves the engine's tor switched off, and vice versa.
+     */
+    val usesEngineTor: Boolean
+        get() = engineTor != EngineTor.OFF && chain == ChainMode.AETHER
+
+    /**
+     * True when the session should be built as two MASQUE hops.
+     *
+     * Requires the transport to have RESOLVED to MASQUE (Smart Auto does that
+     * before launch, see core/SmartAuto.kt), so leaving the switch on while
+     * using WireGuard is harmless rather than a startup error. Reverse Tor is
+     * excluded because the engine builds that tunnel itself.
+     */
+    val usesMim: Boolean
+        get() = masqueInMasque && protocol == Protocol.MASQUE && !reverseTor
+
+    /**
+     * True when the engine will reach WARP FROM a Tor exit, which forces MASQUE
+     * over HTTP/2 and rules out `--wg`/`--gool` (Tor carries TCP only).
+     */
+    private val reverseTor: Boolean
+        get() = usesEngineTor && engineTor == EngineTor.REVERSE
+
+    /**
      * The bridge lines to configure tor with, unvalidated.
      *
      * Returns nothing when bridges are off, so switching them off never depends
@@ -380,16 +573,43 @@ data class ConnectionProfile(
             torBridgeLines.lines().map { it.trim() }.filter { it.isNotEmpty() }
         }
 
+    /**
+     * Bridge lines for the ENGINE's tor, validated for argv.
+     *
+     * These become `--tor-bridge <line>` arguments, so unlike [activeBridgeLines]
+     * - which is written into a torrc file - anything that is not a plausible
+     * bridge line is dropped here rather than handed to the engine. Falls back
+     * to the bundled core's bridges so the two Tor implementations can share one
+     * list without the user maintaining it twice.
+     */
+    fun activeEngineTorBridges(): List<String> {
+        if (!usesEngineTor || engineTorBridges != EngineTorBridges.CUSTOM) return emptyList()
+        val own = engineTorBridgeLines.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val source = own.ifEmpty {
+            torBridgeLines.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        return source.filter { BRIDGE_LINE.matches(it) }.distinct().take(MAX_ENGINE_TOR_BRIDGES)
+    }
+
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {
         val args = mutableListOf<String>()
 
-        when (protocol) {
+        // Reverse Tor (engine v2.0.0) decides the transport itself: Tor carries
+        // TCP only, so the engine runs MASQUE over HTTP/2 and REFUSES --wg and
+        // --gool. Overriding here means a user who had WireGuard selected gets
+        // the session they asked for instead of a startup error they have to
+        // decode.
+        if (reverseTor) {
+            args += "--masque"
+        } else when (protocol) {
             // AUTO no longer reaches the engine: Smart Auto (core/SmartAuto.kt)
             // fingerprints the network's DPI and resolves AUTO to a concrete,
             // tuned protocol BEFORE launch. Kept only for exhaustiveness.
             Protocol.AUTO -> { /* resolved by SmartAuto before launch */ }
-            Protocol.MASQUE -> args += "--masque"
+            // --mim is MASQUE with a second hop through the first, so it
+            // REPLACES --masque rather than joining it.
+            Protocol.MASQUE -> args += if (usesMim) "--mim" else "--masque"
             Protocol.WIREGUARD -> args += "--wg"
             Protocol.GOOL -> args += "--gool"
         }
@@ -417,7 +637,9 @@ data class ConnectionProfile(
 
         // Manual endpoint pins one gateway and skips scanning entirely.
         if (hasManualPeer) {
-            args += "--peer"
+            // With two MASQUE hops the pinned address is the OUTER one; --peer
+            // would describe a single-hop tunnel the engine is not building.
+            args += if (usesMim) "--mim-outer" else "--peer"
             args += manualPeer.trim()
         }
 
@@ -462,12 +684,59 @@ data class ConnectionProfile(
         if (reconnectSecs > 0) { args += "--reconnect-secs"; args += reconnectSecs.coerceIn(1, 600).toString() }
         if (noProfileRetry) args += "--no-profile-retry"
 
+        // ---- engine v2.0.0 ----
+
+        // The pinned peer, if there is one, already went out as the OUTER hop
+        // above, so only the halves that are still unset are filled in here.
+        // Blank means "scan for it", which is the normal case for both.
+        if (usesMim) {
+            if (!hasManualPeer) {
+                sanitizedEndpoint(mimOuterPeer)?.let { args += "--mim-outer"; args += it }
+            }
+            sanitizedEndpoint(mimInnerPeer)?.let { args += "--mim-inner"; args += it }
+        }
+
+        // The QUIC v2 opener is ON in the engine, so this only ever speaks up
+        // to switch it OFF.
+        if (!quicV2Opener) args += "--no-quic-v2"
+
+        sanitizedMark()?.let { args += "--mark"; args += it }
+
+        if (usesEngineTor) {
+            when (engineTor) {
+                EngineTor.IN_TUNNEL -> args += "--tor"
+                EngineTor.REVERSE -> args += "--tor-reverse"
+                EngineTor.ONLY -> args += "--tor-only"
+                // Unreachable: usesEngineTor is false for OFF. Listed so a new
+                // placement cannot be added without deciding its flag.
+                EngineTor.OFF -> Unit
+            }
+            if (engineTorBindPort > 0) {
+                args += "--tor-bind"
+                // Loopback only. The Tor listener is for apps on THIS device;
+                // exposing it on the LAN is what ShareBridge is for, with the
+                // consent prompt that goes with it.
+                args += "127.0.0.1:${engineTorBindPort.coerceIn(1024, 65_535)}"
+            }
+            when (engineTorBridges) {
+                // The engine's own behaviour - direct first, bridgedb when that
+                // is blocked - is what saying nothing asks for.
+                EngineTorBridges.AUTO -> Unit
+                EngineTorBridges.ALWAYS -> args += "--tor-bridges"
+                EngineTorBridges.OFF -> args += "--no-tor-bridges"
+                EngineTorBridges.CUSTOM ->
+                    activeEngineTorBridges().forEach { args += "--tor-bridge"; args += it }
+            }
+        }
+
         return args
     }
 
     /** Environment variables for the engine process. */
     fun toEnv(): Map<String, String> = buildMap {
-        put("AETHER_MASQUE_HTTP2", if (masqueHttp2) "1" else "0")
+        // Reverse Tor is HTTP/2 MASQUE whether or not the user asked for it:
+        // the engine cannot carry QUIC over a Tor stream.
+        put("AETHER_MASQUE_HTTP2", if (masqueHttp2 || reverseTor) "1" else "0")
 
         // Which addresses the engine's scanner may consider.
         //
@@ -523,6 +792,23 @@ data class ConnectionProfile(
         if (noProfileRetry) put("AETHER_WG_NO_PROFILE_RETRY", "1")
         sanitizedTlsGroups()?.let { put("AETHER_TLS_GROUPS", it) }
         if (coreLogLevel != CoreLogLevel.WARN) put("AETHER_LOG_LEVEL", coreLogLevel.raw)
+
+        // ---- engine v2.0.0 ----
+        //
+        // The flags in toArgs already set most of v2.0.0's new behaviour. What
+        // is here either has no flag at all (the resource caps) or is worth
+        // setting twice so a profile reproduced in a shell behaves identically.
+        if (!quicV2Opener) put("AETHER_QUIC_V2", "0")
+        if (usesEngineTor && engineTorBridges != EngineTorBridges.OFF) {
+            sanitizedCountry(engineTorCountry)?.let { put("AETHER_TOR_COUNTRY", it) }
+        }
+        // Zero means "the engine's own sizing", which it derives from the fd
+        // limit it raises at startup - a better answer than any constant this
+        // app could pick, so these only appear when a user overrides them.
+        if (maxClients > 0) put("AETHER_MAX_CLIENTS", maxClients.coerceIn(16, 8192).toString())
+        if (halfCloseSecs > 0) put("AETHER_HALF_CLOSE_SECS", halfCloseSecs.coerceIn(1, 3600).toString())
+        if (tcpKeepaliveSecs > 0) put("AETHER_TCP_KEEPALIVE_SECS", tcpKeepaliveSecs.coerceIn(1, 3600).toString())
+        if (tcpConnectSecs > 0) put("AETHER_TCP_CONNECT_SECS", tcpConnectSecs.coerceIn(1, 300).toString())
     }
 
     /**
@@ -563,13 +849,31 @@ data class ConnectionProfile(
      * Chained cores are NOT included here: each of them has its own budget in
      * VpnTunables and its own readiness signal, and folding them into one
      * number would mean a slow Tor bootstrap looked like a slow endpoint scan.
+     *
+     * The engine's OWN tor (v2.0.0) is the one exception, and it has to be:
+     * that bootstrap happens INSIDE this process before the SOCKS port opens,
+     * so there is no separate signal to wait on. Bridges make it slower still,
+     * which is what the engine's own AETHER_TOR_BRIDGE_SECS budget of 360 s is
+     * for - the app must not give up first.
      */
     fun connectTimeoutMs(): Long {
-        if (hasManualPeer) return 45_000L
-        return when (scanMode) {
-            ScanMode.TURBO -> 60_000L
-            ScanMode.PRECISE -> 190_000L
-            ScanMode.ULTRA -> 340_000L
+        val scan = if (hasManualPeer) {
+            45_000L
+        } else {
+            when (scanMode) {
+                ScanMode.TURBO -> 60_000L
+                ScanMode.PRECISE -> 190_000L
+                ScanMode.ULTRA -> 340_000L
+            }
+        }
+        if (!usesEngineTor) return scan
+        // Tor only needs no endpoint scan at all, so the scan budget above is
+        // not the thing being waited on - the bootstrap is.
+        val base = if (engineTor == EngineTor.ONLY) 45_000L else scan
+        return base + if (engineTorBridges == EngineTorBridges.OFF) {
+            ENGINE_TOR_BOOTSTRAP_MS
+        } else {
+            ENGINE_TOR_BRIDGED_BOOTSTRAP_MS
         }
     }
 
@@ -586,6 +890,33 @@ data class ConnectionProfile(
     private fun sanitizedTlsGroups(): String? =
         tlsGroups.trim().takeIf { it.matches(Regex("^[A-Za-z0-9:_-]{1,64}$")) }
 
+    /**
+     * `ip:port` for the MASQUE-in-MASQUE hops. The port is mandatory here,
+     * unlike [sanitizedDns] where a bare resolver implies 53 - an endpoint
+     * without a port is not something the engine can dial.
+     */
+    private fun sanitizedEndpoint(raw: String): String? =
+        raw.trim().takeIf { it.matches(ENDPOINT_ENTRY) }
+
+    /**
+     * `SO_MARK` as the engine expects it: decimal, or `0x`-prefixed hex, and
+     * inside the 32-bit range. Zero is rejected rather than passed through,
+     * because `--mark 0` asks the engine to mark every socket with "no mark".
+     */
+    private fun sanitizedMark(): String? {
+        val text = socketMark.trim().takeIf { it.matches(MARK_ENTRY) } ?: return null
+        val value = if (text.length > 2 && (text[1] == 'x' || text[1] == 'X')) {
+            text.substring(2).toLongOrNull(16)
+        } else {
+            text.toLongOrNull()
+        }
+        return if (value == null || value <= 0L || value > 0xFFFF_FFFFL) null else text
+    }
+
+    /** Two-letter country code, lower-cased the way bridgedb wants it. */
+    private fun sanitizedCountry(raw: String): String? =
+        raw.trim().lowercase().takeIf { it.matches(COUNTRY_ENTRY) }
+
     companion object {
         /** Safe default TUN MTU for Iranian mobile networks / aggressive DPI. */
         const val DEFAULT_MTU = 1280
@@ -599,6 +930,28 @@ data class ConnectionProfile(
         const val MAX_ROUTE_RULES = 256
 
         /**
+         * Hard cap on `--tor-bridge` arguments. Tor uses a handful at most and
+         * tries them in order, so a pasted list of hundreds would only mean a
+         * very long argv and a very slow bootstrap.
+         */
+        const val MAX_ENGINE_TOR_BRIDGES = 8
+
+        /** Extra budget for the engine's own tor bootstrap (v2.0.0). */
+        const val ENGINE_TOR_BOOTSTRAP_MS = 120_000L
+
+        /**
+         * The same, with bridges in play: fetching them from bridgedb and
+         * proving one carries a stream is what the engine budgets 360 s for.
+         */
+        const val ENGINE_TOR_BRIDGED_BOOTSTRAP_MS = 300_000L
+
+        /**
+         * Engine default for the Tor-only SOCKS5 listener, shown in the UI as
+         * the placeholder so the field can stay blank and still be informative.
+         */
+        const val ENGINE_TOR_BIND_PORT_DEFAULT = 1820
+
+        /**
          * `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port).
          * Octets and ports are numerically bounded - `\d{1,3}` alone would
          * accept `999.999.999.999:99999` and defer the failure to the engine.
@@ -608,10 +961,29 @@ data class ConnectionProfile(
         private val DNS_ENTRY =
             Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+])(?::$PORT)?$")
 
+        /** The same address, but the port is required (see [sanitizedEndpoint]). */
+        private val ENDPOINT_ENTRY =
+            Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+]):$PORT$")
+
         /** `500` or `16-32`: digits only, bounds and ordering checked in [sanitizedRange]. */
         private val RANGE_ENTRY = Regex("^\\d{1,5}(-\\d{1,5})?$")
 
         /** One routing-rule token: no comma, no whitespace, no shell metacharacters. */
-        private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^\$+?()|{}\\\\]{1,200}$")
+        private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^$+?()|{}\\\\]{1,200}$")
+
+        /** Decimal or `0x` hex; range checked in [sanitizedMark]. */
+        private val MARK_ENTRY = Regex("^(?:0[xX][0-9A-Fa-f]{1,8}|\\d{1,10})$")
+
+        /** Two-letter country code, already lower-cased by the caller. */
+        private val COUNTRY_ENTRY = Regex("^[a-z]{2}$")
+
+        /**
+         * A plausible bridge line: `obfs4 1.2.3.4:443 FINGERPRINT cert=... `.
+         * Deliberately a whitelist - these become argv elements, so anything
+         * carrying a quote, a semicolon or a backslash is dropped rather than
+         * escaped. Short strings are rejected too: a bridge line is never ten
+         * characters long, so anything that is, is a typo.
+         */
+        private val BRIDGE_LINE = Regex("^[A-Za-z0-9][A-Za-z0-9 .:=/+,_\\[\\]-]{9,400}$")
     }
 }

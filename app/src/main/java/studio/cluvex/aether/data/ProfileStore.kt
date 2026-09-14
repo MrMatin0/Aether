@@ -14,6 +14,8 @@ import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.EngineTor
+import studio.cluvex.aether.model.EngineTorBridges
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
@@ -100,6 +102,26 @@ class ProfileStore(private val context: Context) {
          * (see ProfileCodec) nothing has to be folded here.
          */
         val torBridgeLines = stringPreferencesKey("torBridgeLines")
+        // Added in 2.0.0 (engine v2.0.0)
+        val masqueInMasque = booleanPreferencesKey("mim")
+        val mimOuter = stringPreferencesKey("mimOuter")
+        val mimInner = stringPreferencesKey("mimInner")
+        /**
+         * The QUIC v2 opener, which is ON in the engine. Read with the
+         * profile's own default rather than `false`, so a profile saved before
+         * this key existed is not read as "the user switched it off".
+         */
+        val quicV2 = booleanPreferencesKey("quicV2")
+        val socketMark = stringPreferencesKey("socketMark")
+        val engineTor = stringPreferencesKey("engineTor")
+        val engineTorBridges = stringPreferencesKey("engineTorBridges")
+        val engineTorBridgeLines = stringPreferencesKey("engineTorBridgeLines")
+        val engineTorCountry = stringPreferencesKey("engineTorCountry")
+        val engineTorBind = intPreferencesKey("engineTorBind")
+        val maxClients = intPreferencesKey("maxClients")
+        val halfCloseSecs = intPreferencesKey("halfCloseSecs")
+        val tcpKeepaliveSecs = intPreferencesKey("tcpKeepaliveSecs")
+        val tcpConnectSecs = intPreferencesKey("tcpConnectSecs")
     }
 
     /**
@@ -242,6 +264,25 @@ class ProfileStore(private val context: Context) {
             torBridgeMode = bridgeMode,
             torBridgeTransport = seeded?.first ?: storedTransport,
             torBridgeLines = seeded?.second ?: storedBridgeLines ?: "",
+            // ---- engine v2.0.0 ----
+            // Same reason as the enums above: fromStored() accepts the words
+            // the engine's own AETHER_TOR variable uses, so a shared config
+            // saying "chain" or "reverse" survives the round trip.
+            masqueInMasque = prefs[Keys.masqueInMasque] ?: d.masqueInMasque,
+            mimOuterPeer = prefs[Keys.mimOuter] ?: "",
+            mimInnerPeer = prefs[Keys.mimInner] ?: "",
+            quicV2Opener = prefs[Keys.quicV2] ?: d.quicV2Opener,
+            socketMark = prefs[Keys.socketMark] ?: "",
+            engineTor = EngineTor.fromStored(prefs[Keys.engineTor]) ?: d.engineTor,
+            engineTorBridges = EngineTorBridges.fromStored(prefs[Keys.engineTorBridges])
+                ?: d.engineTorBridges,
+            engineTorBridgeLines = prefs[Keys.engineTorBridgeLines] ?: "",
+            engineTorCountry = prefs[Keys.engineTorCountry] ?: "",
+            engineTorBindPort = prefs[Keys.engineTorBind] ?: 0,
+            maxClients = prefs[Keys.maxClients] ?: 0,
+            halfCloseSecs = prefs[Keys.halfCloseSecs] ?: 0,
+            tcpKeepaliveSecs = prefs[Keys.tcpKeepaliveSecs] ?: 0,
+            tcpConnectSecs = prefs[Keys.tcpConnectSecs] ?: 0,
         )
     }
 
@@ -300,6 +341,21 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.torBridgeChosen] = true
             prefs[Keys.torBridgeTransport] = profile.torBridgeTransport.name
             prefs[Keys.torBridgeLines] = profile.torBridgeLines
+            // ---- engine v2.0.0 ----
+            prefs[Keys.masqueInMasque] = profile.masqueInMasque
+            prefs[Keys.mimOuter] = profile.mimOuterPeer
+            prefs[Keys.mimInner] = profile.mimInnerPeer
+            prefs[Keys.quicV2] = profile.quicV2Opener
+            prefs[Keys.socketMark] = profile.socketMark
+            prefs[Keys.engineTor] = profile.engineTor.name
+            prefs[Keys.engineTorBridges] = profile.engineTorBridges.name
+            prefs[Keys.engineTorBridgeLines] = profile.engineTorBridgeLines
+            prefs[Keys.engineTorCountry] = profile.engineTorCountry
+            prefs[Keys.engineTorBind] = profile.engineTorBindPort
+            prefs[Keys.maxClients] = profile.maxClients
+            prefs[Keys.halfCloseSecs] = profile.halfCloseSecs
+            prefs[Keys.tcpKeepaliveSecs] = profile.tcpKeepaliveSecs
+            prefs[Keys.tcpConnectSecs] = profile.tcpConnectSecs
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which
