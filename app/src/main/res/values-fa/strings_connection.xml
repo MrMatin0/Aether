@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- نوار پشتهٔ اتصال، بالای دکمهٔ اصلی -->
+    <string name="conn_stack_scan">حالت اسکن</string>
+
+    <!-- نوار مراحل: خودِ نوار حس پیشرفت می‌دهد، این جمله واقعیت را می‌گوید -->
+    <string name="conn_phase_step">مرحلهٔ %1$d از %2$d · %3$s</string>
+</resources>
