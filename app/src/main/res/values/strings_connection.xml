@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy that belongs to the redesigned connection tab only. Kept separate so
+     the shared UI strings stay a stable diff. -->
+<resources>
+    <!-- Stack strip above the hero control -->
+    <string name="conn_stack_scan">Scan mode</string>
+
+    <!-- Phase track: the bar is a feeling, this is the fact -->
+    <string name="conn_phase_step">Step %1$d of %2$d · %3$s</string>
+</resources>
