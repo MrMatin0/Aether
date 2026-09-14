@@ -17,6 +17,17 @@ name: Core sync
 # it compiles, and opens a pull request. The engine still updates itself, but a
 # human sees the diff and CI verifies it as a normal change.
 #
+# WHICH VERSION THIS JOB TARGETS IS A PIN, NOT "LATEST".
+# It used to be latest: sync-core.sh resolves the newest upstream release when
+# nothing tells it otherwise, so the engine version the app shipped was decided
+# by a cron job. That is the one input to a censorship-circumvention client that
+# should not move on its own - a core release can change flags, require a newer
+# Rust, or ship transports that need packaging, and none of that is visible in a
+# diff that only says "CORE_VERSION: 1.8.0 -> 2.0.0". CORE_TARGET_PIN below is
+# therefore the reviewed version, bumped deliberately in a pull request, and a
+# maintainer can still try any other version with the workflow_dispatch input
+# without committing anything.
+#
 # WHICH TOKEN OPENS THE PULL REQUEST MATTERS.
 # GitHub deliberately does not trigger `pull_request` workflows for a PR opened
 # with the default GITHUB_TOKEN - that is its loop breaker. So the old body's
@@ -32,6 +43,11 @@ on:
   schedule:
     - cron: "0 4 * * 1" # Mondays, 04:00 UTC
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Core version to vendor, e.g. 2.0.0 (blank = the pin in this workflow)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -46,6 +62,14 @@ env:
   ANDROID_API: "26"
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
   CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
+  # The reviewed engine version. Bump it in a pull request, never in place.
+  CORE_TARGET_PIN: "2.0.0"
+  # Aether core 2.0.0 raised its own minimum (its crate needs Rust 1.98). The
+  # `stable` toolchain satisfies that today, but "today" is not a guarantee a
+  # weekly job should rely on silently: without the check below, too old a
+  # toolchain surfaces as a wall of E0658/E0599 from a dependency, which reads
+  # exactly like the upstream regression this job exists to catch.
+  MIN_RUST: "1.98.0"
 
 jobs:
   sync:
@@ -67,6 +91,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AETHER_REPO: CluvexStudio/Aether
+          # The dispatch input wins so a maintainer can test a version without
+          # committing to it; otherwise the pin decides. Never "latest".
+          CORE_TARGET: ${{ github.event.inputs.target || env.CORE_TARGET_PIN }}
 
       - name: Anything to do?
         id: check
@@ -108,6 +135,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.RUST_TARGETS }}
+
+      # Fail with the real reason rather than with a dependency's error spew.
+      - name: Check the toolchain meets the core's minimum
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          have="$(rustc --version | awk '{print $2}')"
+          # sort -C exits 0 only when the input is already ordered, so this is
+          # "MIN_RUST <= have" using version ordering rather than string order
+          # (1.100.0 must beat 1.98.0, and `[ "1.100" \> "1.98" ]` does not).
+          if ! printf '%s\n%s\n' "${MIN_RUST}" "${have}" | sort -V -C; then
+            echo "::error::Aether core ${{ steps.check.outputs.core }} needs Rust >= ${MIN_RUST}, runner has ${have}"
+            exit 1
+          fi
+          echo "rustc ${have} satisfies the core's ${MIN_RUST} minimum."
 
       # This job compiled the engine from a cold cargo registry every week and
       # built cargo-ndk from source while it was at it. Same cache and the same
