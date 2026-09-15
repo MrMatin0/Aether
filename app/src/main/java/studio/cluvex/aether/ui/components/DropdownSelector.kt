@@ -13,6 +13,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
@@ -31,7 +33,10 @@ fun <T> DropdownSelector(options: List<T>, selected: T, onSelect: (T) -> Unit,
     val description = stringResource(if (expanded && available) R.string.ux_expanded else R.string.ux_collapsed)
     Box(modifier.fillMaxWidth()) {
         Surface(onClick = { expanded = !expanded }, enabled = available,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics { stateDescription = description },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics {
+                role = Role.DropdownList
+                stateDescription = description
+            },
             shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, if (expanded && available) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -43,6 +48,7 @@ fun <T> DropdownSelector(options: List<T>, selected: T, onSelect: (T) -> Unit,
             }
         }
         DropdownMenu(expanded = expanded && available, onDismissRequest = { expanded = false },
+            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
             shape = MaterialTheme.shapes.medium, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
             options.forEach { option ->
                 val chosen = option == selected

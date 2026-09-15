@@ -2,6 +2,8 @@ package studio.cluvex.aether.ui
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import studio.cluvex.aether.R
 import studio.cluvex.aether.ui.components.AppEntry
 import studio.cluvex.aether.ui.components.filterApps
 import studio.cluvex.aether.ui.components.selectVisibleApps
@@ -28,5 +30,13 @@ class UiUxRegressionTest {
         assertEquals("0:00", formatDuration(999))
         assertEquals("1:00", formatDuration(60_000))
         assertEquals("1:00:00", formatDuration(3_600_000))
+    }
+    @Test fun onboardingSecondaryActionSkipsOnlyFromFirstPage() {
+        assertNull(onboardingSecondaryTarget(0))
+        assertEquals(R.string.onboarding_skip, onboardingSecondaryLabel(0))
+        assertEquals(0, onboardingSecondaryTarget(1))
+        assertEquals(1, onboardingSecondaryTarget(2))
+        assertEquals(R.string.passage_back, onboardingSecondaryLabel(1))
+        assertEquals(R.string.passage_back, onboardingSecondaryLabel(2))
     }
 }

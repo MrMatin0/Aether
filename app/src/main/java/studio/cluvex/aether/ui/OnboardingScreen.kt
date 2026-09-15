@@ -26,6 +26,10 @@ import studio.cluvex.aether.ui.components.SignalDiagram
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.LocalReducedMotion
 
+internal fun onboardingSecondaryTarget(page: Int): Int? = (page - 1).takeIf { page > 0 }
+internal fun onboardingSecondaryLabel(page: Int): Int =
+    if (page > 0) R.string.passage_back else R.string.onboarding_skip
+
 /** Scrollable at large font sizes; finishing onboarding never starts a tunnel. */
 @Composable
 fun OnboardingScreen(onFinished: () -> Unit) {
@@ -79,7 +83,14 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TextButton(onClick = onFinished, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.onboarding_skip)) }
+                        TextButton(
+                            onClick = {
+                                val target = onboardingSecondaryTarget(pager.currentPage)
+                                if (target == null) onFinished() else go(target)
+                            },
+                            enabled = !pager.isScrollInProgress,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        ) { Text(stringResource(onboardingSecondaryLabel(pager.currentPage))) }
                         Button(onClick = { if (pager.currentPage == 2) onFinished() else go(pager.currentPage + 1) }, enabled = !pager.isScrollInProgress,
                             modifier = Modifier.weight(2f).heightIn(min = 56.dp), shape = MaterialTheme.shapes.large) {
                             Text(stringResource(if (pager.currentPage == 2) R.string.onboarding_start else R.string.onboarding_next))
