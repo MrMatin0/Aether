@@ -30,6 +30,8 @@ import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import java.text.Collator
+import java.text.Normalizer
+import java.util.Locale
 
 /** A launchable package, deduplicated even when it exposes several activities. */
 data class AppEntry(val packageName: String, val label: String)
@@ -38,16 +40,40 @@ private val SelectionSaver = listSaver<Set<String>, String>(
     save = { it.toList() }, restore = { it.toSet() },
 )
 
+/**
+ * Normalize phone-keyboard input before matching app labels and package names.
+ * Persian keyboards commonly emit Arabic yeh/kaf, ZWNJ, and compatibility
+ * characters that look identical but otherwise make search appear broken.
+ */
+internal fun normalizeAppSearchText(text: String): String =
+    Normalizer.normalize(text, Normalizer.Form.NFKC)
+        .lowercase(Locale.ROOT)
+        .replace('\u064a', '\u06cc')
+        .replace('\u0649', '\u06cc')
+        .replace('\u0643', '\u06a9')
+        .replace(Regex("[\\u200c\\u200d\\u200e\\u200f\\u061c]"), "")
+        .trim()
+        .replace(Regex("\\s+"), " ")
+
 internal fun filterApps(apps: List<AppEntry>, query: String): List<AppEntry> {
-    val term = query.trim()
-    return if (term.isEmpty()) apps else apps.filter {
-        it.label.contains(term, ignoreCase = true) || it.packageName.contains(term, ignoreCase = true)
+    val terms = normalizeAppSearchText(query).split(' ').filter { it.isNotEmpty() }
+    if (terms.isEmpty()) return apps
+    return apps.filter { app ->
+        val searchable = normalizeAppSearchText("${app.label} ${app.packageName}")
+        terms.all(searchable::contains)
     }
 }
 
 /** Select visible matches without discarding packages missing from the launchable-app list. */
 internal fun selectVisibleApps(chosen: Set<String>, visible: List<AppEntry>): Set<String> =
     chosen + visible.map { it.packageName }
+
+/** Stable output prevents semantically identical selections from causing noisy profile writes. */
+internal fun orderedAppSelection(chosen: Set<String>, apps: List<AppEntry>): List<String> {
+    val visible = apps.map { it.packageName }.filter(chosen::contains)
+    val missing = (chosen - visible.toSet()).sorted()
+    return visible + missing
+}
 
 @Composable
 fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
@@ -121,8 +147,10 @@ fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onConfirm: (L
                     }
                 }
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = { if (apps != null && !failed) onConfirm(chosen.toList()) },
-                    enabled = apps != null && !failed, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Button(onClick = {
+                    val loaded = apps
+                    if (loaded != null && !failed) onConfirm(orderedAppSelection(chosen, loaded))
+                }, enabled = apps != null && !failed, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.apps_done))
                 }
                 TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
