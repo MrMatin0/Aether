@@ -83,6 +83,11 @@ Scan mode:
   --ironclad               open a real tunnel and make a real HTTP request per
                            candidate, so a gateway is only trusted once it has
                            genuinely carried traffic
+  --precise, --ultra       the two names the Aether app sends for the three modes
+                           its settings screen offers: --precise means
+                           --balanced, --ultra means --ironclad. Aliases rather
+                           than a rename, because the app emits one of them on
+                           every launch and an unknown option is fatal here
 
 Obfuscation:
   --noize <profile>        off | light | firewall | balanced | gfw | aggressive
@@ -386,6 +391,15 @@ pub fn parse_args(args: Vec<String>) -> crate::error::Result<Parsed> {
             "--thorough" => set("AETHER_SCAN", "thorough"),
             "--stealth" => set("AETHER_SCAN", "stealth"),
             "--ironclad" => set("AETHER_SCAN", "ironclad"),
+            // The Aether app's three-mode settings screen (1.4.6) emits these
+            // two names verbatim, once per launch, so they cannot be allowed to
+            // reach the unknown-option arm below - that is a hard error and the
+            // process never opens a socket. They are aliases and not new modes:
+            // --precise asks for \"collect a few, keep the fastest\" and --ultra
+            // for \"only trust an edge that carried a real request\", which are
+            // --balanced and --ironclad respectively.
+            "--precise" | "--accurate" => set("AETHER_SCAN", "balanced"),
+            "--ultra" | "--ultra-precise" => set("AETHER_SCAN", "ironclad"),
 
             "--noize" => set("AETHER_NOIZE", next_value!()),
 
@@ -460,5 +474,64 @@ fn append(key: &str, value: &str) {
             std::env::set_var(key, format!("{existing};{value}"))
         }
         _ => std::env::set_var(key, value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan_value_of(flag: &str) -> String {
+        std::env::remove_var("AETHER_SCAN");
+        parse_args(vec![flag.to_string()]).expect("the flag should be accepted");
+        let raw = std::env::var("AETHER_SCAN").expect("the flag should set a scan mode");
+        std::env::remove_var("AETHER_SCAN");
+        raw
+    }
+
+    /// One test for every scan flag on purpose: they all write the same
+    /// environment variable, and cargo would run separate tests in parallel.
+    ///
+    /// The last two are what the Android app sends, and they are the reason this
+    /// test exists: an unknown option is fatal in [`parse_args`], so a build of
+    /// this core that does not answer to them cannot connect from the app at all
+    /// - on the DEFAULT scan mode, not some corner of the settings screen.
+    #[test]
+    fn every_scan_flag_selects_a_mode_this_core_understands() {
+        assert_eq!(scan_value_of("--turbo"), "turbo");
+        assert_eq!(scan_value_of("--balanced"), "balanced");
+        assert_eq!(scan_value_of("--thorough"), "thorough");
+        assert_eq!(scan_value_of("--stealth"), "stealth");
+        assert_eq!(scan_value_of("--ironclad"), "ironclad");
+        assert_eq!(scan_value_of("--precise"), "balanced");
+        assert_eq!(scan_value_of("--accurate"), "balanced");
+        assert_eq!(scan_value_of("--ultra"), "ironclad");
+        assert_eq!(scan_value_of("--ultra-precise"), "ironclad");
+    }
+
+    #[test]
+    fn an_unknown_flag_is_refused_with_the_usage_text() {
+        let error = parse_args(vec!["--nope".to_string()]).expect_err("should be refused");
+        assert!(error.to_string().contains("unknown option"));
+    }
+
+    #[test]
+    fn asking_for_help_or_the_version_stops_without_running() {
+        assert_eq!(
+            parse_args(vec!["--help".to_string()]).expect("help is accepted"),
+            Parsed::Done
+        );
+        assert_eq!(
+            parse_args(vec!["help".to_string()]).expect("help is accepted"),
+            Parsed::Done
+        );
+        assert_eq!(
+            parse_args(vec!["--version".to_string()]).expect("version is accepted"),
+            Parsed::Done
+        );
+        assert_eq!(
+            parse_args(Vec::new()).expect("no arguments is accepted"),
+            Parsed::Run
+        );
     }
 }
