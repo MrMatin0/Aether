@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crate::account::{self, Identity};
 use crate::error::{AetherError, Result};
-use crate::{aethernoize, config, consts, dns, noize, prober, quic, wg_prober, wireguard, zerotrust};
+use crate::{
+    aethernoize, config, consts, dns, noize, prober, quic, wg_prober, wireguard, zerotrust,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -300,7 +302,8 @@ pub async fn refresh_identity(identity: Identity) -> Identity {
 }
 
 pub async fn attach_masque_cert(identity: Identity) -> Result<Identity> {
-    if identity.has_masque_credentials() && !account::masque_cert_expiring(identity.cert_issued_at) {
+    if identity.has_masque_credentials() && !account::masque_cert_expiring(identity.cert_issued_at)
+    {
         return Ok(identity);
     }
 
@@ -390,11 +393,7 @@ impl ScanRequest {
     }
 }
 
-pub async fn scan(
-    identity: &Identity,
-    request: &ScanRequest,
-    cancel: &Cancel,
-) -> Result<Endpoint> {
+pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -> Result<Endpoint> {
     match request.transport {
         Transport::Masque => {
             let probe = prober::MasqueProbe {
@@ -452,8 +451,6 @@ pub struct TunnelSpec {
     pub socks: SocketAddr,
     pub http: Option<SocketAddr>,
     pub ech: Option<Vec<u8>>,
-    /// Per-request MASQUE obfuscation, shared by verification and connection.
-    pub noize: noize::NoizeConfig,
     pub aethernoize: aethernoize::AetherNoizeConfig,
     pub keepalive: u16,
     pub verify_timeout: Duration,
@@ -466,7 +463,6 @@ impl TunnelSpec {
             socks: SocketAddr::from(([127, 0, 0, 1], 1819)),
             http: None,
             ech: None,
-            noize: noize::from_profile("firewall"),
             aethernoize: aethernoize::from_profile("balanced"),
             keepalive: 5,
             verify_timeout: Duration::from_secs(10),
@@ -484,7 +480,6 @@ impl TunnelSpec {
     }
 
     pub fn with_profile(mut self, profile: &str) -> Self {
-        self.noize = noize::from_profile(profile);
         self.aethernoize = aethernoize::from_profile(profile);
         self
     }
@@ -511,9 +506,7 @@ pub async fn verify_endpoint(
 ) -> Result<bool> {
     match spec.transport {
         Transport::Masque => {
-            let attempt = async {
-                Ok(crate::quick_verify_masque_peer_with_noize(identity, peer, spec.noize.clone()).await)
-            };
+            let attempt = async { Ok(crate::quick_verify_masque_peer(identity, peer).await) };
             guard(cancel, attempt).await
         }
         Transport::WireGuard => {
@@ -555,13 +548,7 @@ pub async fn connect(
 
     match spec.transport {
         Transport::Masque => {
-            let attempt = crate::run_masque_tunnel_with_noize(
-                identity,
-                peer,
-                spec.ech.clone(),
-                spec.socks,
-                spec.noize.clone(),
-            );
+            let attempt = crate::run_masque_tunnel(identity, peer, spec.ech.clone(), spec.socks);
             guard(cancel, attempt).await
         }
         Transport::WireGuard => {
@@ -579,47 +566,6 @@ pub async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn explicit_off_disables_noise_in_both_scan_and_tunnel_requests() {
-        for transport in [Transport::Masque, Transport::WireGuard] {
-            for profile in ["off", "none"] {
-                let scan = ScanRequest::for_transport(transport).with_profile(profile);
-                let tunnel = TunnelSpec::for_transport(transport).with_profile(profile);
-                assert!(!scan.noize.is_enabled());
-                assert!(!scan.aethernoize.is_enabled());
-                assert!(!tunnel.noize.is_enabled());
-                assert!(!tunnel.aethernoize.is_enabled());
-                assert_eq!(tunnel.noize.jc_before_hs, 0);
-                assert_eq!(tunnel.noize.jc_after_i1, 0);
-                assert!(tunnel.noize.i1.is_none());
-                assert!(tunnel.noize.i2.is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn masque_scan_and_tunnel_profiles_match_for_every_app_choice() {
-        for profile in ["off", "light", "firewall", "balanced", "gfw", "aggressive"] {
-            let scan = ScanRequest::for_transport(Transport::Masque).with_profile(profile);
-            let tunnel = TunnelSpec::for_transport(Transport::Masque).with_profile(profile);
-            assert_eq!(format!("{:?}", scan.noize), format!("{:?}", tunnel.noize));
-            assert_eq!(format!("{:?}", scan.aethernoize), format!("{:?}", tunnel.aethernoize));
-        }
-    }
-
-    #[test]
-    fn changing_one_request_does_not_change_another_requests_profile() {
-        let enabled = TunnelSpec::for_transport(Transport::Masque).with_profile("aggressive");
-        let off = enabled.clone().with_profile("off");
-        assert!(enabled.noize.is_enabled());
-        assert!(!off.noize.is_enabled());
-        assert!(enabled.aethernoize.is_enabled());
-        assert!(!off.aethernoize.is_enabled());
-        let enabled_again = off.with_profile("light");
-        assert!(enabled_again.noize.is_enabled());
-        assert_eq!(enabled_again.noize.jmax, noize::from_profile("light").jmax);
-    }
 
     #[test]
     fn a_transport_is_read_from_the_names_the_cli_accepts() {
@@ -679,7 +625,11 @@ mod tests {
             "aether-team-acme.toml"
         );
         assert_eq!(
-            identity_path("/var/lib/aether/aether.toml", Transport::WireGuard, Some("acme")),
+            identity_path(
+                "/var/lib/aether/aether.toml",
+                Transport::WireGuard,
+                Some("acme")
+            ),
             "/var/lib/aether/aether-team-acme.toml"
         );
     }
