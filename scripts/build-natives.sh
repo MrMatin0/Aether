@@ -281,7 +281,7 @@ build_aether() {
   build_aether_abi() {
     local abi="$1" triple="$2"
     echo "==> [aether] building for ${abi} (${triple}, API ${API})"
-    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release )
+    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release --features tor )
 
     local reldir="${CARGO_TARGET_DIR}/${triple}/release"
     local artifact=""

@@ -13,6 +13,8 @@ import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.EngineTor
+import studio.cluvex.aether.model.EngineTorBridges
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
@@ -108,6 +110,21 @@ object AetherController {
  * reached the DataStore but never the engine's argv/env. Every non-secret field
  * of [ConnectionProfile] is transported now.
  *
+ * The SAME bug then shipped again with the engine v2.0.0 block, and it was worse
+ * the second time, because the two paths into the service disagreed:
+ *
+ *  - A user-initiated connect goes through this codec, so a dropped field meant
+ *    the setting silently did nothing.
+ *  - A service RESTART by Android reads the profile from `ProfileStore`, which
+ *    persists all of it, so the very same setting DID reach the engine's argv
+ *    there - and with the shipped engine still at 1.8.0 it was an unknown
+ *    option, which that engine refuses to start on.
+ *
+ * So the fix has two halves, and this is only one of them: the codec transports
+ * every non-secret field (see [ProfileCodecTest], which now checks that by
+ * reflection rather than by whatever a fixture remembered), and the engine in
+ * `native/aether` is the v2.0.0 source that understands the flags.
+ *
  * The two Zero Trust SECRETS ([ConnectionProfile.accessClientSecret],
  * [ConnectionProfile.accessToken]) are deliberately NOT part of the payload:
  * Intent extras are visible in system service dumps, so the service reads them
@@ -168,6 +185,24 @@ object ProfileCodec {
         add("torBridgeMode=${p.torBridgeMode.name}")
         add("torBridgeTransport=${p.torBridgeTransport.name}")
         add("torBridges=${flattenBridges(p.torBridgeLines)}")
+        // Added in 2.0.0 (engine v2.0.0). Keys match ProfileStore's so a payload
+        // and a persisted profile can be read side by side in a bug report.
+        add("mim=${p.masqueInMasque}")
+        add("mimOuter=${flatten(p.mimOuterPeer)}")
+        add("mimInner=${flatten(p.mimInnerPeer)}")
+        add("quicV2=${p.quicV2Opener}")
+        add("socketMark=${flatten(p.socketMark)}")
+        add("engineTor=${p.engineTor.name}")
+        add("engineTorBridges=${p.engineTorBridges.name}")
+        // Bridge lines, so the '|' fold rather than the comma one - see
+        // [flattenBridges] for why a comma cannot reconstruct these.
+        add("engineTorBridgeLines=${flattenBridges(p.engineTorBridgeLines)}")
+        add("engineTorCountry=${flatten(p.engineTorCountry)}")
+        add("engineTorBind=${p.engineTorBindPort}")
+        add("maxClients=${p.maxClients}")
+        add("halfCloseSecs=${p.halfCloseSecs}")
+        add("tcpKeepaliveSecs=${p.tcpKeepaliveSecs}")
+        add("tcpConnectSecs=${p.tcpConnectSecs}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -242,6 +277,30 @@ object ProfileCodec {
                 torBridgeTransport = BridgeTransport.fromStored(map["torBridgeTransport"])
                     ?: d.torBridgeTransport,
                 torBridgeLines = map["torBridges"]?.let { unflattenBridges(it) } ?: d.torBridgeLines,
+                // ---- engine v2.0.0 ----
+                masqueInMasque = map["mim"]?.toBooleanStrictOrNull() ?: d.masqueInMasque,
+                mimOuterPeer = map["mimOuter"] ?: d.mimOuterPeer,
+                mimInnerPeer = map["mimInner"] ?: d.mimInnerPeer,
+                // The opener is ON in the engine and in the model, so a payload
+                // from a build that predates the key must decode to the model
+                // default and not to false - sending --no-quic-v2 because a key
+                // was absent would cost every HTTP/3 handshake a round trip.
+                quicV2Opener = map["quicV2"]?.toBooleanStrictOrNull() ?: d.quicV2Opener,
+                socketMark = map["socketMark"] ?: d.socketMark,
+                // fromStored() rather than enumOr(): both of these accept the
+                // words the engine's own AETHER_TOR variable uses ("chain",
+                // "reverse"), which is what a shared config carries.
+                engineTor = EngineTor.fromStored(map["engineTor"]) ?: d.engineTor,
+                engineTorBridges = EngineTorBridges.fromStored(map["engineTorBridges"])
+                    ?: d.engineTorBridges,
+                engineTorBridgeLines = map["engineTorBridgeLines"]?.let { unflattenBridges(it) }
+                    ?: d.engineTorBridgeLines,
+                engineTorCountry = map["engineTorCountry"] ?: d.engineTorCountry,
+                engineTorBindPort = map["engineTorBind"]?.toIntOrNull() ?: d.engineTorBindPort,
+                maxClients = map["maxClients"]?.toIntOrNull() ?: d.maxClients,
+                halfCloseSecs = map["halfCloseSecs"]?.toIntOrNull() ?: d.halfCloseSecs,
+                tcpKeepaliveSecs = map["tcpKeepaliveSecs"]?.toIntOrNull() ?: d.tcpKeepaliveSecs,
+                tcpConnectSecs = map["tcpConnectSecs"]?.toIntOrNull() ?: d.tcpConnectSecs,
             )
         }.getOrDefault(d)
     }
@@ -299,6 +358,9 @@ object ProfileCodec {
      * percent-encode it) and [BridgeLine] rejects any line containing one, so a
      * round trip is exact. It also cannot be confused with the 1.0/1.1 legacy
      * payload, which is only tried when the whole document has no '=' in it.
+     *
+     * Used for BOTH bridge fields: the bundled tor core's lines and the engine
+     * tor's own (v2.0.0), which carry the same grammar and the same commas.
      */
     private fun flattenBridges(value: String): String =
         value.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("|")
