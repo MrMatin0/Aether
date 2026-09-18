@@ -251,6 +251,12 @@ APK تولیدشده، باینری بومی دانلودشده، کش ساخت�
 
 ## قدردانی و مجوز
 
+این یک توزیع تغییریافته از Aether Mobile است که از
+[`QW-AI-Code/Aether`](https://github.com/QW-AI-Code/Aether) فورک شده و از آن پس
+مستقل توسعه یافته است. طبق بخش ۵ مجوز AGPL-3.0، سابقه‌ی تغییرات و تاریخ آن‌ها
+همراه این مخزن است: [MODIFICATIONS.md](MODIFICATIONS.md). فهرست مجوز اجزای
+ثالث نیز در [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) آمده است.
+
 این پروژه بر کار مشارکت‌کنندگان Aether Mobile و پروژه‌های زیر بنا شده است:
 
 - [CluvexStudio/Aether](https://github.com/CluvexStudio/Aether): موتور Aether.
