@@ -15,7 +15,7 @@
 
     <!-- مقصدهایی که صفحهٔ خودشان را گرفتند -->
     <string name="hub_chain_sub">گام‌های اضافی، برای شبکه‌هایی که یک تونل کافی نیست</string>
-    <string name="hub_automation_sub">چه زمانی Aether بی‌آنکه بخواهید وصل شود</string>
+    <string name="hub_automation_sub">چه زمانی Aether+‎ بی‌آنکه بخواهید وصل شود</string>
     <string name="hub_history_sub">این دستگاه چه چیزی از نشست‌های شما ثبت کرده است</string>
 
     <!-- وضعیت زنده، یک خط زیر هر ردیف فهرست -->

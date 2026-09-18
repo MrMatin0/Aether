@@ -8,7 +8,7 @@
     <string name="passage_start_hint">با یک لمس از طریق Cloudflare WARP متصل شوید.</string>
     <string name="passage_connected_hint">تونل برقرار است. دسترسی به اینترنت تأیید شد.</string>
     <string name="passage_route">گوشی شما · Cloudflare WARP · اینترنت</string>
-    <string name="passage_privacy">شبکهٔ خروجی WARP متعلق به کلادفلر است. مسیریابی محل خروج را تعیین می‌کند؛ انتخاب کشور خروجی در اِیتر ممکن نیست.</string>
+    <string name="passage_privacy">شبکهٔ خروجی WARP متعلق به کلادفلر است. مسیریابی محل خروج را تعیین می‌کند؛ انتخاب کشور خروجی در Aether+‎ ممکن نیست.</string>
     <string name="passage_see_error">مشاهدهٔ جزئیات خطا</string>
     <string name="passage_session">این نشست</string>
     <string name="passage_details">جزئیات اتصال</string>

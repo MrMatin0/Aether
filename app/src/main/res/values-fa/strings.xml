@@ -1,6 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  BIDI NOTE - do not "tidy" these strings.
+
+  Every occurrence of the app name ("Aether+") inside Persian text is followed
+  by an invisible U+200E LEFT-TO-RIGHT MARK. Without it the Unicode bidi
+  algorithm treats the trailing "+" as a neutral character between two RTL runs
+  and moves it to the WRONG SIDE, so the name renders as "+Aether" on an RTL
+  layout. The mark is invisible in every editor: if you retype or paste one of
+  these strings by hand you will silently drop it and break the name again.
+  Edit in place, or re-add the mark after the "+".
+-->
 <resources>
-    <string name="app_name">اِتِر</string>
+    <string name="app_name">Aether+‎</string>
     <string name="tagline">آزادی، در یک لمس</string>
 
     <string name="advanced">تنظیمات پیشرفته</string>
@@ -41,8 +52,8 @@
     <string name="reconnect_attempt">تلاش %1$d از %2$d</string>
 
     <string name="notif_channel">وضعیت VPN</string>
-    <string name="notif_channel_desc">وضعیت اتصال اِتِر را نشان می‌دهد</string>
-    <string name="notif_title">اِتِر</string>
+    <string name="notif_channel_desc">وضعیت اتصال Aether+‎ را نشان میدهد</string>
+    <string name="notif_title">Aether+‎</string>
 
     <string name="err_engine_timeout">هسته نتوانست پراکسی محلی را به‌موقع باز کند.</string>
     <string name="err_engine_died">هسته به‌طور غیرمنتظره متوقف شد.</string>
@@ -79,7 +90,7 @@
     <string name="advanced_open">باز کردن تنظیمات پیشرفته</string>
 
     <!-- Quick Settings tile -->
-    <string name="qs_tile_label">اِتِر</string>
+    <string name="qs_tile_label">Aether+‎</string>
 
     <!-- Share VPN panel -->
     <string name="share_title">اشتراک‌گذاری VPN</string>
@@ -199,18 +210,18 @@
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">برای مقدار پیش‌فرض هسته (1.1.1.1, 1.0.0.1) خالی بگذارید. ورودی‌های نامعتبر نادیده گرفته می‌شوند.</string>
     <!-- Feature merge: widget, onboarding, crash report -->
-    <string name="widget_desc">اتصال یا قطع Aether با یک لمس</string>
+    <string name="widget_desc">اتصال یا قطع Aether+‎ با یک لمس</string>
     <string name="widget_toggle_desc">تغییر وضعیت اتصال</string>
     <string name="onboarding_skip">رد کردن</string>
     <string name="onboarding_next">بعدی</string>
     <string name="onboarding_start">شروع</string>
-    <string name="onboarding_title_1">به Aether خوش آمدید</string>
+    <string name="onboarding_title_1">به Aether+‎ خوش آمدید</string>
     <string name="onboarding_body_1">تانل سریع و امن برای عبور از سانسور. با یک لمس از طریق MASQUE، WireGuard یا وارپ×۲ متصل شوید.</string>
     <string name="onboarding_title_2">انتخاب هوشمند پروتکل</string>
     <string name="onboarding_body_2">حالت هوشمند شبکه شما را بررسی می‌کند و پروتکلی را انتخاب می‌کند که واقعاً کار می‌کند، در صورت نیاز با مبهم‌سازی ضد DPI.</string>
     <string name="onboarding_title_3">حریم خصوصی از همان ابتدا</string>
     <string name="onboarding_body_3">بدون حساب کاربری، بدون لاگ، بدون ردیاب. اندروید در اولین اتصال اجازه VPN می‌خواهد؛ این سیستم است که کنترل را به شما می‌دهد.</string>
-    <string name="crash_title">Aether به‌طور غیرمنتظره متوقف شد</string>
+    <string name="crash_title">Aether+‎ به‌طور غیرمنتظره متوقف شد</string>
     <string name="crash_subtitle">جزئیات زیر توسط کنترل‌کننده خرابی ذخیره شده است. می‌توانید آن را در گزارش خطا کپی کنید.</string>
     <string name="crash_copy">کپی جزئیات</string>
     <string name="crash_copied">کپی شد</string>

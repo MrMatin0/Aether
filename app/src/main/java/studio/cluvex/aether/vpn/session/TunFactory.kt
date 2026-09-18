@@ -102,7 +102,7 @@ internal object TunFactory {
         profile: ConnectionProfile,
     ): ParcelFileDescriptor? {
         val builder = with(service) { Builder() }
-            .setSession("Aether KillSwitch")
+            .setSession("Aether+ KillSwitch")
             .setMtu(profile.safeMtu())
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
             .addRoute("0.0.0.0", 0)
@@ -125,7 +125,7 @@ internal object TunFactory {
         // Clamped to a sane range so a bad saved value can't break establish().
         val mtu = profile.safeMtu()
         val builder = with(service) { Builder() }
-            .setSession("Aether")
+            .setSession("Aether+")
             .setMtu(mtu)
             // The TUN address MUST match hev's tunnel.ipv4/ipv6 (see HevConfig).
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)

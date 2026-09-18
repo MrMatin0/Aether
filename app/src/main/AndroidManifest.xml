@@ -38,7 +38,8 @@
       applicationId. The distinct applicationId is what lets this build and the
       upstream one be installed at the same time; the distinct label is what
       makes them tellable apart once they are, instead of two identical icons.
-      app_name stays untouched so in-app copy still reads "Aether".
+      app_name carries the same display name for in-app copy ("Aether+"), so
+      the two never disagree about what this app is called.
     -->
     <application
         android:name=".AetherApp"

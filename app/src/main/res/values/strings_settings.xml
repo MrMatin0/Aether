@@ -17,7 +17,7 @@
 
     <!-- Destinations that gained a page of their own -->
     <string name="hub_chain_sub">Extra hops, for networks where one tunnel is not enough</string>
-    <string name="hub_automation_sub">When Aether connects without being asked</string>
+    <string name="hub_automation_sub">When Aether+ connects without being asked</string>
     <string name="hub_history_sub">What this device has recorded about your sessions</string>
 
     <!-- Live state, one line under every row in the index -->
