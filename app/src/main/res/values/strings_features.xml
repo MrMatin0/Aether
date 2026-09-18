@@ -13,9 +13,9 @@
 
     <!-- Automation -->
     <string name="automation_title">Automation</string>
-    <string name="automation_subtitle">When Aether connects on its own, and what it keeps on this device.</string>
+    <string name="automation_subtitle">When Aether+ connects on its own, and what it keeps on this device.</string>
     <string name="auto_launch_title">Connect when the app opens</string>
-    <string name="auto_launch_desc">Starts the tunnel with your last settings as soon as Aether is launched.</string>
+    <string name="auto_launch_desc">Starts the tunnel with your last settings as soon as Aether+ is launched.</string>
     <string name="auto_boot_title">Connect after a restart</string>
     <string name="auto_boot_desc">Reconnects once the phone has booted. VPN permission must already have been granted.</string>
     <string name="history_keep_title">Keep session history</string>
@@ -23,7 +23,7 @@
     <string name="automation_always_on">Always-on VPN</string>
     <string name="automation_battery">Battery limits</string>
     <string name="automation_open_failed">This device doesn\'t expose that system screen.</string>
-    <string name="automation_system_hint">Always-on VPN keeps the tunnel up system-wide. Removing Aether from battery optimisation stops Android killing the tunnel in the background. Neither can be set from inside an app, so these open the system screens.</string>
+    <string name="automation_system_hint">Always-on VPN keeps the tunnel up system-wide. Removing Aether+ from battery optimisation stops Android killing the tunnel in the background. Neither can be set from inside an app, so these open the system screens.</string>
 
     <!-- Saved setups + config transfer -->
     <string name="presets_title">Saved setups</string>
@@ -42,7 +42,7 @@
     <string name="backup_paste">Paste config</string>
     <string name="backup_copied">Config copied. It carries no passwords or tokens.</string>
     <string name="backup_imported">Config imported.</string>
-    <string name="backup_invalid">The clipboard doesn\'t contain an Aether config.</string>
+    <string name="backup_invalid">The clipboard doesn\'t contain an Aether+ config.</string>
 
     <!-- Session history -->
     <string name="history_title">Session history</string>

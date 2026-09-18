@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Aether</string>
+    <string name="app_name">Aether+</string>
     <string name="tagline">Freedom, in one tap</string>
 
     <string name="advanced">Advanced settings</string>
@@ -41,8 +41,8 @@
     <string name="reconnect_attempt">Attempt %1$d of %2$d</string>
 
     <string name="notif_channel">VPN status</string>
-    <string name="notif_channel_desc">Shows the Aether connection status</string>
-    <string name="notif_title">Aether</string>
+    <string name="notif_channel_desc">Shows the Aether+ connection status</string>
+    <string name="notif_title">Aether+</string>
 
     <string name="err_engine_timeout">The engine did not open the local proxy in time.</string>
     <string name="err_engine_died">The engine stopped unexpectedly.</string>
@@ -79,7 +79,7 @@
     <string name="advanced_open">Open advanced settings</string>
 
     <!-- Quick Settings tile -->
-    <string name="qs_tile_label">Aether</string>
+    <string name="qs_tile_label">Aether+</string>
 
     <!-- Share VPN panel -->
     <string name="share_title">Share VPN</string>
@@ -200,18 +200,18 @@
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">Leave empty for the engine default (1.1.1.1, 1.0.0.1). Invalid entries are ignored.</string>
     <!-- Feature merge: home-screen widget, onboarding, crash report -->
-    <string name="widget_desc">Connect or disconnect Aether with one tap</string>
+    <string name="widget_desc">Connect or disconnect Aether+ with one tap</string>
     <string name="widget_toggle_desc">Toggle connection</string>
     <string name="onboarding_skip">Skip</string>
     <string name="onboarding_next">Next</string>
     <string name="onboarding_start">Get started</string>
-    <string name="onboarding_title_1">Welcome to Aether</string>
+    <string name="onboarding_title_1">Welcome to Aether+</string>
     <string name="onboarding_body_1">A fast, secure tunnel that beats censorship. One tap connects you through MASQUE, WireGuard or WARP×2.</string>
     <string name="onboarding_title_2">Smart protocol selection</string>
     <string name="onboarding_body_2">Smart mode analyzes your network and picks the protocol that actually works, with anti-DPI obfuscation when needed.</string>
     <string name="onboarding_title_3">Private by design</string>
     <string name="onboarding_body_3">No accounts, no logs, no trackers. Android will ask for VPN permission on your first connect; that is the system keeping you in control.</string>
-    <string name="crash_title">Aether stopped unexpectedly</string>
+    <string name="crash_title">Aether+ stopped unexpectedly</string>
     <string name="crash_subtitle">The details below were saved by the crash handler. You can copy them into a bug report.</string>
     <string name="crash_copy">Copy details</string>
     <string name="crash_copied">Copied</string>

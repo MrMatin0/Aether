@@ -368,7 +368,7 @@ android {
         // Needs buildFeatures.resValues below: AGP 9 stopped enabling it
         // implicitly, and configuration fails outright if this call is present
         // while the feature is off.
-        resValue("string", "app_label", "Aether (Fork)")
+        resValue("string", "app_label", "Aether+")
 
         // BOTH ABIs, and that is load-bearing for more than the engine: the
         // pluggable transports are cross-compiled per ABI too, and an APK that
