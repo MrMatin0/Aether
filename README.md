@@ -1,12 +1,14 @@
-# Aether for Android
+# Aether+ for Android
 
 **An Android client for censorship circumvention, powered by Aether, Psiphon, and Tor.**
 
 [English](README.md) · [فارسی](README.fa.md) · [Downloads](https://github.com/MrMatin0/Aether/releases) · [Build workflow](https://github.com/MrMatin0/Aether/actions/workflows/build.yml)
 
-Aether brings endpoint discovery, encrypted tunneling, and configurable routing to a native Kotlin and Jetpack Compose application. Use a device-wide VPN, connect individual proxy-aware applications, or combine supported cores when a single transport cannot reach the network.
+Aether+ brings endpoint discovery, encrypted tunneling, and configurable routing to a native Kotlin and Jetpack Compose application. Use a device-wide VPN, connect individual proxy-aware applications, or combine supported cores when a single transport cannot reach the network.
 
-> **About this repository:** this is the `MrMatin0/Aether` Android fork, not the upstream command-line engine. It installs as **Aether (Fork)** with application ID `io.github.mrmatin0.aether`, allowing it to coexist with builds using the upstream application ID. The Kotlin namespace remains `studio.cluvex.aether`.
+> **About this repository:** this is the `MrMatin0/Aether` Android fork, not the upstream command-line engine. It installs as **Aether+** with application ID `io.github.mrmatin0.aether`, allowing it to coexist with builds using the upstream application ID. The Kotlin namespace remains `studio.cluvex.aether`.
+>
+> The name **Aether** on its own is used throughout this README for the *engine* — the circumvention core at [`CluvexStudio/Aether`](https://github.com/CluvexStudio/Aether) — and for the chain modes built on it. The *app* is Aether+.
 
 ## Contents
 
@@ -46,7 +48,7 @@ Feature availability is not a guarantee of connectivity. Reachability depends on
 
 1. Open this fork's [Releases](https://github.com/MrMatin0/Aether/releases) page. Prefer a tagged release over a build marked **Pre-release** for everyday use.
 2. Download the APK matching your device: `arm64-v8a` for ARM64 or `armeabi-v7a` for 32-bit ARM. Choose `universal` if unsure; it includes both ARM variants, **not x86/x86_64**.
-3. Install the APK and open **Aether (Fork)**. Complete or skip onboarding and choose your language.
+3. Install the APK and open **Aether+**. Complete or skip onboarding and choose your language.
 4. Start with the Aether core and default connection settings. Tap the connection control and approve Android's VPN request.
 5. Wait for connection establishment, then check that an application can actually load content. If the connection fails, review diagnostics before adding extra chain layers.
 
@@ -96,7 +98,7 @@ Psiphon includes a built-in client configuration; ordinary users do **not** need
 
 ## Privacy and security
 
-Aether is a circumvention client, **not a promise of anonymity or undetectable traffic**. The selected network providers, DNS resolvers, applications, and any configured Zero Trust organization remain part of your trust model. Enabling an organization's Gateway can apply its filtering and logging policies.
+Aether+ is a circumvention client, **not a promise of anonymity or undetectable traffic**. The selected network providers, DNS resolvers, applications, and any configured Zero Trust organization remain part of your trust model. Enabling an organization's Gateway can apply its filtering and logging policies.
 
 - Android backup is disabled in the manifest. Diagnostics and crash reports can still contain sensitive information: review and redact them before sharing.
 - Kill-switch settings are opt-in. Proxy-only mode, direct routes, and excluded applications must not be mistaken for device-wide protection.
