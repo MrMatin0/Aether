@@ -223,7 +223,9 @@ For a useful bug report, include the app version, Android version, device ABI, s
 
 ## Contributing
 
-Focused fixes, networking tests, accessibility improvements, and translation updates are welcome.
+Focused fixes, networking tests, accessibility improvements, and translation updates are welcome. The full guide — setup, branch and commit conventions, what CI checks, and the house rules — is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+In short:
 
 1. Open an issue for a substantial behavior or architecture change before implementing it.
 2. Create a branch from the current `main` and keep the change narrowly scoped.
@@ -233,12 +235,16 @@ Focused fixes, networking tests, accessibility improvements, and translation upd
 
 Do not commit generated APKs, downloaded native binaries, build caches, private configuration, or signing secrets. Preserve upstream attribution and review dependency license obligations when changing bundled components.
 
+To report a security problem, do not open a public issue — see [SECURITY.md](SECURITY.md).
+
 ## Documentation
 
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy and how to report a vulnerability](SECURITY.md)
 - [Chaining architecture and limitations](docs/CHAINING.md)
 - [Chain-core packaging and build notes](docs/CHAIN_CORES.md)
 - [APK signing and update compatibility](docs/SIGNING.md)
-- [Security review history](docs/)
+- [Security review history](docs/) (historical — written against the 1.2.x line)
 - [Vendored engine documentation](native/aether/README.md)
 - [Dependency versions](gradle/libs.versions.toml)
 - [Build and release workflow](.github/workflows/build.yml)
