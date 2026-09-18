@@ -247,6 +247,13 @@ Engine documentation covers a separate command-line component. Its desktop, Dock
 
 ## Credits and license
 
+This is a modified distribution of Aether Mobile, forked from
+[`QW-AI-Code/Aether`](https://github.com/QW-AI-Code/Aether) and developed
+independently since. Under AGPL-3.0 section 5, it carries a record of what was
+changed and when: see [MODIFICATIONS.md](MODIFICATIONS.md). The component-by-
+component license inventory is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 This project builds on the work of Aether Mobile contributors and these upstream projects:
 
 - [CluvexStudio/Aether](https://github.com/CluvexStudio/Aether): the Aether engine.
