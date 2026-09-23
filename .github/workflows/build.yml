@@ -82,7 +82,7 @@ concurrency:
 
 env:
   JAVA_VERSION: "17"            # AGP 9.4 requires JDK 17
-  NDK_VERSION: "26.3.11579264"
+  NDK_VERSION: "29.0.14206865"
   ANDROID_API: "26"             # must match minSdk in app/build.gradle.kts
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
   # Psiphon core (cgo through the NDK). THIS VALUE IS LOAD-BEARING:
