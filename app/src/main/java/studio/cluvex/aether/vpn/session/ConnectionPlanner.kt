@@ -2,7 +2,6 @@ package studio.cluvex.aether.vpn.session
 
 import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.model.ConnectionProfile
-import studio.cluvex.aether.model.Protocol
 
 /**
  * Turns a profile into the ordered ladder of concrete attempts a session walks.
@@ -15,17 +14,18 @@ import studio.cluvex.aether.model.Protocol
 internal object ConnectionPlanner {
 
     /**
-     * Plan for a protocol the user picked by hand (MASQUE, WireGuard or Gool).
+     * Plan for a protocol the user picked by hand (MASQUE, MASQUE-in-MASQUE,
+     * WireGuard or Gool).
      *
-     * MASQUE may retry over HTTP/2 with fragmentation and ECH on the full
-     * budget when its first, capped attempt fails. The selected obfuscation
-     * profile is preserved on EVERY attempt: OFF must never become FIREWALL
-     * just because an endpoint did not answer. A protocol with no distinct
-     * fallback gets one full-budget attempt.
+     * Both MASQUE transports may retry over HTTP/2 with fragmentation and ECH on
+     * the full budget when their first, capped attempt fails. The selected
+     * obfuscation profile is preserved on EVERY attempt: OFF must never become
+     * FIREWALL just because an endpoint did not answer. A protocol with no
+     * distinct fallback gets one full-budget attempt.
      */
     fun manualProtocol(profile: ConnectionProfile): List<AutoCandidate> {
         val fullBudget = profile.connectTimeoutMs()
-        val masque = profile.protocol == Protocol.MASQUE
+        val masque = profile.protocol.isMasque
         val hardened = profile.copy(
             masqueHttp2 = profile.masqueHttp2 || masque,
             fragment = profile.fragment || masque,

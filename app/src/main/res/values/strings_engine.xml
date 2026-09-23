@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Engine settings that live on the Connection, Transport and Tuning pages:
+  MASQUE-in-MASQUE (a protocol), the QUIC v2 opener, the socket mark and the
+  resource limits.
+
+  Kept in their own file for the same reason the bridge and chain strings are:
+  one 700-line strings.xml is a merge conflict waiting to happen, and every one
+  of these has to be translated in values-fa/ before the feature ships.
+-->
+<resources>
+
+    <!-- MASQUE-in-MASQUE, a protocol in the Connection card -->
+    <string name="protocol_mim">MASQUE×2</string>
+    <string name="mim_desc">Two MASQUE hops: a second tunnel built through the first, so the site you open is reached from a different edge than the one your network saw. Slower, and much harder to tie back to you. It is to MASQUE what WARP×2 is to WireGuard. Both endpoints are optional.</string>
+    <string name="mim_outer_label">Outer endpoint</string>
+    <string name="mim_inner_label">Inner endpoint</string>
+    <string name="mim_peer_hint">188.114.96.1:443</string>
+    <string name="mim_outer_help">The edge this device connects to. Leave blank to let the scanner choose. A manual endpoint set below takes its place.</string>
+    <string name="mim_inner_help">The edge reached through the first one. Leave blank to let the scanner choose.</string>
+
+    <!-- Transport card -->
+    <string name="quic_v2_title">QUIC v2 opener</string>
+    <string name="quic_v2_desc">Negotiates QUIC v2 on the first packet, which passes filters that recognise and drop QUIC v1. Leave it on unless your network blocks v2 specifically.</string>
+
+    <string name="socket_mark_label">Socket mark</string>
+    <string name="socket_mark_hint">0x1f4 or 500</string>
+    <string name="socket_mark_help">Marks the engine\'s own sockets so a tunnel front end can route around them instead of looping them back in. Needs root or CAP_NET_ADMIN — leave blank on a normal device.</string>
+
+    <!-- Core resources card (Tuning) -->
+    <string name="section_core_resources">Core resources</string>
+    <string name="section_core_resources_note">Limits the engine applies to itself. Blank means it sizes them from the device.</string>
+    <string name="core_auto_hint">Automatic</string>
+    <string name="max_clients_label">Concurrent clients</string>
+    <string name="max_clients_help">Cap on proxy connections served at once. The engine picks between 512 and 8192 from the device\'s limits; raise it only if apps stall while the tunnel is idle.</string>
+    <string name="half_close_secs_label">Half-closed timeout (s)</string>
+    <string name="tcp_keepalive_secs_label">TCP keep-alive (s)</string>
+    <string name="tcp_connect_secs_label">Connect timeout (s)</string>
+    <string name="core_resources_help">Lower values free dead connections sooner on a flaky mobile link; higher ones keep long-lived sessions alive through a bad minute.</string>
+
+</resources>

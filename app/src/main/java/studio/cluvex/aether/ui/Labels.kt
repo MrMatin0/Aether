@@ -39,6 +39,7 @@ import studio.cluvex.aether.model.TorBridgeMode
 internal fun protocolLabel(protocol: Protocol): String = when (protocol) {
     Protocol.AUTO -> stringResource(R.string.protocol_auto)
     Protocol.MASQUE -> stringResource(R.string.protocol_masque)
+    Protocol.MIM -> stringResource(R.string.protocol_mim)
     Protocol.WIREGUARD -> stringResource(R.string.protocol_wireguard)
     Protocol.GOOL -> stringResource(R.string.protocol_gool)
 }

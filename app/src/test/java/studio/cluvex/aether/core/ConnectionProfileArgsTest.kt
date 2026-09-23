@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.Noize
@@ -73,6 +74,51 @@ class ConnectionProfileArgsTest {
         val args = default.toArgs()
         assertTrue(args.windowed(2).contains(listOf("--noize", "firewall")))
         assertFalse(args.windowed(2).contains(listOf("--noize", "off")))
+    }
+
+    /**
+     * MASQUE-in-MASQUE is a protocol: it REPLACES --masque rather than joining
+     * it, its endpoints only go out while it is selected, and a pinned peer is
+     * its outer hop rather than a single-hop --peer.
+     */
+    @Test
+    fun mimIsItsOwnTransportAndOwnsItsEndpoints() {
+        val mim = ConnectionProfile(
+            protocol = Protocol.MIM,
+            mimOuterPeer = "162.159.192.1:2408",
+            mimInnerPeer = "188.114.97.2:934",
+        )
+        val args = mim.toArgs()
+        assertTrue(args.contains("--mim"))
+        assertFalse(args.contains("--masque"), "--mim replaces --masque")
+        assertTrue(args.windowed(2).contains(listOf("--mim-outer", "162.159.192.1:2408")))
+        assertTrue(args.windowed(2).contains(listOf("--mim-inner", "188.114.97.2:934")))
+
+        val plainMasque = mim.copy(protocol = Protocol.MASQUE).toArgs()
+        assertTrue(plainMasque.contains("--masque"))
+        assertFalse(plainMasque.any { it.startsWith("--mim") }, "hop fields are idle outside MIM")
+
+        val pinned = mim.copy(endpointMode = EndpointMode.MANUAL_PEER, manualPeer = "188.114.96.1:443")
+            .toArgs()
+        assertTrue(pinned.windowed(2).contains(listOf("--mim-outer", "188.114.96.1:443")))
+        assertFalse(pinned.contains("--peer"))
+        assertEquals(1, pinned.count { it == "--mim-outer" }, "the pinned peer IS the outer hop")
+    }
+
+    /**
+     * The app runs ONE Tor - the bundled core behind the chain modes. No
+     * profile, whatever its chain or protocol, may ask the engine to start the
+     * second one it can embed.
+     */
+    @Test
+    fun noProfileAsksTheEngineForItsOwnTor() {
+        for (protocol in Protocol.entries) {
+            for (chain in ChainMode.entries) {
+                val profile = ConnectionProfile(protocol = protocol, chain = chain)
+                assertFalse(profile.toArgs().any { it.startsWith("--tor") || it == "--no-tor-bridges" }, "$protocol/$chain")
+                assertFalse(profile.toEnv().keys.any { it.startsWith("AETHER_TOR") }, "$protocol/$chain")
+            }
+        }
     }
 
     @Test
