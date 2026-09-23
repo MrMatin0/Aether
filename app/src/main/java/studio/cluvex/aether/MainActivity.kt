@@ -145,7 +145,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AetherTheme {
-                val onboardingDone by onboardingStore.completed.collectAsState(initial = true)
+                // null until the flag has been read. It used to start at `true`,
+                // which drew Home for a frame at every first-run user before the
+                // welcome replaced it: the very first impression was a flash of
+                // the wrong screen.
+                val onboardingDone by onboardingStore.completed.collectAsState<Boolean, Boolean?>(initial = null)
                 val state by AetherController.state.collectAsState()
                 val profile by uiProfile.collectAsState()
                 val connectedSince by AetherController.connectedSince.collectAsState()
@@ -192,8 +196,11 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    if (!onboardingDone) {
-                        OnboardingScreen(
+                    when (onboardingDone) {
+                        // One small DataStore read: an empty themed surface for
+                        // that moment beats showing either screen by mistake.
+                        null -> Unit
+                        false -> OnboardingScreen(
                             onFinished = {
                                 lifecycleScope.launch {
                                     onboardingStore.markCompleted()
@@ -205,8 +212,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                         )
-                    } else {
-                        HomeScreen(
+                        true -> HomeScreen(
                             state = state,
                             profile = profile ?: ConnectionProfile(),
                             connectedSince = connectedSince,
