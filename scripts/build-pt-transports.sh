@@ -38,6 +38,9 @@
 #
 # Requires: ANDROID_NDK_HOME, Go 1.23+, git. Every network access happens here
 # or in CI, never on device.
+#
+# Optional: AETHER_ABIS="arm64-v8a" (space-separated) builds only those ABIs.
+# CI uses it to compile each ABI on its own runner, in parallel.
 set -euo pipefail
 
 TARGET="${1:-all}"
@@ -48,7 +51,15 @@ NATIVE_DIR="${PROJECT_DIR}/.native"
 JNI_DIR="${PROJECT_DIR}/app/src/main/jniLibs"
 
 API="${ANDROID_API:-26}"
-ABIS=("arm64-v8a" "armeabi-v7a")
+# Both ABIs by default; AETHER_ABIS narrows it (see the header).
+read -r -a ABIS <<< "${AETHER_ABIS:-arm64-v8a armeabi-v7a}"
+for _abi in "${ABIS[@]}"; do
+  case "${_abi}" in
+    arm64-v8a|armeabi-v7a) ;;
+    *) echo "ERROR: unsupported ABI '${_abi}' in AETHER_ABIS (use arm64-v8a and/or armeabi-v7a)." >&2; exit 2 ;;
+  esac
+done
+unset _abi
 
 # Host prefixes assembled from fragments, same convention as the other scripts:
 # no full literal URL sits in the file.

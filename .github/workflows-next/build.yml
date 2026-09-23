@@ -1,0 +1,1163 @@
+name: Build
+
+run-name: >-
+  ${{ startsWith(github.ref, 'refs/tags/v') && format('🚀 Release {0}', github.ref_name)
+  || github.event_name == 'pull_request' && format('🧪 PR #{0} · {1}', github.event.pull_request.number, github.event.pull_request.title)
+  || github.event_name == 'workflow_dispatch' && format('🛠️ Manual build · {0}', github.ref_name)
+  || format('🔨 {0} · {1}', github.ref_name, github.event.head_commit.message) }}
+
+# ---------------------------------------------------------------------------
+# The pipeline is a fan-out / fan-in graph, not a line:
+#
+#   lint ───────────────────────────────────────────────────────────┐
+#   tests (JVM unit tests, starts at t=0) ─────────────────────────┤
+#   engine   × {arm64-v8a, armeabi-v7a}  (hev + JNI bridge + Rust) ─┤
+#   go-cores × {psiphon, transports} × {arm64-v8a, armeabi-v7a} ────┼─> app ─> release
+#   tor      (signed AAR + geoip) ──────────────────────────────────┘     └─> report (PR comment) / gate
+#
+# Every native component is its own job with its own cache key, so a change
+# costs exactly the component it touches: an engine commit no longer throws
+# away a Psiphon build, a pluggable-transport pin bump no longer recompiles
+# Rust, and the two ABIs compile on two runners at the same time instead of
+# one after the other.
+#
+# The rules this file has always followed still hold, unchanged:
+#
+#  1. A BUILD NEVER WRITES TO THE REPOSITORY. Checkouts run with
+#     persist-credentials: false; anything that must change the tree goes
+#     through a pull request (see core-sync.yml).
+#  2. A BUILD IS REPRODUCIBLE. NDK, cargo-ndk, Go and Gradle are pinned (Gradle
+#     via the wrapper descriptor). The runner's preinstalled NDK is only ever
+#     used as a toolbox (llvm-readelf in the tor job), never to compile.
+#  3. NATIVE WORK IS CACHED, BUT ONLY WHEN IT IS COMPLETE. Every cache is
+#     restore-only up front and saved by a separate, guarded step that runs
+#     only when that component was BUILT in this run AND verified complete. A
+#     partial payload in a cache would be restored forever and skip the build
+#     that would have fixed it; that is how the chain cores once vanished.
+#  4. ONLY TAGS BECOME "LATEST". The default branch publishes a prerelease;
+#     make_latest is reserved for `v*` tags, so an old feature-branch dispatch
+#     can never advertise itself as the current download.
+#  5. ONE MISSING CORE COSTS EXACTLY THAT CORE. Psiphon, the transports and tor
+#     are separate jobs whose build steps are continue-on-error: a Go hiccup in
+#     one of them never costs the others, and never costs the APK on a branch.
+#  6. EVERY JOB HAS A CEILING (timeout-minutes), so nothing hung sits on a
+#     runner for the six-hour default.
+#  7. A RELEASE MAY NOT SHIP WITHOUT WHAT IT ADVERTISES. A missing chain core,
+#     pluggable transport or Psiphon server list is a warning on a branch or a
+#     pull request and a HARD FAILURE on a `v*` tag, checked where it is built,
+#     in the assembled source tree, and again inside the finished APKs.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+    # Deliberately NO paths filter on push: a tag push carries no file changes
+    # of its own, so a filter here can silently skip the release a tag exists
+    # to cut.
+  # A pull request is a VERIFICATION run: compile, test, check signature and
+  # payload, attach installable APKs, comment the result. It publishes nothing.
+  pull_request:
+    branches: [main, master]
+    # Prose cannot change an APK. Everything that CAN reach the build (sources,
+    # scripts, native/, gradle/, .github/) is deliberately absent from this list.
+    paths-ignore:
+      - "README.md"
+      - "README.fa.md"
+      - "docs/**"
+      - "_META/**"
+      - "LICENSE"
+  workflow_dispatch:
+    inputs:
+      rebuild_natives:
+        description: "Ignore every native cache and rebuild all cores from source"
+        type: boolean
+        default: false
+
+# Read-only by default. Only `release` (contents) and `report` (PR comment)
+# widen this, each for itself.
+permissions:
+  contents: read
+
+# Never let two runs of the same ref race each other; a newer push to a PR
+# supersedes the older run.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  JAVA_VERSION: "17"            # AGP 9.4 requires JDK 17
+  NDK_VERSION: "29.0.14206865"
+  ANDROID_API: "26"             # must match minSdk in app/build.gradle.kts
+  # Psiphon + pluggable transports (cgo through the NDK). LOAD-BEARING:
+  # psiphon-tunnel-core's go.mod asks for go 1.26, and setup-go exports
+  # GOTOOLCHAIN=local, so an older value here makes Go refuse to build at all.
+  # The Go steps also run with GOTOOLCHAIN=auto, so the next upstream bump
+  # costs a toolchain download rather than the feature.
+  GO_VERSION: "1.26"
+  # Pinned: an unpinned cargo-ndk means the toolchain that links a release is
+  # whatever crates.io published that morning.
+  CARGO_NDK_VERSION: "4.1.2"    # keep in step with core-sync.yml
+  # Bump to invalidate every native cache at once. v5 = per-component keys.
+  NATIVE_CACHE_EPOCH: "v5"
+  IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  # ================================================================= LINT ==
+  # Cheap, parallel, and advisory: it never blocks an APK or a release, it
+  # only makes a broken workflow or script visible before it bites.
+  lint:
+    name: 🧹 Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Shell syntax (bash -n)
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in scripts/*.sh .github/scripts/*.sh; do
+            if bash -n "$f"; then
+              echo "✅ ${f}"
+            else
+              echo "::error file=${f},title=bash -n::syntax error"
+              fail=1
+            fi
+          done
+          exit "${fail}"
+
+      - name: ShellCheck (errors only)
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null 2>&1 \
+            || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck --version | head -n2
+          shellcheck --severity=error scripts/*.sh .github/scripts/*.sh
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          # shellcheck is run above with a severity threshold; inside actionlint
+          # it would flag every style nit in every run: block as an error.
+          docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color -shellcheck=
+
+  # ========================================================== ENGINE CORES ==
+  engine:
+    name: 🦀 Engine · ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android
+          - abi: armeabi-v7a
+            triple: armv7-linux-androideabi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start the clock
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      # The .so files depend on the build scripts, the JNI bridge and the
+      # vendored engine: nothing else in this repository. Keyed on exactly
+      # those, so an app-only commit reuses them.
+      - name: Compute the cache key
+        id: key
+        env:
+          KEY: >-
+            natives-${{ env.NATIVE_CACHE_EPOCH }}-engine-${{ matrix.abi }}-ndk${{ env.NDK_VERSION }}-api${{
+            env.ANDROID_API }}-cargondk${{ env.CARGO_NDK_VERSION }}-${{ hashFiles('scripts/build-natives.sh',
+            'scripts/fetch-natives.sh', 'scripts/aethertun-jni.c', 'native/aether/**') }}
+        run: echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the engine from cache
+        id: cache
+        if: ${{ !inputs.rebuild_natives }}
+        uses: actions/cache/restore@v6
+        with:
+          path: app/src/main/jniLibs/${{ matrix.abi }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Set up the Android NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-ndk
+        with:
+          version: ${{ env.NDK_VERSION }}
+
+      - name: Set up Rust for ${{ matrix.triple }}
+        id: rust
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-rust-android
+        with:
+          targets: ${{ matrix.triple }}
+          cargo-ndk-version: ${{ env.CARGO_NDK_VERSION }}
+
+      - name: Fetch native sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash scripts/fetch-natives.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AETHER_REPO: CluvexStudio/Aether
+
+      # hev's tunnel core, our own JNI bridge and the Rust engine, for THIS ABI
+      # only. Whatever is vendored in the tree is what gets compiled, so this
+      # step either works or it is a real error.
+      - name: Build hev + JNI bridge + engine (${{ matrix.abi }})
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-natives.sh all
+        env:
+          AETHER_ABIS: ${{ matrix.abi }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+
+      - name: Verify and report
+        env:
+          ABI: ${{ matrix.abi }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          SCCACHE: ${{ steps.rust.outputs.sccache }}
+        run: |
+          set -euo pipefail
+          dir="app/src/main/jniLibs/${ABI}"
+          missing=()
+          for lib in libaether.so libhev-socks5-tunnel.so libaethertun.so; do
+            [ -s "${dir}/${lib}" ] || missing+=("${lib}")
+          done
+          if [ "${CACHE_HIT}" = "true" ]; then
+            how="♻️ restored from cache"
+          else
+            how="🔨 built in $(( ($(date +%s) - T0) / 60 ))m $(( ($(date +%s) - T0) % 60 ))s"
+          fi
+          {
+            echo "### 🦀 Engine · \`${ABI}\` · ${how}"
+            echo
+            echo "| Library | Size |"
+            echo "|---|---:|"
+            find "${dir}" -maxdepth 1 -name '*.so' -printf '%f\t%s\n' 2>/dev/null | sort \
+              | while IFS=$'\t' read -r name size; do
+                  echo "| \`${name}\` | $(numfmt --to=iec-i --suffix=B --format='%.1f' "${size}") |"
+                done
+            if [ "${SCCACHE}" = "true" ] && command -v sccache >/dev/null 2>&1; then
+              echo
+              echo "<details><summary>sccache statistics</summary>"
+              echo
+              echo '```'
+              sccache --show-stats 2>/dev/null || true
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Engine ${ABI}::missing ${missing[*]}"
+            exit 1
+          fi
+          echo "Engine payload complete for ${ABI}."
+
+      # Reached only when every step above succeeded, i.e. the payload was
+      # built in this run and verified complete (rule 3). A save against an
+      # existing key is a logged no-op, not a failure.
+      - name: Save the engine for later runs
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: app/src/main/jniLibs/${{ matrix.abi }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Upload the engine
+        uses: actions/upload-artifact@v7
+        with:
+          name: natives-engine-${{ matrix.abi }}
+          path: app/src/main/jniLibs
+          if-no-files-found: error
+          retention-days: 7
+
+  # ====================================================== GO OVERLAY CORES ==
+  # Psiphon and the three pluggable transports: Go + cgo through the NDK, one
+  # job per (component, ABI). Additive by design (rule 5): the build step is
+  # continue-on-error and the app detects a missing binary and names it, so a
+  # failure here costs that component for one branch build, never the APK.
+  # On a `v*` tag the verify step turns a missing binary into a hard failure.
+  go-cores:
+    name: 🐹 ${{ matrix.label }} · ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [psiphon, transports]
+        abi: [arm64-v8a, armeabi-v7a]
+        include:
+          - core: psiphon
+            label: Psiphon
+            script: scripts/build-overlay-cores.sh
+            target: psiphon
+            libs: libpsiphon.so
+          - core: transports
+            label: Bridges
+            script: scripts/build-pt-transports.sh
+            target: all
+            libs: liblyrebird.so libsnowflake.so libwebtunnel.so
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start the clock
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      # Keyed on the one script that pins and builds this component. The engine
+      # sources are deliberately NOT part of it any more: they never reached
+      # these binaries, but used to invalidate them on every engine commit.
+      - name: Compute the cache key
+        id: key
+        env:
+          KEY: >-
+            natives-${{ env.NATIVE_CACHE_EPOCH }}-${{ matrix.core }}-${{ matrix.abi }}-ndk${{
+            env.NDK_VERSION }}-api${{ env.ANDROID_API }}-go${{ env.GO_VERSION }}-${{ hashFiles(matrix.script) }}
+        run: echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore from cache
+        id: cache
+        if: ${{ !inputs.rebuild_natives }}
+        uses: actions/cache/restore@v6
+        with:
+          path: app/src/main/jniLibs/${{ matrix.abi }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Set up the Android NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-ndk
+        with:
+          version: ${{ env.NDK_VERSION }}
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # No go.sum in this repo to key on; the cache below is keyed per
+          # component instead.
+          cache: false
+
+      # Go's module + build cache. Upstream sources are cloned fresh, but most
+      # of the dependency graph (pion, utls, quic-go, ...) is unchanged from one
+      # build to the next, so a warm cache turns minutes of compiling into a
+      # link.
+      - name: Cache Go modules and build output
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ matrix.core }}-${{ matrix.abi }}-go${{ env.GO_VERSION }}-${{ hashFiles(matrix.script) }}
+          restore-keys: |
+            go-${{ matrix.core }}-${{ matrix.abi }}-go${{ env.GO_VERSION }}-
+
+      - name: Build ${{ matrix.label }} (${{ matrix.abi }})
+        id: build
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: bash "${SCRIPT}" "${TARGET}"
+        env:
+          SCRIPT: ${{ matrix.script }}
+          TARGET: ${{ matrix.target }}
+          AETHER_ABIS: ${{ matrix.abi }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+          GOTOOLCHAIN: auto
+
+      - name: Verify and report
+        id: verify
+        env:
+          ABI: ${{ matrix.abi }}
+          LABEL: ${{ matrix.label }}
+          LIBS: ${{ matrix.libs }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          set -euo pipefail
+          dir="app/src/main/jniLibs/${ABI}"
+          complete=true
+          if [ "${CACHE_HIT}" = "true" ]; then
+            how="♻️ restored from cache"
+          elif [ "${BUILD_OUTCOME}" = "success" ]; then
+            how="🔨 built in $(( ($(date +%s) - T0) / 60 ))m $(( ($(date +%s) - T0) % 60 ))s"
+          else
+            how="💥 build step ${BUILD_OUTCOME:-skipped}"
+          fi
+          {
+            echo "### 🐹 ${LABEL} · \`${ABI}\` · ${how}"
+            echo
+            echo "| Binary | Status |"
+            echo "|---|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for lib in ${LIBS}; do
+            if [ -s "${dir}/${lib}" ]; then
+              echo "| \`${lib}\` | ✅ $(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c%s "${dir}/${lib}")") |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              complete=false
+              echo "| \`${lib}\` | ⚠️ **missing** |" >> "$GITHUB_STEP_SUMMARY"
+              if [ "${IS_RELEASE_TAG}" = "true" ]; then
+                echo "::error title=${LABEL} ${ABI}::${lib} is missing - a tagged release must not ship without it. Fix the build step above and re-tag."
+              else
+                echo "::warning title=${LABEL} ${ABI}::${lib} is missing - the features that need it are unavailable in this build"
+              fi
+            fi
+          done
+          echo "complete=${complete}" >> "$GITHUB_OUTPUT"
+          if [ "${complete}" != true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            exit 1
+          fi
+
+      - name: Save for later runs
+        if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' && steps.verify.outputs.complete == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: app/src/main/jniLibs/${{ matrix.abi }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: natives-${{ matrix.core }}-${{ matrix.abi }}
+          path: app/src/main/jniLibs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ============================================================== TOR CORE ==
+  # tor is the Tor Project / Guardian Project's signed AAR plus tor's geoip
+  # database; nothing is compiled, so the NDK is only needed for llvm-readelf
+  # and the runner's preinstalled one is good enough. Same additive rules as
+  # the Go cores.
+  tor:
+    name: 🧅 Tor core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compute the cache key
+        id: key
+        env:
+          KEY: natives-${{ env.NATIVE_CACHE_EPOCH }}-tor-${{ hashFiles('scripts/build-overlay-cores.sh') }}
+        run: echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore from cache
+        id: cache
+        if: ${{ !inputs.rebuild_natives }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            app/src/main/jniLibs
+            app/src/main/assets/tor
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Locate an NDK (llvm-readelf only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-ndk
+        with:
+          version: ${{ env.NDK_VERSION }}
+          allow-preinstalled: "true"
+
+      - name: Fetch and verify tor
+        id: build
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: bash scripts/build-overlay-cores.sh tor
+        env:
+          ANDROID_API: ${{ env.ANDROID_API }}
+
+      - name: Verify and report
+        id: verify
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          set -euo pipefail
+          complete=true
+          if [ "${CACHE_HIT}" = "true" ]; then how="♻️ restored from cache"
+          elif [ "${BUILD_OUTCOME}" = "success" ]; then how="📥 fetched"
+          else how="💥 fetch step ${BUILD_OUTCOME:-skipped}"; fi
+          {
+            echo "### 🧅 Tor · ${how}"
+            echo
+            echo "| File | Status |"
+            echo "|---|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in jniLibs/arm64-v8a/libtor.so jniLibs/armeabi-v7a/libtor.so; do
+            if [ -s "app/src/main/${f}" ]; then
+              echo "| \`${f}\` | ✅ $(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c%s "app/src/main/${f}")") |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              complete=false
+              echo "| \`${f}\` | ⚠️ **missing** |" >> "$GITHUB_STEP_SUMMARY"
+              if [ "${IS_RELEASE_TAG}" = "true" ]; then
+                echo "::error title=Tor::${f} is missing - a tagged release must not ship without it"
+              else
+                echo "::warning title=Tor::${f} is missing - the Tor chain modes are unavailable in this build"
+              fi
+            fi
+          done
+          # geoip only powers exit-country selection; optional even on a tag.
+          for f in assets/tor/geoip assets/tor/geoip6; do
+            if [ -s "app/src/main/${f}" ]; then
+              echo "| \`${f}\` | ✅ $(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c%s "app/src/main/${f}")") |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`${f}\` | ➖ absent (exit-country selection off) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo "complete=${complete}" >> "$GITHUB_OUTPUT"
+          if [ "${complete}" != true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            exit 1
+          fi
+
+      - name: Save for later runs
+        if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' && steps.verify.outputs.complete == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            app/src/main/jniLibs
+            app/src/main/assets/tor
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Upload tor
+        uses: actions/upload-artifact@v7
+        with:
+          name: natives-tor
+          path: app/src/main/jniLibs
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload tor assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: tor-assets
+          path: app/src/main/assets/tor
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ============================================================ UNIT TESTS ==
+  # JVM unit tests need no native binary, so they no longer wait ~15 minutes
+  # for the native jobs: they start at t=0, next to them.
+  tests:
+    name: 🧪 Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the Gradle environment
+        uses: ./.github/actions/setup-gradle-env
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # ANDROID_NDK_HOME is blanked ON PURPOSE. The runner image exports one,
+      # and app/build.gradle.kts' buildPtTransports task (a preBuild
+      # dependency) would then cross-compile all three pluggable transports
+      # for both ABIs just to run JVM tests. Without an NDK it logs a warning
+      # and moves on, which is the right trade for a test-only job.
+      - name: Run unit tests
+        run: gradle :app:testReleaseUnitTest --stacktrace
+        env:
+          ANDROID_NDK_HOME: ""
+          ANDROID_NDK_ROOT: ""
+
+      - name: Summarise test results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, os, xml.etree.ElementTree as ET
+          files = glob.glob("app/build/test-results/**/*.xml", recursive=True)
+          total = fail = err = skip = 0
+          secs = 0.0
+          failures = []
+          for f in files:
+              try:
+                  root = ET.parse(f).getroot()
+              except ET.ParseError:
+                  continue
+              suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+              for s in suites:
+                  total += int(s.get("tests", 0)); fail += int(s.get("failures", 0))
+                  err += int(s.get("errors", 0)); skip += int(s.get("skipped", 0))
+                  secs += float(s.get("time", 0) or 0)
+                  for c in s.findall("testcase"):
+                      bad = c.find("failure")
+                      if bad is None:
+                          bad = c.find("error")
+                      if bad is not None:
+                          msg = (bad.get("message") or "").strip().splitlines()
+                          failures.append((c.get("classname", "").split(".")[-1], c.get("name", ""),
+                                           (msg[0] if msg else "")[:160].replace("|", "\\|")))
+          passed = total - fail - err - skip
+          icon = "✅" if files and not (fail or err) else ("❌" if files else "⚠️")
+          out = [f"### 🧪 Unit tests {icon}", ""]
+          if not files:
+              out.append("No test results were produced - the build failed before the tests ran.")
+          else:
+              out += ["| ✅ Passed | ❌ Failed | 💥 Errors | ⏭️ Skipped | ⏱️ Time |",
+                      "|---:|---:|---:|---:|---:|",
+                      f"| {passed} | {fail} | {err} | {skip} | {secs:.1f}s |"]
+              if failures:
+                  out += ["", "| Class | Test | Message |", "|---|---|---|"]
+                  out += [f"| `{c}` | `{n}` | {m} |" for c, n, m in failures[:50]]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(out) + "\n")
+          PY
+
+      - name: Upload the unit test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report-${{ github.run_number }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ========================================================== RELEASE APKS ==
+  app:
+    name: 📦 Release APKs
+    needs: [engine, go-cores, tor]
+    # The overlay cores are additive, so on a branch the APK is assembled as
+    # long as the mandatory engine is there. On a `v*` tag every native job
+    # must have succeeded (rule 7).
+    if: >-
+      !cancelled() && needs.engine.result == 'success' &&
+      (!startsWith(github.ref, 'refs/tags/v') ||
+       (needs.go-cores.result == 'success' && needs.tor.result == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.collect.outputs.version }}
+      apk-table: ${{ steps.collect.outputs.apk-table }}
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the Gradle environment
+        uses: ./.github/actions/setup-gradle-env
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # One download for every native job's output: engine, Psiphon,
+      # transports and tor for both ABIs merge into a single jniLibs tree.
+      - name: Download native cores
+        uses: actions/download-artifact@v8
+        with:
+          pattern: natives-*
+          merge-multiple: true
+          path: app/src/main/jniLibs
+
+      # tor's geoip database. Optional by design: a build without it is a
+      # valid build with fewer chain features.
+      - name: Download tor assets
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: tor-assets
+          path: app/src/main/assets/tor
+
+      # Written HERE, in the job that assembles the APK, so no cache can ever
+      # skip it. OPTIONAL: PsiphonCore carries its own config (docs/CHAINING.md);
+      # this only overrides it for a deployment with its own network-issued ids.
+      - name: Bundle the Psiphon client config
+        env:
+          PSIPHON_CONFIG_B64: ${{ secrets.PSIPHON_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PSIPHON_CONFIG_B64:-}" ]; then
+            echo "::notice title=Psiphon::No PSIPHON_CONFIG_B64 secret - Psiphon will use its built-in client config."
+            exit 0
+          fi
+          mkdir -p app/src/main/assets
+          printf '%s' "${PSIPHON_CONFIG_B64}" | base64 -d > app/src/main/assets/psiphon.config
+          # A mis-pasted secret must fail the build, not ship a config the core
+          # will refuse three minutes into a connect attempt.
+          python3 -c "import json;json.load(open('app/src/main/assets/psiphon.config'))" \
+            || { echo "::error title=Psiphon::PSIPHON_CONFIG_B64 did not decode to valid JSON"; exit 1; }
+          echo "Bundled a Psiphon client config ($(stat -c%s app/src/main/assets/psiphon.config) bytes)."
+
+      # Upstream source contains no servers: without this list the core has
+      # nowhere to start dialling. Same placement reasoning as the config.
+      # Rule 7: a warning on a branch, fatal on a `v*` tag.
+      - name: Bundle the Psiphon bootstrap server list
+        env:
+          PSIPHON_SERVER_LIST_URL: ${{ secrets.PSIPHON_SERVER_LIST_URL }}
+          PSIPHON_SERVER_LIST_B64: ${{ secrets.PSIPHON_SERVER_LIST_B64 }}
+        run: |
+          set -uo pipefail
+          if bash scripts/fetch-psiphon-serverlist.sh; then
+            echo "- 🗺️ Psiphon bootstrap server list: ✅ present ($(stat -c%s app/src/main/assets/psiphon/server_entries.txt) bytes)" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error title=Release gate::no Psiphon bootstrap server list - a tagged release must not ship a Psiphon mode that cannot connect"
+            exit 1
+          fi
+          echo "::warning title=Psiphon::no bootstrap server list; the Psiphon chain modes will be unavailable in this build"
+          echo "- 🗺️ Psiphon bootstrap server list: ⚠️ **missing** - Psiphon modes unavailable" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # Fail in five seconds instead of six minutes, with an ABI x library
+      # table in the summary instead of a log to dig through.
+      - name: Check the native payload
+        run: bash .github/scripts/native-payload.sh app/src/main/jniLibs
+
+      # Removes files older versions shipped and hard-fails on any stale
+      # string reference. Read-only against the repository.
+      - name: Purge stale sources from older versions
+        run: bash scripts/purge-stale-sources.sh
+
+      # SIGNING. Always the same certificate, because Android only installs an
+      # update when the old and the new APK share a signer:
+      #   1. Repository Secrets (real distribution), or
+      #   2. .github/ci-keystore.jks.b64, the key every release so far used.
+      # There is deliberately no third option: a build that invents a
+      # certificate produces an APK existing users cannot update to. The
+      # passwords never touch $GITHUB_ENV; only the mode and the path leave
+      # this step.
+      - name: Prepare the signing keystore
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "Signing with the release keystore from repository Secrets."
+            printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            test -s "${RUNNER_TEMP}/release.keystore" \
+              || { echo "::error title=Signing::KEYSTORE_BASE64 decoded to an empty file"; exit 1; }
+            {
+              echo "mode=release"
+              echo "keystore_path=${RUNNER_TEMP}/release.keystore"
+            } >> "$GITHUB_OUTPUT"
+            echo "- 🔐 Signing: release keystore (repository Secrets)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -f .github/ci-keystore.jks.b64 ]; then
+            echo "::warning title=Signing::No signing Secrets set - using the CI keystore committed to this repo. It guarantees updatability, not authenticity. Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD for real distribution."
+            {
+              echo "mode=ci"
+              echo "keystore_path="
+            } >> "$GITHUB_OUTPUT"
+            echo "- 🔐 Signing: CI keystore (public - updatability, not authenticity)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error title=Signing::No signing material found. Add the KEYSTORE_* Secrets, or restore .github/ci-keystore.jks.b64 (the key that signed every previous release). Minting a new key would produce an APK existing users could not install as an update."
+          exit 1
+
+      # The credentials are scoped to this one step: app/build.gradle.kts reads
+      # them with System.getenv and this invocation starts the daemon. Unit
+      # tests run in their own job, in parallel, so this is packaging only.
+      # AETHER_REQUIRE_PT makes Gradle refuse a release without the pluggable
+      # transports, as app/build.gradle.kts asks a release pipeline to do.
+      - name: Assemble release APKs
+        env:
+          KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          AETHER_REQUIRE_PT: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+        run: gradle :app:assembleRelease --stacktrace
+
+      # PLAY-PROTECT + OVER-INSTALL SAFEGUARD. Never publish an APK that is
+      # unsigned, debug-signed, or signed by a different certificate than the
+      # previous release: Android rejects such an update outright
+      # (INSTALL_FAILED_UPDATE_INCOMPATIBLE) and users would lose their settings.
+      - name: Verify the release signature
+        env:
+          AETHER_SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Locate apksigner properly: an empty build-tools glob once turned
+          # the path into "." and killed this gate on "./apksigner: not found".
+          APKSIGNER=""
+          for d in $(printf '%s\n' "${ANDROID_SDK_ROOT}"/build-tools/*/ | sort -Vr); do
+            if [ -x "${d}apksigner" ]; then APKSIGNER="${d}apksigner"; break; fi
+          done
+          [ -n "$APKSIGNER" ] || APKSIGNER="$(command -v apksigner || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error title=Signature::apksigner not found - the release signature cannot be verified, so this build is not publishable."
+            exit 1
+          fi
+          echo "Using ${APKSIGNER}"
+          case "${AETHER_SIGNING_MODE:-ci}" in
+            release) PIN=".github/expected-signer.txt" ;;
+            *)       PIN=".github/expected-signer-ci.txt" ;;
+          esac
+          apks=(app/build/outputs/apk/release/*.apk)
+          [ "${#apks[@]}" -gt 0 ] || { echo "::error title=Signature::no release APKs to verify"; exit 1; }
+          for apk in "${apks[@]}"; do
+            "$APKSIGNER" verify --verbose --print-certs "$apk" > /tmp/sig.txt
+            grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/sig.txt \
+              || { echo "::error title=Signature::$apk has no APK Signature Scheme v2 signature"; exit 1; }
+            if grep -qi "CN=Android Debug" /tmp/sig.txt; then
+              echo "::error title=Signature::$apk is debug-signed - refusing to publish"; exit 1
+            fi
+            # An empty fingerprint must never count as a match, or the whole
+            # over-install guarantee silently becomes a no-op.
+            SHA="$(tr -d '\r' < /tmp/sig.txt \
+              | sed -n 's/.*SHA-256 digest:[[:space:]]*\([0-9a-fA-F]\{64\}\).*/\1/p' \
+              | head -n1 | tr 'A-F' 'a-f')"
+            if [ -z "$SHA" ]; then
+              SHA="$(keytool -printcert -jarfile "$apk" 2>/dev/null | tr -d '\r' \
+                | sed -n 's/.*SHA-\?256:[[:space:]]*\([0-9A-Fa-f:]\{95,\}\).*/\1/p' \
+                | head -n1 | tr -d ':' | tr 'A-F' 'a-f')"
+            fi
+            printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{64}$' \
+              || { echo "::error title=Signature::could not read the signer fingerprint of $apk"; sed -n '1,40p' /tmp/sig.txt; exit 1; }
+            if grep -Eq '^[0-9a-fA-F]{64}$' "$PIN" 2>/dev/null; then
+              EXPECTED="$(grep -Eo '^[0-9a-fA-F]{64}$' "$PIN" | tr 'A-F' 'a-f' | head -n1)"
+              if [ "$EXPECTED" != "$SHA" ]; then
+                echo "::error title=Signature::signer certificate changed - expected ${EXPECTED}, got ${SHA}. Existing users could NOT install this build as an update."
+                exit 1
+              fi
+            else
+              echo "::warning title=Signature::no fingerprint pinned in ${PIN}; this build's signer is ${SHA}. Commit it to ${PIN} to lock updatability in place."
+              echo "- ⚠️ signer not pinned in \`${PIN}\` - this build's signer is \`${SHA}\`" \
+                >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "OK  $(basename "$apk")  signer ${SHA}"
+          done
+          echo "- ✍️ Signer: \`${SHA:0:16}…\` (v2 + v3, pinned against \`${PIN}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The source tree was checked before Gradle ran; this checks what Gradle
+      # actually PACKAGED, including anything its own tasks added or dropped.
+      - name: Verify native libraries inside the APKs
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          optional_missing=false
+          for apk in app/build/outputs/apk/release/*.apk; do
+            entries="$(unzip -Z1 "$apk")"
+            mapfile -t abis < <(printf '%s\n' "$entries" | sed -n 's#^lib/\([^/]*\)/libaether\.so$#\1#p')
+            [ "${#abis[@]}" -gt 0 ] || { echo "::error title=APK payload::no libaether.so in $apk"; exit 1; }
+            for abi in "${abis[@]}"; do
+              for lib in libhev-socks5-tunnel.so libaethertun.so; do
+                printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}" \
+                  || { echo "::error title=APK payload::$(basename "$apk") lacks ${lib} for ${abi}"; exit 1; }
+              done
+              for lib in libpsiphon.so libtor.so liblyrebird.so libsnowflake.so libwebtunnel.so; do
+                if ! printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}"; then
+                  optional_missing=true
+                  echo "::warning title=APK payload::$(basename "$apk") has no ${lib} for ${abi}"
+                fi
+              done
+            done
+            # Psiphon's bootstrap list travels as an ASSET, so it needs its own
+            # check: libpsiphon.so without it cannot establish a first tunnel.
+            if ! printf '%s\n' "$entries" | grep -qx 'assets/psiphon/server_entries.txt'; then
+              optional_missing=true
+              echo "::warning title=APK payload::$(basename "$apk") has no Psiphon bootstrap server list"
+            fi
+            echo "OK  $(basename "$apk")  mandatory cores present for ${abis[*]}"
+          done
+          if [ "${optional_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
+            echo "::error title=Release gate::a tagged release must not ship an APK without the chain cores, the pluggable transports and the Psiphon server list"
+            exit 1
+          fi
+
+      # The version comes from AGP's own output metadata, never from grepping
+      # build.gradle.kts. Also produces SHA256SUMS.txt and the download table
+      # the summary, the PR comment and the release notes all reuse.
+      - name: Collect, rename and checksum APKs
+        id: collect
+        run: |
+          set -euo pipefail
+          DIR="app/build/outputs/apk/release"
+          META="${DIR}/output-metadata.json"
+          [ -f "$META" ] || { echo "::error title=Collect::${META} not found"; exit 1; }
+          VERSION="$(jq -r '.elements[0].versionName' "$META")"
+          [ -n "$VERSION" ] && [ "$VERSION" != "null" ] \
+            || { echo "::error title=Collect::could not read versionName from ${META}"; exit 1; }
+          mkdir -p artifacts
+          # An element with no filters is the universal APK. `.value` is what
+          # AGP writes today and `.identifier` what it used to write.
+          jq -r '.elements[]
+                 | [ ( ((.filters // []) | map(.value // .identifier) | map(select(. != null)) | join("-"))
+                       | if . == "" then "universal" else . end ),
+                     .outputFile ]
+                 | @tsv' "$META" \
+          | while IFS=$'\t' read -r abi file; do
+              cp "${DIR}/${file}" "artifacts/Aether-${VERSION}-${abi}.apk"
+            done
+          expected="$(jq -r '.elements | length' "$META")"
+          actual="$(find artifacts -name '*.apk' | wc -l)"
+          [ "$expected" -eq "$actual" ] \
+            || { echo "::error title=Collect::${META} lists ${expected} outputs but ${actual} APKs were collected"; exit 1; }
+          ( cd artifacts && sha256sum -- *.apk > SHA256SUMS.txt )
+
+          table="${RUNNER_TEMP}/apk-table.md"
+          {
+            echo "| 📱 APK | 🧬 ABI | 📦 Size | 🔑 SHA-256 |"
+            echo "|---|---|---:|---|"
+            while read -r sum name; do
+              abi="${name#Aether-"${VERSION}"-}"; abi="${abi%.apk}"
+              case "${abi}" in
+                arm64-v8a)   hint="${abi} · most phones" ;;
+                armeabi-v7a) hint="${abi} · older 32-bit" ;;
+                universal)   hint="universal · any device" ;;
+                *)           hint="${abi}" ;;
+              esac
+              size="$(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c%s "artifacts/${name}")")"
+              echo "| \`${name}\` | ${hint} | ${size} | \`${sum:0:16}…\` |"
+            done < artifacts/SHA256SUMS.txt
+          } > "${table}"
+
+          {
+            echo "version=${VERSION}"
+            echo "apk-table<<APK_TABLE_EOF"
+            cat "${table}"
+            echo "APK_TABLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## 📦 Aether v${VERSION}"
+            echo
+            cat "${table}"
+            echo
+            echo "<details><summary>SHA256SUMS.txt</summary>"
+            echo
+            echo '```'
+            cat artifacts/SHA256SUMS.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APKs
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: aether-${{ steps.collect.outputs.version }}-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: error
+
+  # =============================================================== PUBLISH ==
+  release:
+    name: 🚀 Publish release
+    needs: [app, tests]
+    # Tags publish a real release; pushes to the DEFAULT branch a prerelease;
+    # nothing else publishes at all. `!cancelled()` plus explicit results,
+    # rather than the implicit success(), so an additive core that was allowed
+    # to go missing on a branch (rule 5) does not silently stop the prerelease.
+    if: >-
+      !cancelled() &&
+      needs.app.result == 'success' && needs.tests.result == 'success' &&
+      github.event_name != 'pull_request' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/release-notes.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download APKs
+        uses: actions/download-artifact@v8
+        with:
+          name: aether-${{ needs.app.outputs.version }}-${{ github.run_number }}
+          path: artifacts
+
+      # The release action does not fail on unmatched files by default, so an
+      # empty download once published an EMPTY release marked latest.
+      - name: Confirm there is something to publish
+        run: |
+          set -euo pipefail
+          count="$(find artifacts -name '*.apk' | wc -l)"
+          [ "$count" -gt 0 ] \
+            || { echo "::error title=Publish::no APKs were downloaded - refusing to publish an empty release"; exit 1; }
+          [ -s artifacts/SHA256SUMS.txt ] \
+            || { echo "::error title=Publish::SHA256SUMS.txt is missing"; exit 1; }
+          echo "Publishing ${count} APK(s)."
+
+      - name: Compose the release notes
+        env:
+          APK_TABLE: ${{ needs.app.outputs.apk-table }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            cat .github/release-notes.md
+            echo
+            echo "---"
+            echo
+            echo "## 📲 Downloads"
+            echo
+            echo "**Not sure which one?** \`arm64-v8a\` fits almost every phone made in the last several years. \`universal\` runs on any device but is the biggest download."
+            echo
+            printf '%s\n' "${APK_TABLE}"
+            echo
+            echo "Verify a download with \`sha256sum -c SHA256SUMS.txt\` (full hashes are in the attached file)."
+            echo
+            echo "<sub>Built by [this workflow run](${RUN_URL}) from \`${GITHUB_SHA:0:7}\`.</sub>"
+          } > "${RUNNER_TEMP}/release-body.md"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', needs.app.outputs.version, github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Aether {0}', github.ref_name) || format('Aether v{0} · build {1}', needs.app.outputs.version, github.run_number) }}
+          files: |
+            artifacts/*.apk
+            artifacts/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          body_path: ${{ runner.temp }}/release-body.md
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          make_latest: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+  # ============================================================ PR REPORT ==
+  # One sticky comment per pull request, updated in place on every push: what
+  # passed, what is missing, and a one-click download of the APKs. Skipped for
+  # PRs from forks, whose token cannot comment.
+  report:
+    name: 💬 PR report
+    needs: [lint, engine, go-cores, tor, tests, app]
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post or update the build report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ needs.app.outputs.version }}
+          ARTIFACT_URL: ${{ needs.app.outputs.artifact-url }}
+          APK_TABLE: ${{ needs.app.outputs.apk-table }}
+          R_LINT: ${{ needs.lint.result }}
+          R_ENGINE: ${{ needs.engine.result }}
+          R_GO: ${{ needs.go-cores.result }}
+          R_TOR: ${{ needs.tor.result }}
+          R_TESTS: ${{ needs.tests.result }}
+          R_APP: ${{ needs.app.result }}
+        run: |
+          set -euo pipefail
+          icon() {
+            case "$1" in
+              success)   echo "✅ passed" ;;
+              failure)   echo "❌ failed" ;;
+              cancelled) echo "⏹️ cancelled" ;;
+              skipped)   echo "⏭️ skipped" ;;
+              *)         echo "❔ $1" ;;
+            esac
+          }
+          marker='<!-- aether-build-report -->'
+          body="$(mktemp)"
+          {
+            echo "${marker}"
+            if [ "${R_APP}" = success ] && [ "${R_TESTS}" = success ]; then
+              echo "## ✅ Aether v${VERSION} is built and ready to install"
+            else
+              echo "## ❌ This build needs attention"
+            fi
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| 🦀 Engine (hev + bridge + Rust) | $(icon "${R_ENGINE}") |"
+            echo "| 🐹 Psiphon + pluggable transports | $(icon "${R_GO}") |"
+            echo "| 🧅 Tor core | $(icon "${R_TOR}") |"
+            echo "| 🧪 Unit tests | $(icon "${R_TESTS}") |"
+            echo "| 📦 Signed APKs | $(icon "${R_APP}") |"
+            echo "| 🧹 Lint | $(icon "${R_LINT}") |"
+            echo
+            if [ "${R_APP}" = success ] && [ -n "${ARTIFACT_URL}" ]; then
+              echo "### 📲 Try it on a device"
+              echo
+              echo "**[⬇️ Download the APKs](${ARTIFACT_URL})** (zip, kept 90 days). Signed with the same certificate as the releases, so it installs as an update."
+              echo
+              printf '%s\n' "${APK_TABLE}"
+              echo
+            fi
+            echo "Optional cores that were missing show up as warnings in the [run summary](${RUN_URL})."
+            echo
+            echo "<sub>🔁 Updated for ${HEAD_SHA:0:7} · $(date -u '+%Y-%m-%d %H:%M UTC') · [full run](${RUN_URL})</sub>"
+          } > "${body}"
+
+          existing="$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- aether-build-report -->")) | .id' | tail -n1)"
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -F body=@"${body}" > /dev/null
+            echo "Updated the build report comment."
+          else
+            gh api -X POST "repos/${REPO}/issues/${PR}/comments" -F body=@"${body}" > /dev/null
+            echo "Posted a build report comment."
+          fi
+
+  # ================================================================= GATE ==
+  # A single, stable check to mark as required in branch protection, instead
+  # of a list of matrix legs that changes whenever the matrix does.
+  gate:
+    name: ✅ CI gate
+    needs: [engine, go-cores, tor, tests, app]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate
+        env:
+          R_ENGINE: ${{ needs.engine.result }}
+          R_GO: ${{ needs.go-cores.result }}
+          R_TOR: ${{ needs.tor.result }}
+          R_TESTS: ${{ needs.tests.result }}
+          R_APP: ${{ needs.app.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          {
+            echo "### ✅ CI gate"
+            echo
+            echo "| Job | Result | Required |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          check() { # name result required(yes|tag)
+            local req="$3" ok="✅"
+            if [ "$2" != success ]; then
+              if [ "${req}" = yes ] || { [ "${req}" = tag ] && [ "${IS_RELEASE_TAG}" = true ]; }; then
+                ok="❌"; fail=1
+              else
+                ok="⚠️"
+              fi
+            fi
+            echo "| $1 | ${ok} $2 | ${req/tag/on tags} |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          check "🦀 Engine"   "${R_ENGINE}" yes
+          check "🧪 Tests"    "${R_TESTS}"  yes
+          check "📦 APKs"     "${R_APP}"    yes
+          check "🐹 Go cores" "${R_GO}"     tag
+          check "🧅 Tor"      "${R_TOR}"    tag
+          exit "${fail}"

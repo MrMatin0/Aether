@@ -16,6 +16,9 @@
 #
 # Requires: ANDROID_NDK_HOME, rustup android targets, cargo-ndk.
 # Run scripts/fetch-natives.sh first.
+#
+# Optional: AETHER_ABIS="arm64-v8a" (space-separated) builds only those ABIs.
+# CI uses it to compile each ABI on its own runner, in parallel.
 set -euo pipefail
 
 TARGET="${1:-all}"
@@ -28,7 +31,17 @@ AETHER_SRC="${NATIVE_DIR}/aether"
 JNI_DIR="${PROJECT_DIR}/app/src/main/jniLibs"
 
 API="${ANDROID_API:-26}"
-ABIS=("arm64-v8a" "armeabi-v7a")
+# Both ABIs by default. CI's per-ABI matrix narrows this to one with
+# AETHER_ABIS, so the two ABIs compile on two runners at once instead of one
+# after the other. Anything but the two shipped ABIs is refused up front.
+read -r -a ABIS <<< "${AETHER_ABIS:-arm64-v8a armeabi-v7a}"
+for _abi in "${ABIS[@]}"; do
+  case "${_abi}" in
+    arm64-v8a|armeabi-v7a) ;;
+    *) echo "ERROR: unsupported ABI '${_abi}' in AETHER_ABIS (use arm64-v8a and/or armeabi-v7a)." >&2; exit 2 ;;
+  esac
+done
+unset _abi
 
 if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME}" ]; then
   echo "ERROR: ANDROID_NDK_HOME is not set or does not exist." >&2
@@ -310,8 +323,13 @@ build_aether() {
     echo "    installed libaether.so for ${abi}"
   }
 
-  build_aether_abi "arm64-v8a"   "aarch64-linux-android"
-  build_aether_abi "armeabi-v7a" "armv7-linux-androideabi"
+  local abi
+  for abi in "${ABIS[@]}"; do
+    case "${abi}" in
+      arm64-v8a)   build_aether_abi "arm64-v8a"   "aarch64-linux-android" ;;
+      armeabi-v7a) build_aether_abi "armeabi-v7a" "armv7-linux-androideabi" ;;
+    esac
+  done
 }
 
 case "${TARGET}" in

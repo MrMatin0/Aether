@@ -1,0 +1,18 @@
+# Keeps every action pinned in .github/workflows and .github/actions current,
+# as ONE grouped pull request a month rather than a trickle of single bumps.
+# Like core-sync, it proposes; Build verifies; a human merges.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "ci"

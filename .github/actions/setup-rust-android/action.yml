@@ -1,0 +1,89 @@
+name: Set up Rust for Android
+description: >-
+  Stable Rust with the requested Android targets, a pinned cargo-ndk, a cached
+  crate registry and (optionally) sccache backed by the GitHub Actions cache,
+  so an engine change recompiles the engine instead of the whole dependency
+  graph.
+
+inputs:
+  targets:
+    description: Comma-separated rustup targets, e.g. aarch64-linux-android.
+    required: true
+  cargo-ndk-version:
+    description: Exact cargo-ndk version to install.
+    required: true
+  sccache:
+    description: Route rustc through sccache (GitHub Actions cache backend).
+    required: false
+    default: "true"
+
+outputs:
+  sccache:
+    description: '"true" when rustc is going through sccache for the rest of the job.'
+    value: ${{ steps.wrap.outputs.enabled || 'false' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install stable Rust (${{ inputs.targets }})
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.targets }}
+
+    # Only cargo-ndk is cached out of ~/.cargo/bin, never the whole directory:
+    # that also holds rustup's cargo/rustc/rustup shims, and restoring last
+    # week's shims over the toolchain just installed is a debugging session
+    # nobody needs. The pin is part of the key, so a bump installs the new one.
+    - name: Cache the crate registry and cargo-ndk
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/bin/cargo-ndk
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-v2-${{ runner.os }}-ndk${{ inputs.cargo-ndk-version }}-${{ hashFiles('native/aether/**/Cargo.lock', 'native/aether/**/Cargo.toml') }}
+        restore-keys: |
+          cargo-v2-${{ runner.os }}-ndk${{ inputs.cargo-ndk-version }}-
+
+    - name: Install cargo-ndk ${{ inputs.cargo-ndk-version }}
+      shell: bash
+      env:
+        CARGO_NDK_VERSION: ${{ inputs.cargo-ndk-version }}
+      run: |
+        set -euo pipefail
+        have="$(cargo ndk --version 2>/dev/null | awk '{print $NF}' || true)"
+        if [ "${have}" = "${CARGO_NDK_VERSION}" ]; then
+          echo "cargo-ndk ${have} restored from cache."
+          exit 0
+        fi
+        cargo install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked --force
+
+    # sccache is an accelerator, never a dependency: if the action cannot be
+    # fetched, rustc simply runs unwrapped. SCCACHE_IGNORE_SERVER_IO_ERROR makes
+    # a cache-service hiccup fall back to a local compile instead of an error.
+    - name: Install sccache
+      id: sccache
+      if: inputs.sccache == 'true'
+      continue-on-error: true
+      uses: mozilla-actions/sccache-action@v0.0.9
+
+    - name: Route rustc through sccache
+      id: wrap
+      if: inputs.sccache == 'true' && steps.sccache.outcome == 'success'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v sccache >/dev/null 2>&1; then
+          echo "::notice title=sccache::sccache is not on PATH; compiling without it."
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CARGO_INCREMENTAL=0"
+        } >> "$GITHUB_ENV"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "rustc now goes through $(sccache --version)."

@@ -1,0 +1,52 @@
+name: Set up the Gradle build environment
+description: >-
+  JDK, Android SDK and the exact Gradle version the wrapper descriptor names.
+  The repo ships no gradle-wrapper.jar, and AGP accepts only a narrow window
+  of Gradle versions, so the version is read from
+  gradle/wrapper/gradle-wrapper.properties: one source of truth, no drift.
+
+inputs:
+  java-version:
+    description: JDK major version.
+    required: true
+
+outputs:
+  gradle-version:
+    description: The Gradle version that was set up.
+    value: ${{ steps.gradle_version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK ${{ inputs.java-version }}
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+
+    - name: Set up the Android SDK
+      uses: android-actions/setup-android@v4
+      with:
+        packages: platform-tools
+
+    - name: Resolve the required Gradle version
+      id: gradle_version
+      shell: bash
+      run: |
+        set -euo pipefail
+        v="$(sed -n 's#^distributionUrl=.*gradle-\(.*\)-\(bin\|all\)\.zip#\1#p' \
+          gradle/wrapper/gradle-wrapper.properties)"
+        [ -n "$v" ] || { echo "::error title=Gradle::could not read the Gradle version from the wrapper descriptor"; exit 1; }
+        echo "Gradle ${v} (from gradle/wrapper/gradle-wrapper.properties)"
+        echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Gradle ${{ steps.gradle_version.outputs.version }}
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        gradle-version: ${{ steps.gradle_version.outputs.version }}
+        # Only the default branch writes the dependency/build cache; PRs and
+        # feature branches read it, so they cannot evict main's entries.
+        cache-read-only: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+        # The workflow writes its own summaries; Gradle's own table only earns
+        # its space when something went wrong.
+        add-job-summary: on-failure
