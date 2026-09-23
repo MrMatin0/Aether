@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy for the first-run welcome (ui/OnboardingScreen.kt), v1.5.0 redesign.
+
+  Voice: a friend explaining the app over tea, not a spec sheet. Short
+  sentences, second person, one idea per line. Every claim here must stay true:
+  the 1.2.x audit removed a "no logs" line because it was not, so the privacy
+  page talks about WHERE logs live instead.
+
+  The old onboarding_* strings in strings.xml are left in place on purpose (no
+  unrelated diff); nothing references them any more.
+-->
+<resources>
+    <string name="welcome_skip">Skip</string>
+    <string name="welcome_step">%1$d of %2$d</string>
+
+    <!-- 1. Hello -->
+    <string name="welcome_hello_eyebrow">Hey, welcome aboard</string>
+    <string name="welcome_hello_title">The internet, the way it should be.</string>
+    <string name="welcome_hello_body">Blocked sites, apps that won’t load, a VPN that drops every five minutes? Yeah, we know the feeling. Aether+ gets you through with a single tap, and if the line drops, it gets back up on its own so you don’t have to babysit it.</string>
+    <string name="welcome_hello_point_1">One tap and you’re in. No setup marathon.</string>
+    <string name="welcome_hello_point_2">No sign-up, no account, no email.</string>
+    <string name="welcome_hello_point_3">Speaks English and Persian, in dark or light.</string>
+    <string name="welcome_hello_cta">Show me how</string>
+
+    <!-- 2. Smart mode -->
+    <string name="welcome_smart_eyebrow">Smart mode</string>
+    <string name="welcome_smart_title">You don’t need to be a network nerd.</string>
+    <string name="welcome_smart_body">Smart mode looks at what your network is blocking, then picks the protocol that actually gets through: MASQUE, WireGuard or WARP×2. If it smells DPI, it switches on obfuscation by itself.</string>
+    <string name="welcome_smart_point_1">Reads your network first, then picks the route.</string>
+    <string name="welcome_smart_point_2">Anti-DPI tricks kick in only when they’re needed.</string>
+    <string name="welcome_smart_point_3">Want the wheel? Every knob is still waiting in Settings.</string>
+    <string name="welcome_smart_cta">Nice, what else?</string>
+
+    <!-- 3. Chain -->
+    <string name="welcome_chain_eyebrow">Plan B, C and D</string>
+    <string name="welcome_chain_title">Road blocked? We’ll take another one.</string>
+    <string name="welcome_chain_body">Some days WARP alone won’t cut it. Stack Aether with Psiphon and Tor: seven routes in total, picked right from the home screen. And you see the whole path live: you, the hops, the internet.</string>
+    <string name="welcome_chain_point_1">7 routes, from fast and simple to maximum stealth.</string>
+    <string name="welcome_chain_point_2">Your route and live speed, right on the home screen.</string>
+    <string name="welcome_chain_point_3">Heads up: every extra hop costs a little speed.</string>
+    <string name="welcome_chain_cta">Got it</string>
+
+    <!-- 4. Privacy and the prompts that come next -->
+    <string name="welcome_privacy_eyebrow">Your data, your call</string>
+    <string name="welcome_privacy_title">One last thing, then you’re in.</string>
+    <string name="welcome_privacy_body">Logs and session history stay on this phone, and you can wipe them any time from Diagnostics and Automation. The first time you connect, Android will ask whether to allow a VPN. That’s the system keeping you in control, so go ahead and tap OK.</string>
+    <string name="welcome_privacy_point_1">Diagnostics and history never leave your phone.</string>
+    <string name="welcome_privacy_point_2">Android asks for VPN permission just once. Tap OK.</string>
+    <string name="welcome_privacy_point_3">If we ask about notifications, say yes: that’s where your live speed shows up.</string>
+    <string name="welcome_privacy_cta">Let’s go</string>
+</resources>

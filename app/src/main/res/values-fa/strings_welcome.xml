@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- خوش‌آمدگویی اولین اجرا (نسخه ۱.۵.۰). لحن: خودمونی و کوتاه، مثل رفیقی که برنامه رو معرفی می‌کنه. -->
+<resources>
+    <string name="welcome_skip">رد شو</string>
+    <string name="welcome_step">%1$d از %2$d</string>
+
+    <!-- ۱. سلام -->
+    <string name="welcome_hello_eyebrow">سلام، خوش اومدی!</string>
+    <string name="welcome_hello_title">اینترنت، همون‌طوری که باید باشه.</string>
+    <string name="welcome_hello_body">سایت‌های فیلتر، اپ‌هایی که باز نمی‌شن، وی‌پی‌انی که هر پنج دقیقه قطع می‌شه؟ آره، می‌دونیم چی می‌کشی. Aether+ با یه ضربه از فیلتر ردت می‌کنه، و اگه وسط کار اتصال پرید، خودش دوباره وصل می‌شه تا تو درگیرش نشی.</string>
+    <string name="welcome_hello_point_1">یه ضربه و تمام؛ خبری از تنظیمات طولانی نیست.</string>
+    <string name="welcome_hello_point_2">نه ثبت‌نام، نه حساب کاربری، نه ایمیل.</string>
+    <string name="welcome_hello_point_3">فارسی و انگلیسی بلده، تم تاریک و روشن هم داره.</string>
+    <string name="welcome_hello_cta">نشونم بده چطوریه</string>
+
+    <!-- ۲. حالت هوشمند -->
+    <string name="welcome_smart_eyebrow">حالت هوشمند</string>
+    <string name="welcome_smart_title">لازم نیست متخصص شبکه باشی.</string>
+    <string name="welcome_smart_body">حالت هوشمند اول می‌بینه شبکه‌ت چی رو بسته، بعد پروتکلی رو انتخاب می‌کنه که واقعاً جواب می‌ده: MASQUE، WireGuard یا WARP×2. اگه بوی DPI بیاد، مبهم‌سازی رو هم خودش روشن می‌کنه.</string>
+    <string name="welcome_smart_point_1">اول شبکه‌ت رو می‌سنجه، بعد مسیر رو انتخاب می‌کنه.</string>
+    <string name="welcome_smart_point_2">ترفندهای ضد DPI فقط وقتی لازمه وارد عمل می‌شن.</string>
+    <string name="welcome_smart_point_3">دوست داری خودت فرمون رو بگیری؟ همه‌ی تنظیمات توی بخش تنظیمات منتظرتن.</string>
+    <string name="welcome_smart_cta">عالیه، دیگه چی؟</string>
+
+    <!-- ۳. زنجیره -->
+    <string name="welcome_chain_eyebrow">نقشه‌ی ب، پ و ت</string>
+    <string name="welcome_chain_title">راه بسته‌ست؟ از یه راه دیگه می‌ریم.</string>
+    <string name="welcome_chain_body">بعضی روزها WARP تنهایی حریف نمی‌شه. Aether رو با Psiphon و Tor ترکیب کن؛ کلاً ۷ تا مسیر داری و مستقیم از صفحه‌ی اصلی انتخابش می‌کنی. کل مسیر رو هم زنده جلوی چشمت می‌بینی: خودت، هسته‌ها، اینترنت.</string>
+    <string name="welcome_chain_point_1">۷ مسیر، از سریع و ساده تا نهایتِ پنهان‌کاری.</string>
+    <string name="welcome_chain_point_2">مسیر و سرعت لحظه‌ای رو همون صفحه‌ی اصلی می‌بینی.</string>
+    <string name="welcome_chain_point_3">حواست باشه: هر لایه‌ی اضافه یه کم از سرعت کم می‌کنه.</string>
+    <string name="welcome_chain_cta">گرفتم</string>
+
+    <!-- ۴. حریم خصوصی و اجازه‌هایی که بعدش پرسیده می‌شن -->
+    <string name="welcome_privacy_eyebrow">داده‌هات، تصمیم خودت</string>
+    <string name="welcome_privacy_title">یه نکته‌ی آخر و تمام.</string>
+    <string name="welcome_privacy_body">گزارش‌ها و تاریخچه‌ی نشست‌ها فقط روی همین گوشی می‌مونن و هر وقت خواستی از بخش عیب‌یابی و خودکارسازی پاکشون می‌کنی. اولین باری که وصل می‌شی، اندروید می‌پرسه اجازه‌ی VPN می‌دی یا نه. این یعنی کنترل دست خودته؛ خیالت راحت، «تأیید» رو بزن.</string>
+    <string name="welcome_privacy_point_1">گزارش‌ها و تاریخچه هیچ‌وقت از گوشیت بیرون نمی‌رن.</string>
+    <string name="welcome_privacy_point_2">اندروید فقط یه بار اجازه‌ی VPN می‌پرسه؛ «تأیید» رو بزن.</string>
+    <string name="welcome_privacy_point_3">اگه اجازه‌ی اعلان خواستیم، قبول کن؛ سرعت زنده همون‌جا نشون داده می‌شه.</string>
+    <string name="welcome_privacy_cta">بزن بریم!</string>
+</resources>
