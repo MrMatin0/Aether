@@ -14,8 +14,6 @@ import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
-import studio.cluvex.aether.model.EngineTor
-import studio.cluvex.aether.model.EngineTorBridges
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
@@ -103,7 +101,6 @@ class ProfileStore(private val context: Context) {
          */
         val torBridgeLines = stringPreferencesKey("torBridgeLines")
         // Added in 2.0.0 (engine v2.0.0)
-        val masqueInMasque = booleanPreferencesKey("mim")
         val mimOuter = stringPreferencesKey("mimOuter")
         val mimInner = stringPreferencesKey("mimInner")
         /**
@@ -113,15 +110,31 @@ class ProfileStore(private val context: Context) {
          */
         val quicV2 = booleanPreferencesKey("quicV2")
         val socketMark = stringPreferencesKey("socketMark")
-        val engineTor = stringPreferencesKey("engineTor")
-        val engineTorBridges = stringPreferencesKey("engineTorBridges")
-        val engineTorBridgeLines = stringPreferencesKey("engineTorBridgeLines")
-        val engineTorCountry = stringPreferencesKey("engineTorCountry")
-        val engineTorBind = intPreferencesKey("engineTorBind")
         val maxClients = intPreferencesKey("maxClients")
         val halfCloseSecs = intPreferencesKey("halfCloseSecs")
         val tcpKeepaliveSecs = intPreferencesKey("tcpKeepaliveSecs")
         val tcpConnectSecs = intPreferencesKey("tcpConnectSecs")
+
+        // ---- RETIRED keys: read once for migration, removed on save ----
+
+        /**
+         * The MASQUE-in-MASQUE switch from before it became [Protocol.MIM].
+         * Read by [profile] so MASQUE + mim=true migrates to MIM.
+         */
+        val legacyMim = booleanPreferencesKey("mim")
+
+        /**
+         * The engine's own tor (v2.0.0). The app runs one Tor - TorCore, via
+         * the chain modes - so these are never read, only deleted, so that a
+         * stale placement cannot sit in a backup or a bug report looking live.
+         */
+        val retiredEngineTor = listOf(
+            stringPreferencesKey("engineTor"),
+            stringPreferencesKey("engineTorBridges"),
+            stringPreferencesKey("engineTorBridgeLines"),
+            stringPreferencesKey("engineTorCountry"),
+        )
+        val retiredEngineTorBind = intPreferencesKey("engineTorBind")
     }
 
     /**
@@ -198,9 +211,13 @@ class ProfileStore(private val context: Context) {
             null
         }
 
+        // MIGRATION (MASQUE-in-MASQUE): it used to be a switch beside the
+        // protocol and is a protocol now. MASQUE + mim=true is read as MIM.
+        val storedProtocol = prefs[Keys.protocol]
+            ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO
+
         ConnectionProfile(
-            protocol = prefs[Keys.protocol]
-                ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO,
+            protocol = Protocol.migrateLegacyMim(storedProtocol, prefs[Keys.legacyMim]),
             // Not valueOf(): the five-mode set was retired in 1.4.6 and this
             // file still holds whatever the user picked before, so the stored
             // name is MIGRATED rather than dropped on the floor.
@@ -265,20 +282,10 @@ class ProfileStore(private val context: Context) {
             torBridgeTransport = seeded?.first ?: storedTransport,
             torBridgeLines = seeded?.second ?: storedBridgeLines ?: "",
             // ---- engine v2.0.0 ----
-            // Same reason as the enums above: fromStored() accepts the words
-            // the engine's own AETHER_TOR variable uses, so a shared config
-            // saying "chain" or "reverse" survives the round trip.
-            masqueInMasque = prefs[Keys.masqueInMasque] ?: d.masqueInMasque,
             mimOuterPeer = prefs[Keys.mimOuter] ?: "",
             mimInnerPeer = prefs[Keys.mimInner] ?: "",
             quicV2Opener = prefs[Keys.quicV2] ?: d.quicV2Opener,
             socketMark = prefs[Keys.socketMark] ?: "",
-            engineTor = EngineTor.fromStored(prefs[Keys.engineTor]) ?: d.engineTor,
-            engineTorBridges = EngineTorBridges.fromStored(prefs[Keys.engineTorBridges])
-                ?: d.engineTorBridges,
-            engineTorBridgeLines = prefs[Keys.engineTorBridgeLines] ?: "",
-            engineTorCountry = prefs[Keys.engineTorCountry] ?: "",
-            engineTorBindPort = prefs[Keys.engineTorBind] ?: 0,
             maxClients = prefs[Keys.maxClients] ?: 0,
             halfCloseSecs = prefs[Keys.halfCloseSecs] ?: 0,
             tcpKeepaliveSecs = prefs[Keys.tcpKeepaliveSecs] ?: 0,
@@ -342,20 +349,20 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.torBridgeTransport] = profile.torBridgeTransport.name
             prefs[Keys.torBridgeLines] = profile.torBridgeLines
             // ---- engine v2.0.0 ----
-            prefs[Keys.masqueInMasque] = profile.masqueInMasque
             prefs[Keys.mimOuter] = profile.mimOuterPeer
             prefs[Keys.mimInner] = profile.mimInnerPeer
             prefs[Keys.quicV2] = profile.quicV2Opener
             prefs[Keys.socketMark] = profile.socketMark
-            prefs[Keys.engineTor] = profile.engineTor.name
-            prefs[Keys.engineTorBridges] = profile.engineTorBridges.name
-            prefs[Keys.engineTorBridgeLines] = profile.engineTorBridgeLines
-            prefs[Keys.engineTorCountry] = profile.engineTorCountry
-            prefs[Keys.engineTorBind] = profile.engineTorBindPort
             prefs[Keys.maxClients] = profile.maxClients
             prefs[Keys.halfCloseSecs] = profile.halfCloseSecs
             prefs[Keys.tcpKeepaliveSecs] = profile.tcpKeepaliveSecs
             prefs[Keys.tcpConnectSecs] = profile.tcpConnectSecs
+            // Retired keys. The protocol written above already carries the
+            // MIM choice, so the old switch has nothing left to say, and the
+            // engine-Tor keys describe a Tor this app no longer runs.
+            prefs.remove(Keys.legacyMim)
+            Keys.retiredEngineTor.forEach { prefs.remove(it) }
+            prefs.remove(Keys.retiredEngineTorBind)
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which
