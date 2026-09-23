@@ -1,0 +1,192 @@
+name: Core sync
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target != ''
+  && format('🔄 Core sync · try v{0}', github.event.inputs.target)
+  || '🔄 Core sync · pinned version' }}
+
+# ---------------------------------------------------------------------------
+# Keeps the vendored Aether engine current WITHOUT putting an upstream change
+# in the path of a release: on a schedule it syncs the core, PROVES it
+# compiles, and opens a pull request. A human sees the diff and Build verifies
+# it as a normal change. (It used to run inside every build and push to the
+# branch it was building; a tag could ship an engine it never contained, two
+# builds raced each other's push, and a red build was ambiguous.)
+#
+# WHICH VERSION IS A PIN, NOT "LATEST". CORE_TARGET_PIN below is the reviewed
+# version, bumped deliberately in a pull request; the engine of a
+# censorship-circumvention client is the one input that must not move on its
+# own. A maintainer can still try any version via the dispatch input.
+#
+# WHICH TOKEN OPENS THE PULL REQUEST MATTERS. GitHub does not trigger
+# `pull_request` workflows for a PR opened with the default GITHUB_TOKEN. Set a
+# CORE_SYNC_TOKEN secret (PAT or App token, contents + pull-requests write) and
+# the PR triggers Build by itself; without it the PR body says so plainly.
+#
+# The NDK / Rust / cargo-ndk / sccache setup is the same composite action the
+# Build workflow uses, so the two can never drift apart again.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays, 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Core version to vendor, e.g. 2.0.0 (blank = the pin in this workflow)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: core-sync
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NDK_VERSION: "29.0.14206865"
+  ANDROID_API: "26"
+  CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
+  # The reviewed engine version. Bump it in a pull request, never in place.
+  CORE_TARGET_PIN: "2.0.0"
+  # Aether core 2.0.0 needs Rust 1.98. `stable` satisfies that today, but a
+  # weekly job should not rely on "today" silently: too old a toolchain shows
+  # up as a wall of E0658/E0599 from a dependency, which reads exactly like the
+  # upstream regression this job exists to catch.
+  MIN_RUST: "1.98.0"
+
+jobs:
+  sync:
+    name: 🔄 Sync and verify the engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # This job pushes, so credentials stay - but they are whichever token
+          # will also open the PR, so branch and PR share one identity.
+          token: ${{ secrets.CORE_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Sync Aether core
+        id: sync
+        run: bash scripts/sync-core.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AETHER_REPO: CluvexStudio/Aether
+          # The dispatch input wins so a maintainer can test a version without
+          # committing to it; otherwise the pin decides. Never "latest".
+          CORE_TARGET: ${{ github.event.inputs.target || env.CORE_TARGET_PIN }}
+
+      - name: Anything to do?
+        id: check
+        run: |
+          set -euo pipefail
+          if [ ! -f native/.core-sync-state ] \
+             || [ -z "$(git status --porcelain native/aether README.md README.fa.md)" ]; then
+            echo "Core already current - nothing to propose."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "### 🔄 Core sync: ✅ already current, nothing to propose" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "core=$(tr -d '[:space:]' < native/aether/CORE_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up the Android NDK
+        if: steps.check.outputs.changed == 'true'
+        uses: ./.github/actions/setup-ndk
+        with:
+          version: ${{ env.NDK_VERSION }}
+
+      - name: Set up Rust for Android
+        if: steps.check.outputs.changed == 'true'
+        uses: ./.github/actions/setup-rust-android
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+          cargo-ndk-version: ${{ env.CARGO_NDK_VERSION }}
+
+      # Fail with the real reason rather than with a dependency's error spew.
+      - name: Check the toolchain meets the core's minimum
+        if: steps.check.outputs.changed == 'true'
+        env:
+          CORE: ${{ steps.check.outputs.core }}
+        run: |
+          set -euo pipefail
+          have="$(rustc --version | awk '{print $2}')"
+          # sort -V -C: "MIN_RUST <= have" in version order, not string order
+          # (1.100.0 must beat 1.98.0).
+          if ! printf '%s\n%s\n' "${MIN_RUST}" "${have}" | sort -V -C; then
+            echo "::error title=Rust too old::Aether core ${CORE} needs Rust >= ${MIN_RUST}, runner has ${have}"
+            exit 1
+          fi
+          echo "rustc ${have} satisfies the core's ${MIN_RUST} minimum."
+
+      # The whole point of this workflow: an upstream core that does not
+      # compile never becomes a pull request, let alone a release. Upstream has
+      # broken this before (core 1.4.0: E0063 on H2TunnelConfig, E0061 on
+      # wireguard::verify_endpoint_keep_session).
+      - name: Prove the new engine compiles
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/fetch-natives.sh
+          bash scripts/build-natives.sh aether
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+
+      - name: Open a pull request
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CORE_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ secrets.CORE_SYNC_TOKEN != '' }}
+          CORE: ${{ steps.check.outputs.core }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/core-v${CORE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # --force-with-lease needs a remote-tracking ref to compare against,
+          # and checkout fetched one ref at depth 1: fetch the branch first when
+          # it exists; when it does not, the empty lease is the correct "this
+          # must not exist yet".
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+          git checkout -B "$BRANCH"
+
+          git add native/aether README.md README.fa.md
+          git commit -m "chore: upgrade Aether core to v${CORE}"
+          git push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"
+
+          if [ "${HAVE_PAT}" = "true" ]; then
+            CI_NOTE="✅ The Build workflow runs on this pull request and posts installable APKs as a comment - test the tunnel on a real link before merging."
+          else
+            CI_NOTE="⚠️ **No checks will appear on this pull request.** It was opened with the default GITHUB_TOKEN, and GitHub does not trigger \`pull_request\` workflows for those. Push any commit to the branch, or close and reopen the PR, to get Build to run - or add a CORE_SYNC_TOKEN secret so future syncs trigger it themselves."
+          fi
+
+          if gh pr view "$BRANCH" >/dev/null 2>&1; then
+            echo "A pull request for ${BRANCH} is already open; pushed the update to it."
+            echo "### 🔄 Core sync: updated the open PR for v${CORE}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Built into a variable rather than written inline: a column-0
+          # continuation line would end this YAML block scalar.
+          BODY="$(printf '%s\n\n%s\n\n%s\n' \
+            "## 🔄 Aether core → v${CORE}" \
+            "Automated engine sync from CluvexStudio/Aether. The vendored core moved to v${CORE} with this app's engine patches preserved, \`libaether.so\` was cross-compiled from this exact tree before the PR was opened, and the changelog in both READMEs was updated by \`scripts/sync-core.sh\`." \
+            "${CI_NOTE}")"
+
+          gh pr create \
+            --base "${DEFAULT_BRANCH}" \
+            --head "$BRANCH" \
+            --title "chore: upgrade Aether core to v${CORE}" \
+            --body "$BODY"
+          echo "### 🔄 Core sync: opened a PR for v${CORE}" >> "$GITHUB_STEP_SUMMARY"

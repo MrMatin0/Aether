@@ -1,0 +1,93 @@
+name: Set up the Android NDK
+description: >-
+  Puts the requested NDK on disk and exports ANDROID_NDK_HOME / ANDROID_NDK_ROOT.
+  Reuses the copy the runner image already ships whenever the version matches,
+  so the ~1 GB sdkmanager download only happens when it genuinely has to.
+
+inputs:
+  version:
+    description: Exact NDK version, e.g. 29.0.14206865.
+    required: true
+  allow-preinstalled:
+    description: >-
+      Accept whatever NDK the runner image ships when the exact version is not
+      there. Only for jobs that use the NDK as a toolbox (llvm-readelf), never
+      for a job that compiles with it: that would break reproducibility.
+    required: false
+    default: "false"
+
+outputs:
+  ndk-home:
+    description: The NDK directory that was exported.
+    value: ${{ steps.export.outputs.ndk-home }}
+  source:
+    description: Where the NDK came from (runner image or sdkmanager).
+    value: ${{ steps.locate.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: Look for the NDK on the runner image
+      id: locate
+      shell: bash
+      env:
+        NDK_VERSION: ${{ inputs.version }}
+        ALLOW_PREINSTALLED: ${{ inputs.allow-preinstalled }}
+      run: |
+        set -euo pipefail
+        sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+        if [ -n "${sdk}" ] && [ -d "${sdk}/ndk/${NDK_VERSION}" ]; then
+          echo "ndk-home=${sdk}/ndk/${NDK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "source=runner image (exact match)" >> "$GITHUB_OUTPUT"
+        elif [ "${ALLOW_PREINSTALLED}" = "true" ] && [ -d "${ANDROID_NDK_LATEST_HOME:-/nonexistent}" ]; then
+          echo "ndk-home=${ANDROID_NDK_LATEST_HOME}" >> "$GITHUB_OUTPUT"
+          echo "source=runner image ($(basename "${ANDROID_NDK_LATEST_HOME}"), toolbox use only)" >> "$GITHUB_OUTPUT"
+        else
+          echo "ndk-home=" >> "$GITHUB_OUTPUT"
+          echo "source=sdkmanager" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up the Android SDK tools
+      if: steps.locate.outputs.ndk-home == ''
+      uses: android-actions/setup-android@v4
+      with:
+        packages: platform-tools
+
+    # Accept the licences first, then assert the NDK is actually on disk:
+    # `sdkmanager "ndk;..."` on its own reports success while installing nothing
+    # when a licence is unaccepted, and the failure then surfaces four steps
+    # later as a missing clang.
+    - name: Install NDK ${{ inputs.version }}
+      id: install
+      if: steps.locate.outputs.ndk-home == ''
+      shell: bash
+      env:
+        NDK_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+        sdkmanager --install "ndk;${NDK_VERSION}" > /dev/null
+        test -d "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" \
+          || { echo "::error title=NDK::NDK ${NDK_VERSION} was not installed"; exit 1; }
+        echo "ndk-home=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Export ANDROID_NDK_HOME
+      id: export
+      shell: bash
+      env:
+        FOUND: ${{ steps.locate.outputs.ndk-home }}
+        INSTALLED: ${{ steps.install.outputs.ndk-home }}
+        SOURCE: ${{ steps.locate.outputs.source }}
+      run: |
+        set -euo pipefail
+        home="${FOUND:-${INSTALLED:-}}"
+        if [ -z "${home}" ] || [ ! -d "${home}" ]; then
+          echo "::error title=NDK::no usable NDK on this runner"
+          exit 1
+        fi
+        {
+          echo "ANDROID_NDK_HOME=${home}"
+          echo "ANDROID_NDK_ROOT=${home}"
+        } >> "$GITHUB_ENV"
+        echo "ndk-home=${home}" >> "$GITHUB_OUTPUT"
+        echo "NDK ready: ${home} (${SOURCE})"
