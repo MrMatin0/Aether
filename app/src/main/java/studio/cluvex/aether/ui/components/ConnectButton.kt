@@ -15,6 +15,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -151,6 +153,16 @@ private val ORB_GUTTER = 56.dp
  * and lifts the core's tint, so the control deforms under the finger instead of
  * only shrinking. Haptics stay at the call site, where the click actually is.
  *
+ * ENABLED. [enabled] = false is for teardown: the orb stays on screen and keeps
+ * its busy colour, but it takes no tap, does not squeeze, drops the outward
+ * "reaching" rings (nothing is being reached) and dims its words. TalkBack reads
+ * it as disabled instead of offering an action that would do nothing.
+ *
+ * FOCUS. The ripple is switched off on purpose (it fights the ring), and that
+ * also switched off the only focus indication the control had - a keyboard,
+ * D-pad or switch-access user could not see where focus was. A focused orb now
+ * draws its own focus ring on the inner edge of the tappable circle.
+ *
  * SIZE. Measured from the constraints the parent gives it and clamped between
  * [ORB_MIN] and [ORB_MAX]; the Canvas matches the tappable circle exactly, so
  * geometry and hit target can never disagree. An unbounded width degrades on
@@ -180,6 +192,7 @@ fun ConnectButton(
     modifier: Modifier = Modifier,
     detail: String? = null,
     progress: Float = 0f,
+    enabled: Boolean = true,
 ) {
     val accents = LocalAetherAccents.current
     val accent = accentFor(mode)
@@ -227,11 +240,17 @@ fun ConnectButton(
         animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
         label = "sweep",
     )
+    val content by animateFloatAsState(
+        targetValue = if (enabled) 1f else 0.6f,
+        animationSpec = tween(aetherDuration(AetherDur.Base), easing = AetherEaseOut),
+        label = "content",
+    )
 
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    val focused by interaction.collectIsFocusedAsState()
     val press by animateFloatAsState(
-        targetValue = if (pressed) 0.965f else 1f,
+        targetValue = if (pressed && enabled) 0.965f else 1f,
         animationSpec = tween(aetherDuration(AetherDur.Snap), easing = AetherEaseOut),
         label = "press",
     )
@@ -283,8 +302,11 @@ fun ConnectButton(
     }
 
     val track = MaterialTheme.colorScheme.outlineVariant
+    val focusTone = MaterialTheme.colorScheme.onSurface
     val cardTone = accents.card
     val showComet = !reduced && (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED)
+    // Outward rings mean "reaching". A teardown is not reaching for anything.
+    val showPulse = !reduced && enabled && mode == ButtonMode.BUSY
 
     BoxWithConstraints(
         modifier = modifier.fillMaxWidth(),
@@ -301,6 +323,7 @@ fun ConnectButton(
                 .clickable(
                     interactionSource = interaction,
                     indication = null,
+                    enabled = enabled,
                     onClickLabel = actionLabel,
                     role = Role.Button,
                     onClick = onClick,
@@ -339,7 +362,7 @@ fun ConnectButton(
                 )
 
                 // 2. PULSING RINGS, only while an endpoint is being reached.
-                if (!reduced && mode == ButtonMode.BUSY) {
+                if (showPulse) {
                     repeat(3) { index ->
                         val p = (phase + index / 3f) % 1f
                         drawCircle(
@@ -489,6 +512,18 @@ fun ConnectButton(
                     center = centre,
                     style = Stroke(width = 1.5.dp.toPx()),
                 )
+
+                // 7. FOCUS RING, on the inner edge of the hit circle so the clip
+                // cannot eat it. Only for keyboard / D-pad / switch focus.
+                if (focused && enabled) {
+                    val focusStroke = 2.dp.toPx()
+                    drawCircle(
+                        color = focusTone,
+                        radius = outerR - focusStroke,
+                        center = centre,
+                        style = Stroke(width = focusStroke),
+                    )
+                }
             }
 
             val icon: ImageVector = when (mode) {
@@ -501,7 +536,9 @@ fun ConnectButton(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 // Proportional, not a fixed 30dp: the inset has to stay inside
                 // the core disc, and the disc is a function of the diameter.
-                modifier = Modifier.padding(horizontal = diameter * 0.12f),
+                modifier = Modifier
+                    .padding(horizontal = diameter * 0.12f)
+                    .alpha(content),
             ) {
                 // The glyph swaps with a scale, not a hard cut: power to bolt is
                 // the moment the tunnel became real, and it should feel like one
