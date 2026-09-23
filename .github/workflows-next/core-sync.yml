@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Core version to vendor, e.g. 2.0.0 (blank = the pin in this workflow)"
+        description: "Core version to vendor, e.g. 2.1.0 (blank = the pin in this workflow)"
         required: false
         type: string
 
@@ -54,11 +54,12 @@ env:
   ANDROID_API: "26"
   CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
   # The reviewed engine version. Bump it in a pull request, never in place.
-  CORE_TARGET_PIN: "2.0.0"
-  # Aether core 2.0.0 needs Rust 1.98. `stable` satisfies that today, but a
-  # weekly job should not rely on "today" silently: too old a toolchain shows
-  # up as a wall of E0658/E0599 from a dependency, which reads exactly like the
-  # upstream regression this job exists to catch.
+  # 2.1.0: reviewed in docs/CORE_V2_1.md (app 1.5.0).
+  CORE_TARGET_PIN: "2.1.0"
+  # Aether core 2.0.0 and 2.1.0 need Rust 1.98. `stable` satisfies that today,
+  # but a weekly job should not rely on "today" silently: too old a toolchain
+  # shows up as a wall of E0658/E0599 from a dependency, which reads exactly
+  # like the upstream regression this job exists to catch.
   MIN_RUST: "1.98.0"
 
 jobs:

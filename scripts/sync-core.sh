@@ -95,10 +95,27 @@ BASELINE="1.5.0"
 # (three-way) onto the new upstream sources, never blind-copied over them.
 #   prober.rs     -> custom_cidrs_v4() + manual-range mode in build_candidates()
 #   wg_prober.rs  -> custom_wg_cidrs_v4() + manual-range mode in build_wg_candidates()
-# Both power the 1.2.2 location picker (AETHER_SCAN_CIDRS).
+#   Both power the 1.2.2 location picker (AETHER_SCAN_CIDRS).
+#   cli.rs        -> --precise / --ultra accepted as aliases of --balanced /
+#                    --ironclad (the 1.4.6 scan-mode names), plus the parser
+#                    tests that hold them.
+#
+# cli.rs WAS MISSING FROM THIS LIST through core 2.0.0. Everything under aether/
+# is replaced wholesale below and only the files named here are merged back, so
+# the next upgrade would have deleted the aliases without a word - and with the
+# app emitting --precise on its default scan mode, every connect would have
+# died on "unknown option". Since 1.5.0 the app sends upstream's own flag names
+# (model/Profile.kt, ScanMode.engineFlag), so losing the aliases can no longer
+# break a connect; they are kept for shells and scripts that pass the old names.
+#
+# NOTE (1.5.0): at core 2.0.0, prober.rs and wg_prober.rs are byte-identical to
+# upstream - the manual-range patch did not survive the 2.0.0 sync, and neither
+# upstream file reads AETHER_SCAN_CIDRS. They stay listed so that a re-applied
+# patch is carried forward by the next upgrade instead of being overwritten.
 PATCHED_FILES=(
   "aether/src/prober.rs"
   "aether/src/wg_prober.rs"
+  "aether/src/cli.rs"
 )
 
 log() { printf '[core-sync] %s\n' "$*"; }
@@ -312,7 +329,7 @@ EOF
 
 if (( ${#dropped[@]} > 0 )); then
   warn "App engine patch(es) NOT applied on ${target_v}: ${dropped[*]}"
-  notice_gh "Core upgraded to ${target_v} but the app patch for ${dropped[*]} could not be rebased. Manual-range scanning may be degraded until it is re-applied."
+  notice_gh "Core upgraded to ${target_v} but the app patch for ${dropped[*]} could not be rebased. Manual-range scanning and the legacy --precise/--ultra aliases may be missing until it is re-applied."
 fi
 
 printf '%s\n' "$target_v" > "$VERSION_FILE"
@@ -332,9 +349,14 @@ log "Core upgraded to ${target_v}."
 # If the new core advertises capabilities the UI does not expose yet, say so
 # loudly in the build log AND in the changelog, so no engine feature can ship
 # without a matching UI decision.
+#
+# --psiphon* and --tor* are deliberately NOT listed: the app runs its own
+# Psiphon and Tor cores (docs/CORE_V2.md "One Tor", docs/CORE_V2_1.md "One
+# Psiphon"), so the engine's copies are never going to be wired in.
 NEW_CAPS=""
 if [[ -d "$CORE_DIR/aether/src" ]]; then
-  for cap in "--ech" "--noize" "--fragment" "--ironclad" "--dual" "--masque" "--gool"; do
+  for cap in "--ech" "--noize" "--fragment" "--ironclad" "--dual" "--masque" "--gool" \
+             "--verified" "--exit-loc" "--stats"; do
     if grep -rqF -- "$cap" "$CORE_DIR/aether/src" 2>/dev/null; then
       if ! grep -rqF -- "$cap" "app/src/main/java" 2>/dev/null; then
         NEW_CAPS+="${cap} "

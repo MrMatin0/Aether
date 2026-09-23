@@ -492,16 +492,20 @@ mod tests {
     /// One test for every scan flag on purpose: they all write the same
     /// environment variable, and cargo would run separate tests in parallel.
     ///
-    /// The last two are what the Android app sends, and they are the reason this
-    /// test exists: an unknown option is fatal in [`parse_args`], so a build of
-    /// this core that does not answer to them cannot connect from the app at all
-    /// - on the DEFAULT scan mode, not some corner of the settings screen.
+    /// The last four are the aliases the Android app sent from 1.4.6 until it
+    /// switched to upstream's own names. They stay because an unknown option is
+    /// fatal in [`parse_args`], and shells and scripts may still pass them.
+    ///
+    /// --stealth is only checked for being ACCEPTED: through core 2.0.0 it
+    /// selects \"stealth\", from 2.1.0 upstream made it an alias of verified.
+    /// This test is part of the app's cli.rs patch and is merged onto every new
+    /// core, so it must not pin a value that upstream is free to change.
     #[test]
     fn every_scan_flag_selects_a_mode_this_core_understands() {
         assert_eq!(scan_value_of("--turbo"), "turbo");
         assert_eq!(scan_value_of("--balanced"), "balanced");
         assert_eq!(scan_value_of("--thorough"), "thorough");
-        assert_eq!(scan_value_of("--stealth"), "stealth");
+        assert!(!scan_value_of("--stealth").is_empty());
         assert_eq!(scan_value_of("--ironclad"), "ironclad");
         assert_eq!(scan_value_of("--precise"), "balanced");
         assert_eq!(scan_value_of("--accurate"), "balanced");

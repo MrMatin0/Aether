@@ -10,6 +10,10 @@
     <string name="scan_mode_precise_desc">چند سرور سالم پیدا می‌کند و سریع‌ترین را نگه می‌دارد. حالت پیشنهادی.</string>
     <string name="scan_mode_precise_eta">۱ تا ۳ دقیقه</string>
 
+    <string name="scan_mode_verified">تأییدشده</string>
+    <string name="scan_mode_verified_desc">فقط به سرورهایی وصل می‌شود که واقعاً تونل برقرار کرده‌اند، نه حدس از آدرس‌های کناری. در MASQUE-in-MASQUE و WARP×2 دو هاپ را هم از رنج‌های متفاوت برمی‌دارد، که همان چیزی است که آدرس خروجی را عوض می‌کند.</string>
+    <string name="scan_mode_verified_eta">حدود ۱ دقیقه</string>
+
     <string name="scan_mode_ultra">بسیار دقیق</string>
     <string name="scan_mode_ultra_desc">فقط سروری را قبول می‌کند که یک درخواست واقعی را تا آخر ببرد. برای شبکه‌های به‌شدت فیلترشده، جایی که تونل وصل می‌شود ولی چیزی باز نمی‌شود.</string>
     <string name="scan_mode_ultra_eta">۳ تا ۶ دقیقه</string>
