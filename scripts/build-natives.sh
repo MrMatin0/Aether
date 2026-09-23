@@ -281,7 +281,13 @@ build_aether() {
   build_aether_abi() {
     local abi="$1" triple="$2"
     echo "==> [aether] building for ${abi} (${triple}, API ${API})"
-    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release --features tor )
+    # Deliberately WITHOUT `--features tor`. The engine's optional Arti-based
+    # tor would be a SECOND Tor next to the bundled tor core that the app's
+    # Tor chain modes drive (TorCore, bridges, pluggable transports). The app
+    # runs exactly one Tor and never emits the engine's --tor* flags, so
+    # compiling Arti in would only make libaether.so much larger for code
+    # nothing is allowed to reach.
+    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release )
 
     local reldir="${CARGO_TARGET_DIR}/${triple}/release"
     local artifact=""

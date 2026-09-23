@@ -10,8 +10,6 @@ import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
-import studio.cluvex.aether.model.EngineTor
-import studio.cluvex.aether.model.EngineTorBridges
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
@@ -42,13 +40,14 @@ class ProfileCodecTest {
 
     /**
      * Every non-secret field of [ConnectionProfile], each set to something that
-     * is NOT its default. Some combinations here are contradictory on purpose
-     * (an engine tor placement alongside a Tor chain mode, for one): the codec
-     * is dumb transport and must round-trip whatever it is handed, and the rules
-     * about which fields are honoured together live in the model.
+     * is NOT its default. The codec is dumb transport and must round-trip
+     * whatever it is handed; the rules about which fields are honoured together
+     * live in the model.
      */
     private val populated = ConnectionProfile(
-        protocol = Protocol.MASQUE,
+        // MIM rather than MASQUE: it is the protocol whose extra fields
+        // (mimOuterPeer / mimInnerPeer) the round trip has to carry.
+        protocol = Protocol.MIM,
         scanMode = ScanMode.ULTRA,
         ipVersion = IpVersion.BOTH,
         quickReconnect = false,
@@ -105,19 +104,10 @@ class ProfileCodecTest {
             "snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fronts=app.example.com,www.example.com ice=stun:a.example:3478,stun:b.example:3478",
         ).joinToString("\n"),
         // ---- 2.0.0: engine v2.0.0 ----
-        masqueInMasque = true,
         mimOuterPeer = "162.159.192.1:2408",
         mimInnerPeer = "188.114.97.2:934",
         quicV2Opener = false,
         socketMark = "0xff",
-        engineTor = EngineTor.REVERSE,
-        engineTorBridges = EngineTorBridges.CUSTOM,
-        engineTorBridgeLines = listOf(
-            "obfs4 209.148.46.65:443 74FAD13168806246602538555B5521A0383A1875 cert=ssH9rP8dG2NLDN2XuFw63hIO9MNNinLmxQDpVa7kTOa iat-mode=0",
-            "webtunnel [2001:db8::1]:443 ABCDEF0123456789ABCDEF0123456789ABCDEF01 url=https://example.com/path ver=0.0.1",
-        ).joinToString("\n"),
-        engineTorCountry = "ir",
-        engineTorBindPort = 1820,
         maxClients = 256,
         halfCloseSecs = 45,
         tcpKeepaliveSecs = 90,
@@ -202,10 +192,42 @@ class ProfileCodecTest {
         // handshake for a setting nobody touched.
         val decoded = ProfileCodec.decode("protocol=MASQUE\nmtu=1280")
         assertTrue(decoded.quicV2Opener, "the QUIC v2 opener must default to on")
-        assertFalse(decoded.masqueInMasque)
-        assertEquals(EngineTor.OFF, decoded.engineTor)
-        assertEquals(EngineTorBridges.AUTO, decoded.engineTorBridges)
+        assertEquals(Protocol.MASQUE, decoded.protocol)
         assertEquals(0, decoded.maxClients)
+    }
+
+    /**
+     * MASQUE-in-MASQUE used to be `mim=true` beside `protocol=MASQUE`. A pending
+     * Intent or a saved setup from that build must keep building two hops,
+     * and the old switch must stay meaningless next to any other protocol, as
+     * it always was.
+     */
+    @Test
+    fun theRetiredMimSwitchMigratesToTheMimProtocol() {
+        assertEquals(Protocol.MIM, ProfileCodec.decode("protocol=MASQUE\nmim=true").protocol)
+        assertEquals(Protocol.MASQUE, ProfileCodec.decode("protocol=MASQUE\nmim=false").protocol)
+        assertEquals(Protocol.WIREGUARD, ProfileCodec.decode("protocol=WIREGUARD\nmim=true").protocol)
+        assertEquals(Protocol.GOOL, ProfileCodec.decode("protocol=GOOL\nmim=true").protocol)
+        // And the new encoding never writes the retired key.
+        assertFalse(ProfileCodec.encode(populated).lineSequence().any { it.startsWith("mim=") })
+    }
+
+    /**
+     * The app runs ONE Tor: the bundled core behind the chain modes. A payload
+     * from the build that also exposed the engine's own tor must decode without
+     * error and without resurrecting it anywhere in the engine's argv.
+     */
+    @Test
+    fun retiredEngineTorKeysAreIgnored() {
+        val decoded = ProfileCodec.decode(
+            "protocol=MASQUE\nengineTor=REVERSE\nengineTorBridges=CUSTOM\n" +
+                "engineTorBridgeLines=obfs4 1.2.3.4:443 ABCDEF cert=x iat-mode=0\n" +
+                "engineTorCountry=ir\nengineTorBind=1820",
+        )
+        assertEquals(Protocol.MASQUE, decoded.protocol)
+        assertFalse(decoded.toArgs().any { it.startsWith("--tor") })
+        assertFalse(decoded.toEnv().containsKey("AETHER_TOR_COUNTRY"))
+        assertFalse(ProfileCodec.encode(decoded).contains("engineTor"))
     }
 
     @Test
@@ -214,18 +236,6 @@ class ProfileCodecTest {
         assertEquals(ConnectionProfile().protocol, decoded.protocol)
         assertEquals(ConnectionProfile().mtu, decoded.mtu)
         assertEquals(ConnectionProfile().killSwitch, decoded.killSwitch)
-    }
-
-    @Test
-    fun theEngineTorPlacementAcceptsTheWordsTheEngineItselfUses() {
-        // A hand-written or shared payload spells these the way AETHER_TOR does.
-        assertEquals(EngineTor.IN_TUNNEL, ProfileCodec.decode("engineTor=chain").engineTor)
-        assertEquals(EngineTor.REVERSE, ProfileCodec.decode("engineTor=tor-reverse").engineTor)
-        assertEquals(EngineTor.ONLY, ProfileCodec.decode("engineTor=tor-only").engineTor)
-        assertEquals(
-            EngineTorBridges.ALWAYS,
-            ProfileCodec.decode("engineTorBridges=force").engineTorBridges,
-        )
     }
 
     @Test
