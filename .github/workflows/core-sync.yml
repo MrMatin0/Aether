@@ -58,7 +58,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NDK_VERSION: "26.3.11579264"
+  NDK_VERSION: "29.0.14206865"
   ANDROID_API: "26"
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
   CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
