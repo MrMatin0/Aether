@@ -27,6 +27,12 @@ import studio.cluvex.aether.ui.protocolLabel
  * online should ever have to touch. Protocol first because it is the one setting
  * that can make the difference between a tunnel and no tunnel; scan mode second
  * because it decides how long the connecting screen lasts.
+ *
+ * MASQUE-in-MASQUE is one of the protocols here, next to MASQUE and WARP×2,
+ * rather than a switch on another page: it is a choice of transport, and a
+ * switch that only worked while MASQUE happened to be selected was a setting
+ * that could be on and silently doing nothing. Its two optional endpoints sit
+ * directly under the picker and only exist while it is selected.
  */
 @Composable
 internal fun ConnectionSection(
@@ -36,6 +42,8 @@ internal fun ConnectionSection(
     manualPeer: String,
     manualRange: String,
     ipVersion: IpVersion,
+    mimOuterPeer: String,
+    mimInnerPeer: String,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -54,6 +62,27 @@ internal fun ConnectionSection(
             label = { protocolLabel(it) },
             enabled = enabled,
         )
+        DependentBlock(visible = protocol == Protocol.MIM) {
+            Hint(stringResource(R.string.mim_desc))
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            ProfileTextField(
+                value = mimOuterPeer,
+                onValueChange = { value -> edit { copy(mimOuterPeer = value) } },
+                label = stringResource(R.string.mim_outer_label),
+                placeholder = stringResource(R.string.mim_peer_hint),
+                helpText = stringResource(R.string.mim_outer_help),
+                enabled = enabled,
+            )
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            ProfileTextField(
+                value = mimInnerPeer,
+                onValueChange = { value -> edit { copy(mimInnerPeer = value) } },
+                label = stringResource(R.string.mim_inner_label),
+                placeholder = stringResource(R.string.mim_peer_hint),
+                helpText = stringResource(R.string.mim_inner_help),
+                enabled = enabled,
+            )
+        }
 
         Spacer(Modifier.height(EngineSpacing.Field))
         FieldLabel(stringResource(R.string.scan_mode))

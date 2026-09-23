@@ -17,8 +17,8 @@ import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.noizeLabel
 
 /**
- * How the traffic is shaped on the wire: obfuscation, packet sizes, TLS tricks,
- * resolvers. Expert depth only.
+ * How the traffic is shaped on the wire: obfuscation, packet sizes, TLS/QUIC
+ * tricks, resolvers. Expert depth only.
  *
  * ROOT CAUSE THIS FIXES (usability): the fragment switch lived here, but the two
  * inputs that only mean anything WHEN it is on - chunk size and inter-fragment
@@ -28,6 +28,11 @@ import studio.cluvex.aether.ui.noizeLabel
  * inputs whose owning switch was nowhere on screen. They are one setting, so
  * they are now one group, and the switch sits last in the stack so its extra
  * inputs do not split the row rhythm above it.
+ *
+ * The QUIC v2 opener and the socket mark live here too. They used to sit on a
+ * separate card named after the engine version that introduced them, which
+ * told the user when a setting arrived rather than what it does; both are
+ * on-the-wire behaviour, so this is their page.
  */
 @Composable
 internal fun TransportSection(
@@ -39,7 +44,9 @@ internal fun TransportSection(
     fragmentDelay: String,
     ech: Boolean,
     masqueHttp2: Boolean,
+    quicV2Opener: Boolean,
     dnsServers: String,
+    socketMark: String,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -100,6 +107,14 @@ internal fun TransportSection(
         )
         EngineDivider()
         SwitchRow(
+            title = stringResource(R.string.quic_v2_title),
+            description = stringResource(R.string.quic_v2_desc),
+            checked = quicV2Opener,
+            enabled = enabled,
+            onChange = { value -> edit { copy(quicV2Opener = value) } },
+        )
+        EngineDivider()
+        SwitchRow(
             title = stringResource(R.string.fragment_title),
             description = stringResource(R.string.fragment_desc),
             checked = fragment,
@@ -132,6 +147,16 @@ internal fun TransportSection(
             label = stringResource(R.string.dns_label),
             placeholder = stringResource(R.string.dns_hint),
             helpText = stringResource(R.string.dns_help),
+            enabled = enabled,
+        )
+
+        Spacer(Modifier.height(EngineSpacing.Field))
+        ProfileTextField(
+            value = socketMark,
+            onValueChange = { value -> edit { copy(socketMark = value) } },
+            label = stringResource(R.string.socket_mark_label),
+            placeholder = stringResource(R.string.socket_mark_hint),
+            helpText = stringResource(R.string.socket_mark_help),
             enabled = enabled,
         )
     }

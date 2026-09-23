@@ -52,10 +52,13 @@ internal fun EngineDestination(
     }
     Column(modifier.fillMaxWidth()) {
         when (page) {
+            // MASQUE-in-MASQUE is a protocol, so its two optional endpoints
+            // travel with the protocol picker.
             SettingsPage.CONNECTION -> ConnectionSection(
                 protocol = profile.protocol, scanMode = profile.scanMode,
                 endpointMode = profile.endpointMode, manualPeer = profile.manualPeer,
                 manualRange = profile.manualRange, ipVersion = profile.ipVersion,
+                mimOuterPeer = profile.mimOuterPeer, mimInnerPeer = profile.mimInnerPeer,
                 enabled = enabled, edit = edit,
             )
             // psiphonConfig is deliberately NOT passed: the Psiphon core ships
@@ -77,22 +80,8 @@ internal fun EngineDestination(
                     noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,
                     fragment = profile.fragment, fragmentSize = profile.fragmentSize,
                     fragmentDelay = profile.fragmentDelay, ech = profile.ech,
-                    masqueHttp2 = profile.masqueHttp2, dnsServers = profile.dnsServers,
-                    enabled = enabled, edit = edit,
-                )
-                Spacer(Modifier.height(32.dp))
-                // Engine v2.0.0. The protocol and the chain are passed because
-                // two of these options depend on them and the card says so
-                // rather than silently doing nothing.
-                CoreV2Section(
-                    protocol = profile.protocol, chain = profile.chain,
-                    masqueInMasque = profile.masqueInMasque,
-                    mimOuterPeer = profile.mimOuterPeer, mimInnerPeer = profile.mimInnerPeer,
-                    quicV2Opener = profile.quicV2Opener, socketMark = profile.socketMark,
-                    engineTor = profile.engineTor, engineTorBridges = profile.engineTorBridges,
-                    engineTorBridgeLines = profile.engineTorBridgeLines,
-                    engineTorCountry = profile.engineTorCountry,
-                    engineTorBindPort = profile.engineTorBindPort,
+                    masqueHttp2 = profile.masqueHttp2, quicV2Opener = profile.quicV2Opener,
+                    dnsServers = profile.dnsServers, socketMark = profile.socketMark,
                     enabled = enabled, edit = edit,
                 )
                 Hint(stringResource(R.string.settings_expert_note))
@@ -136,8 +125,8 @@ internal fun EngineDestination(
                     enabled = enabled, edit = edit,
                 )
                 Spacer(Modifier.height(32.dp))
-                // Engine v2.0.0 resource limits. Next to the other last-resort
-                // dials, because that is what they are.
+                // Resource limits. Next to the other last-resort dials, because
+                // that is what they are.
                 CoreResourceSection(
                     maxClients = profile.maxClients, halfCloseSecs = profile.halfCloseSecs,
                     tcpKeepaliveSecs = profile.tcpKeepaliveSecs,

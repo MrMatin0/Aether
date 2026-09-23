@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Persian strings for the engine settings on the Connection, Transport and Tuning pages. -->
+<resources>
+
+    <!-- MASQUE-in-MASQUE, a protocol in the Connection card -->
+    <string name="protocol_mim">MASQUE×2</string>
+    <string name="mim_desc">دو پرش MASQUE: تونل دوم از داخل تونل اول ساخته می‌شود، بنابراین سایتی که باز می‌کنید از لبه‌ای غیر از آنچه شبکه شما دیده است به آن وصل می‌شود. کندتر، اما ردیابی آن به شما بسیار سخت‌تر است؛ همان کاری که وارپ×۲ برای WireGuard می‌کند. هر دو نقطه اتصال اختیاری‌اند.</string>
+    <string name="mim_outer_label">نقطه اتصال بیرونی</string>
+    <string name="mim_inner_label">نقطه اتصال درونی</string>
+    <string name="mim_peer_hint">188.114.96.1:443</string>
+    <string name="mim_outer_help">لبه‌ای که این دستگاه به آن وصل می‌شود. خالی بگذارید تا اسکنر خودش انتخاب کند. اگر پایین‌تر نقطه اتصال دستی تعیین کنید، همان جایگزین این می‌شود.</string>
+    <string name="mim_inner_help">لبه‌ای که از طریق لبه اول به آن می‌رسیم. خالی بگذارید تا اسکنر خودش انتخاب کند.</string>
+
+    <!-- Transport card -->
+    <string name="quic_v2_title">آغازگر QUIC نسخه ۲</string>
+    <string name="quic_v2_desc">در نخستین بسته، QUIC نسخه ۲ را مذاکره می‌کند و از فیلترهایی که QUIC نسخه ۱ را می‌شناسند و می‌اندازند رد می‌شود. روشن بگذارید، مگر اینکه شبکه شما مشخصاً نسخه ۲ را ببندد.</string>
+
+    <string name="socket_mark_label">نشانه سوکت</string>
+    <string name="socket_mark_hint">0x1f4 یا 500</string>
+    <string name="socket_mark_help">سوکت‌های خود هسته را علامت می‌زند تا لایه تونل بتواند آن‌ها را دور بزند و ترافیک را به خودش برنگرداند. به روت یا CAP_NET_ADMIN نیاز دارد — روی دستگاه معمولی خالی بگذارید.</string>
+
+    <!-- Core resources card (Tuning) -->
+    <string name="section_core_resources">منابع هسته</string>
+    <string name="section_core_resources_note">محدودیت‌هایی که هسته برای خودش اعمال می‌کند. خالی یعنی خودش از روی دستگاه تعیین می‌کند.</string>
+    <string name="core_auto_hint">خودکار</string>
+    <string name="max_clients_label">اتصال‌های هم‌زمان</string>
+    <string name="max_clients_help">سقف اتصال‌های پروکسی در یک لحظه. هسته خودش عددی بین ۵۱۲ تا ۸۱۹۲ را از محدودیت‌های دستگاه انتخاب می‌کند؛ فقط اگر برنامه‌ها در حالی که تونل بی‌کار است گیر می‌کنند آن را بالا ببرید.</string>
+    <string name="half_close_secs_label">مهلت اتصال نیمه‌بسته (ثانیه)</string>
+    <string name="tcp_keepalive_secs_label">زنده‌نگه‌داری TCP (ثانیه)</string>
+    <string name="tcp_connect_secs_label">مهلت برقراری اتصال (ثانیه)</string>
+    <string name="core_resources_help">مقادیر کمتر روی خط موبایل ناپایدار اتصال‌های مرده را زودتر آزاد می‌کند؛ مقادیر بیشتر نشست‌های طولانی را در یک دقیقه بد زنده نگه می‌دارد.</string>
+
+</resources>
