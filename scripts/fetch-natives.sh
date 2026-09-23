@@ -9,8 +9,10 @@
 # Both are compiled later by scripts/build-natives.sh.
 #
 # Safe to re-run. All network access happens here / in CI, never on device.
-# By default we clone each repo's DEFAULT branch. To pin, export HEV_REF /
-# AETHER_REF; a missing ref falls back to the default branch instead of failing.
+# hev-socks5-tunnel is PINNED to a release tag (HEV_REF below). The engine is
+# vendored, so it normally never touches the network. Export HEV_REF /
+# AETHER_REF to override; a missing ref falls back to the default branch
+# instead of failing.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +24,11 @@ mkdir -p "${NATIVE_DIR}"
 GH="https://""github.com"
 
 HEV_REPO="heiher/hev-socks5-tunnel"
-HEV_REF="${HEV_REF:-}"            # empty => default branch
+# Pinned. This used to be empty (= whatever the default branch was that
+# morning), and an unannounced upstream JNI ABI change on that branch is exactly
+# what once broke VPN mode in the field (see build-natives.sh). 2.17.1 is the
+# newest release, and 2.15.0+ is also what builds cleanly on NDK r30.
+HEV_REF="${HEV_REF:-2.17.1}"
 HEV_DIR="${NATIVE_DIR}/hev-socks5-tunnel"
 
 AETHER_REPO="${AETHER_REPO:-CluvexStudio/Aether}"
