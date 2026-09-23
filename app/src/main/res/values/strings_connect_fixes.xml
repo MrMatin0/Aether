@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy added by the connect-control UX pass. Kept separate so the shared
+     string files stay a stable diff. -->
+<resources>
+    <!-- Hint under the title on failure. The engine's own message is already in
+         the notice bar right below; this line says what to DO about it. -->
+    <string name="conn_error_hint">Tap Retry, or pick a different route below.</string>
+    <!-- Hint while tearing down, so it no longer repeats the title word for word -->
+    <string name="conn_disconnecting_hint">Closing the tunnel and restoring your normal connection.</string>
+    <!-- VPN consent outcomes that used to end in silence -->
+    <string name="conn_vpn_denied">Android didn’t grant VPN permission, so nothing was connected. Tap Connect to try again.</string>
+    <string name="conn_vpn_unavailable">Couldn’t open Android’s VPN permission screen. Make sure no other app is set as always-on VPN.</string>
+</resources>
