@@ -4,14 +4,20 @@ import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -27,12 +33,18 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -45,15 +57,25 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.log10
+import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
+import studio.cluvex.aether.core.PsiphonRegions
+import studio.cluvex.aether.core.TrafficMonitor
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
+import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.ActionPill
@@ -66,70 +88,64 @@ import studio.cluvex.aether.ui.components.SectionTitle
 import studio.cluvex.aether.ui.components.StatusHint
 import studio.cluvex.aether.ui.components.ValueRow
 import studio.cluvex.aether.ui.components.accentFor
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.AetherNumeral
 import studio.cluvex.aether.ui.theme.AetherNumeralLarge
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.LocalReducedMotion
+import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB.
+ * THE CONNECTION TAB, v2: "hero + route".
  *
- * The information architecture stands, and it was the right one: ONE hero
- * control, ONE answer in words, progress as a track rather than a list,
- * evidence with a hierarchy, and nothing on screen the current state does not
- * need. What this pass changes is that the screen is now ONE SURFACE instead of
- * a column of unrelated rectangles - and that the two facts which explain a
- * wait (which scan is running, which protocol won) are no longer three taps
- * away in settings.
+ * The previous pass got the information architecture right (one control, one
+ * answer in words, progress as a track) and this one keeps all of it. What it
+ * changes is the thing every modern VPN client puts at the centre of its home
+ * screen and this one hid three taps deep: THE ROUTE.
  *
- * WHAT WAS STILL WRONG
+ * WHAT IS NEW
  *
- *   - THE SCREEN HAD NO ATMOSPHERE. State lived in exactly two places - the
- *     orb's ring and a small chip - on a flat background. Every VPN client worth
- *     copying tells you whether you are safe from across the room; this one made
- *     you read a label.
- *   - LATENCY WAS A NUMBER WITHOUT A SHAPE. "180 ms" means nothing to most
- *     people. It was coloured, which helped, and colour alone is never the whole
- *     answer.
- *   - THE WAIT WAS UNEXPLAINED. During a three-minute Ironclad scan the screen
- *     said "working" and counted seconds, while the two things the user actually
- *     wants - what is being tried, and what it settled on - were invisible.
- *   - FINISHED PHASES WERE FLAT PAINT. A solid capsule reads as a disabled
- *     control, not as a completed step.
- *
- * WHAT THIS IS NOW
- *
- *   1. AN AURORA WASH, painted behind the viewport in the live state tone and
- *      breathing slowly while work is in flight. It is drawn in [drawBehind] and
- *      driven by ONE [Animatable] read in the draw phase, so the loop costs
- *      repaints and never a recomposition - and under reduced motion it is a
- *      still gradient, not a disabled one.
- *   2. A STATUS RAIL. The badge keeps its polite live region and its four words;
- *      the latency chip gains SIGNAL BARS, so the reading survives both
- *      colour-blindness and not knowing what a millisecond is. Battery contract
- *      restated and intact: one probe when a session comes up, one per tap,
- *      never a loop.
- *   3. A STACK STRIP under the rail: the scan mode about to be used, and the
- *      protocol that actually won. Two chips, read-only, no navigation.
- *   4. THE HERO ORB. Unchanged contract. See [ConnectButton].
- *   5. A GRADIENT PHASE TRACK: finished segments lit with a gradient, the
- *      running one carrying a travelling band, plus an explicit "step N of 4"
- *      so the progress is also a sentence.
- *   6. A BENTO TELEMETRY GRID: exit IP as the wide hero tile over a tonal wash,
- *      then the winning protocol and the session clock. Every readout monospaced
- *      and pinned LTR, because they are instruments, not prose - load-bearing in
- *      Persian, where an IP address otherwise renders reordered.
+ *   1. ORBITAL HERO. The orb now sits inside a dashed orbit carrying one
+ *      satellite per hop of the selected chain. Idle: parked and grey. Busy:
+ *      fast orbit in the working tone. Connected: a slow, lit orbit. Error:
+ *      frozen in the failure tone. It is drawn in one Canvas driven by one
+ *      [Animatable] read in the draw phase - no recomposition per frame - and
+ *      under reduced motion it is a still picture that still carries the state.
+ *   2. ROUTE CARD. The chain drawn as nodes: You -> hops -> Internet. Nodes
+ *      light up as the attempt earns phases (same arithmetic as the orb, see
+ *      [litRouteNodes]), the segment being reached carries a travelling band,
+ *      and once verified packets flow along the lit path. Under it: exit
+ *      country, scan mode and protocol, in one line.
+ *   3. ROUTE PICKER, IN PLACE. Tapping the card opens a bottom sheet with the
+ *      seven chain modes, cost tiers, and unavailable cores disabled - the same
+ *      rules as the Chain settings page. Only while Idle or Error: changing the
+ *      route under a live tunnel is a trap, not a control.
+ *   4. LIVE TRAFFIC. Two tiles, one per direction: the current rate, a
+ *      log-scale level meter ([rateLevel]) and the session total. Read from
+ *      [TrafficMonitor], which the service owns - no polling loop here.
+ *   5. ONE CONTROL. The dock that duplicated the orb is gone from this tab
+ *      (see HomeScreen); the orb is the control.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
  * [phaseProgress] and [formatSessionUptime] keep their exact contracts, because
- * the presentation tests own them; the state machine, the semantics and the
- * reduced-motion rules are the same ones the rest of the app obeys.
+ * the presentation tests own them; the state machine, the live-region
+ * semantics, the battery contract of the latency probe and the reduced-motion
+ * rules are the same ones the rest of the app obeys.
  */
 
 /** Engine, tunnel, verify, ready. */
 private const val PHASE_COUNT = 4
+
+/** Twelve o'clock, like the orb's own arc. */
+private const val ORBIT_START = -90f
+
+private val HERO_HEIGHT = 300.dp
+private val NODE_SIZE = 34.dp
+private val HOP_CHIP = 28.dp
+private val HOP_STEP = 16.dp
 
 /**
  * Controller state -> the orb's four visual modes.
@@ -162,6 +178,34 @@ internal fun connectionStep(state: ConnectionState): Int? = when (state) {
 internal fun phaseProgress(step: Int?): Float =
     if (step == null) 0f else ((step + 1).toFloat() / PHASE_COUNT).coerceIn(0f, 1f)
 
+/**
+ * How many nodes of the route (You, every hop, Internet) are lit.
+ *
+ * Derived from [phaseProgress], so the route, the orb's ring and the phase
+ * track all agree on how far the attempt got. "You" is always lit: the device
+ * end of the route exists whether or not anything else does.
+ */
+internal fun litRouteNodes(state: ConnectionState, step: Int?, count: Int): Int {
+    if (count <= 0) return 0
+    return when {
+        state.isConnected -> count
+        step != null -> ceil(phaseProgress(step) * count).toInt().coerceIn(1, count)
+        else -> 1
+    }
+}
+
+/**
+ * A byte rate as a 0..1 level on a log scale from 1 KB/s to 50 MB/s.
+ *
+ * Log, not linear: on a linear scale a page load and an idle tunnel are both
+ * "empty", and the meter would only ever move for a large download.
+ */
+internal fun rateLevel(bytesPerSecond: Long): Float {
+    if (bytesPerSecond <= 1024L) return 0f
+    val level = log10(bytesPerSecond.toDouble() / 1024.0) / log10(51_200.0)
+    return level.toFloat().coerceIn(0f, 1f)
+}
+
 @Composable
 internal fun ConnectionHome(
     state: ConnectionState,
@@ -170,6 +214,8 @@ internal fun ConnectionHome(
     ipInfo: IpEndpoint?,
     ipLoading: Boolean,
     scrollState: ScrollState,
+    editable: Boolean,
+    onProfileChange: (ConnectionProfile) -> Unit,
     onToggleConnection: () -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
@@ -184,47 +230,50 @@ internal fun ConnectionHome(
     val startedAt = rememberSaveable(working) { SystemClock.elapsedRealtime() }
     val elapsed = tickingElapsed(startedAt, working)
 
+    var routeSheet by rememberSaveable { mutableStateOf(false) }
+    // The session started (or a reconnect kicked in) while the sheet was open:
+    // the choice is no longer the user's to make, so the sheet goes away.
+    LaunchedEffect(editable) { if (!editable) routeSheet = false }
+
     Column(
         Modifier
             .fillMaxSize()
-            .auroraWash(tone, breathing = state.isBusy)
+            .auroraWash(tone, accents.brand, breathing = state.isBusy)
             .verticalScroll(scrollState)
             .padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(12.dp))
         StatusRail(state, tone, connectedSince)
-        Spacer(Modifier.height(12.dp))
-        StackStrip(profile, tone)
 
-        // THE CONTROL. Not a status graphic with a button somewhere else.
-        ConnectButton(
-            mode = mode,
-            onClick = onToggleConnection,
-            stateLabel = stateWord(state),
-            actionLabel = stringResource(connectionActionLabel(state)),
-            modifier = Modifier.padding(vertical = 8.dp),
-            detail = if (working) elapsed else null,
-            progress = phaseProgress(step),
-        )
+        OrbitalHero(mode = mode, chain = profile.chain, tone = tone) {
+            // THE CONTROL. Not a status graphic with a button somewhere else.
+            ConnectButton(
+                mode = mode,
+                onClick = onToggleConnection,
+                stateLabel = stateWord(state),
+                actionLabel = stringResource(connectionActionLabel(state)),
+                detail = if (working) elapsed else null,
+                progress = phaseProgress(step),
+            )
+        }
 
-        Spacer(Modifier.height(16.dp))
         Text(
             connectionTitle(state),
             Modifier.fillMaxWidth(),
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         // StatusHint, not a bare Text: it cross-fades between states and already
         // collapses to an instant swap under reduced motion.
         StatusHint(connectionHint(state, profile))
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(24.dp))
 
         if (step != null) {
             PhaseWave(step, tone, elapsed)
-            // Only while an endpoint is still being found. Once verification is
-            // running the scan is over and the note would be a lie.
-            if (step <= 1) {
+            // Only while an endpoint is still being found, and only when there
+            // IS an endpoint scan - a Psiphon or Tor-only chain has none.
+            if (step <= 1 && profile.chain.usesAether && !profile.hasManualPeer) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     stringResource(R.string.passage_scan_note),
@@ -232,7 +281,7 @@ internal fun ConnectionHome(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(16.dp))
         }
 
         if (state is ConnectionState.Error) {
@@ -250,10 +299,23 @@ internal fun ConnectionHome(
                 modifier = Modifier.fillMaxWidth(),
                 icon = Icons.Rounded.Terminal,
             )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(16.dp))
         }
 
+        RouteCard(
+            profile = profile,
+            state = state,
+            step = step,
+            ipInfo = ipInfo,
+            tone = tone,
+            editable = editable,
+            onOpen = { routeSheet = true },
+        )
+        Spacer(Modifier.height(16.dp))
+
         if (state is ConnectionState.Connected) {
+            LiveTraffic(connectedSince)
+            Spacer(Modifier.height(24.dp))
             SectionTitle(stringResource(R.string.passage_session))
             SessionBento(
                 connectedSince = connectedSince,
@@ -261,7 +323,7 @@ internal fun ConnectionHome(
                 ipLoading = ipLoading,
                 tone = tone,
             )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(16.dp))
         } else if (step == null) {
             // Disconnected or failed: the same question, answered the other way
             // round - where the internet currently thinks you are.
@@ -271,13 +333,12 @@ internal fun ConnectionHome(
                 ipInfo = ipInfo,
                 ipLoading = ipLoading,
             )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(16.dp))
         }
 
-        if (state is ConnectionState.Idle) {
-            // In a bar rather than loose at the bottom of the scroll: it is a
-            // standing disclosure about who runs the exit network, and loose
-            // grey body text is where standing disclosures go to be ignored.
+        // The WARP disclosure is about the WARP exit network. With Psiphon or Tor
+        // in the chain it would be describing somebody else's network.
+        if (state is ConnectionState.Idle && profile.chain == ChainMode.AETHER) {
             NoticeBar(
                 text = stringResource(R.string.passage_privacy),
                 tone = accents.neutral,
@@ -286,22 +347,33 @@ internal fun ConnectionHome(
         }
         Spacer(Modifier.height(36.dp))
     }
+
+    if (routeSheet) {
+        RouteSheet(
+            selected = profile.chain,
+            onDismiss = { routeSheet = false },
+            onSelect = { chosen ->
+                if (chosen != profile.chain) onProfileChange(profile.copy(chain = chosen))
+                routeSheet = false
+            },
+        )
+    }
 }
 
 /**
- * THE ATMOSPHERE: one soft pool of the state colour behind the hero.
+ * THE ATMOSPHERE: a pool of the state colour behind the hero, and a faint pool
+ * of the brand colour low on the page so the surface has depth rather than a
+ * single spotlight.
  *
  * Applied BEFORE [verticalScroll] on purpose, so it is painted in viewport
- * coordinates and stays put while the content moves over it - a light source in
- * the window, not a sticker glued to the top of a long page.
+ * coordinates and stays put while the content moves over it.
  *
  * Cost: one [Animatable] read inside [drawBehind], which invalidates the draw
- * phase and nothing else. No recomposition, no layout, no state hoisted into the
- * composition. Reduced motion pins it half-lit and steady rather than removing
- * it, because the colour itself is information.
+ * phase and nothing else. Reduced motion pins it half-lit and steady rather than
+ * removing it, because the colour itself is information.
  */
 @Composable
-private fun Modifier.auroraWash(tone: Color, breathing: Boolean): Modifier {
+private fun Modifier.auroraWash(tone: Color, secondary: Color, breathing: Boolean): Modifier {
     val reduced = LocalReducedMotion.current
     val pulse = remember { Animatable(0.5f) }
     LaunchedEffect(breathing, reduced) {
@@ -320,17 +392,104 @@ private fun Modifier.auroraWash(tone: Color, breathing: Boolean): Modifier {
     }
     return this.drawBehind {
         val t = pulse.value
-        val center = Offset(size.width / 2f, size.height * 0.20f)
-        val radius = (size.width * (0.92f + 0.08f * t)).coerceAtLeast(1f)
+        val center = Offset(size.width / 2f, size.height * 0.22f)
+        val radius = (size.width * (0.95f + 0.08f * t)).coerceAtLeast(1f)
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(tone.copy(alpha = 0.10f + 0.07f * t), Color.Transparent),
+                colors = listOf(tone.copy(alpha = 0.12f + 0.07f * t), Color.Transparent),
                 center = center,
                 radius = radius,
             ),
             radius = radius,
             center = center,
         )
+        val low = Offset(size.width * 0.88f, size.height * 0.92f)
+        val lowRadius = (size.width * 0.75f).coerceAtLeast(1f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(secondary.copy(alpha = 0.06f), Color.Transparent),
+                center = low,
+                radius = lowRadius,
+            ),
+            radius = lowRadius,
+            center = low,
+        )
+    }
+}
+
+/**
+ * The orb, in orbit.
+ *
+ * One satellite per hop of the selected chain, so the hero already says how
+ * many cores this session is built from before anything is read. Decorative to
+ * a screen reader: the orb carries the state description, the route card the
+ * path.
+ */
+@Composable
+private fun OrbitalHero(
+    mode: ButtonMode,
+    chain: ChainMode,
+    tone: Color,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val reduced = LocalReducedMotion.current
+    val orbit = remember { Animatable(0f) }
+    LaunchedEffect(mode, reduced) {
+        val period = when (mode) {
+            ButtonMode.BUSY -> 4200
+            ButtonMode.CONNECTED -> 18000
+            else -> 0
+        }
+        if (reduced || period == 0) {
+            orbit.snapTo(0f)
+            return@LaunchedEffect
+        }
+        orbit.snapTo(0f)
+        orbit.animateTo(1f, infiniteRepeatable(tween(period, easing = LinearEasing)))
+    }
+    val track = MaterialTheme.colorScheme.outlineVariant
+    val satellites = chain.hops.size.coerceAtLeast(1)
+    val live = mode == ButtonMode.CONNECTED || mode == ButtonMode.BUSY || mode == ButtonMode.ERROR
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(HERO_HEIGHT),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(
+            Modifier
+                .matchParentSize()
+                .clearAndSetSemantics { },
+        ) {
+            val centre = Offset(size.width / 2f, size.height / 2f)
+            val radius = size.minDimension / 2f - 8.dp.toPx()
+            if (radius <= 0f) return@Canvas
+            drawCircle(
+                color = (if (live) tone else track).copy(alpha = if (live) 0.28f else 0.35f),
+                radius = radius,
+                center = centre,
+                style = Stroke(
+                    width = 1.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(
+                        floatArrayOf(3.dp.toPx(), 7.dp.toPx()),
+                    ),
+                ),
+            )
+            val turn = orbit.value * 360f
+            repeat(satellites) { index ->
+                val degrees = ORBIT_START + turn + index * (360f / satellites)
+                val radians = Math.toRadians(degrees.toDouble())
+                val point = Offset(
+                    centre.x + radius * cos(radians).toFloat(),
+                    centre.y + radius * sin(radians).toFloat(),
+                )
+                val dot = if (live) tone else track
+                drawCircle(dot.copy(alpha = 0.20f), radius = 8.dp.toPx(), center = point)
+                drawCircle(dot, radius = 3.5.dp.toPx(), center = point)
+            }
+        }
+        content()
     }
 }
 
@@ -338,10 +497,9 @@ private fun Modifier.auroraWash(tone: Color, breathing: Boolean): Modifier {
  * The top rail: what the connection IS, and how good it is.
  *
  * The badge is still the first thing a screen reader reaches and still the only
- * element announced on every state change (polite live region, merged
- * descendants, so it is one announcement and not three). The latency chip is a
- * separate node on purpose - it changes on its own schedule, and it must not
- * make the state badge re-announce itself every time a probe lands.
+ * element announced on every state change. The latency chip is a separate node
+ * on purpose - it changes on its own schedule, and it must not make the state
+ * badge re-announce itself every time a probe lands.
  */
 @Composable
 private fun StatusRail(state: ConnectionState, tone: Color, connectedSince: Long?) {
@@ -355,14 +513,7 @@ private fun StatusRail(state: ConnectionState, tone: Color, connectedSince: Long
     }
 }
 
-/**
- * The state badge.
- *
- * The dot breathes while work is in flight and is steady otherwise, which means
- * "something is happening" survives being glanced at from outside the orb's
- * radius. It is drawn in [drawBehind] and driven by an [Animatable], so the loop
- * costs one repaint of a 9dp box and never a recomposition.
- */
+/** The state badge: a breathing dot while work is in flight, steady otherwise. */
 @Composable
 private fun StateBadge(state: ConnectionState, tone: Color) {
     val reduced = LocalReducedMotion.current
@@ -421,15 +572,9 @@ private fun StateBadge(state: ConnectionState, tone: Color) {
 /**
  * Live latency, where the state is.
  *
- * BATTERY CONTRACT, RESTATED: there is still no polling loop anywhere near this.
- * A session gets ONE automatic measurement, a second and a bit after it comes up
- * (long enough that the tunnel has settled, short enough that the number is
- * there before the user starts looking for it), and one more per tap.
- *
- * The reading is now said THREE ways: a number for the expert, a colour for the
- * glance, and three bars for everyone who does not know what a millisecond is -
- * or cannot tell mint from amber. The bars are decorative to a screen reader,
- * which already hears the number.
+ * BATTERY CONTRACT: no polling loop. A session gets ONE automatic measurement a
+ * second and a bit after it comes up, and one more per tap. Said three ways: a
+ * number, a colour, and signal bars.
  */
 @Composable
 private fun LatencyChip(connectedSince: Long?) {
@@ -507,79 +652,190 @@ private fun LatencyChip(connectedSince: Long?) {
     }
 }
 
-/**
- * THE STACK STRIP: the two facts that explain the wait.
- *
- * A connection attempt that takes three minutes is not mysterious once you know
- * an Ironclad scan is running; a session that works is not anonymous once you
- * know it came up on MASQUE. Both were already in the app - one buried in engine
- * settings, the other at the bottom of the session card - and neither was
- * visible at the moment it explained something.
- *
- * Read-only by design. These are not shortcuts into settings: the engine page is
- * one tap away in the bottom navigation, and a chip that silently changes the
- * profile mid-attempt is a trap, not a control.
- */
+// ---------------------------------------------------------------- route card --
+
+private data class RouteNode(val label: String, val icon: ImageVector)
+
+private fun hopIcon(hop: Hop): ImageVector = when (hop) {
+    Hop.AETHER -> Icons.Rounded.Bolt
+    Hop.PSIPHON -> Icons.Rounded.Cloud
+    Hop.TOR -> Icons.Rounded.Layers
+}
+
+/** You -> the hops in the order traffic enters them -> Internet. */
 @Composable
-private fun StackStrip(profile: ConnectionProfile, tone: Color) {
-    val meta by EngineMeta.state.collectAsStateWithLifecycle()
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        GlassChip(
-            icon = Icons.Rounded.Search,
-            label = stringResource(R.string.conn_stack_scan),
-            value = scanLabel(profile.scanMode),
-            tint = tone,
-            modifier = Modifier.weight(1f),
-        )
-        GlassChip(
-            icon = Icons.Rounded.Shield,
-            label = stringResource(R.string.meta_protocol),
-            value = meta.protocol?.takeIf { it.isNotBlank() } ?: "\u2014",
-            tint = tone,
-            modifier = Modifier.weight(1f),
-        )
+private fun routeNodes(chain: ChainMode): List<RouteNode> {
+    val you = stringResource(R.string.conn_node_you)
+    val internet = stringResource(R.string.conn_node_internet)
+    return buildList {
+        add(RouteNode(you, Icons.Rounded.Smartphone))
+        chain.hops.asReversed().forEach { add(RouteNode(it.label, hopIcon(it))) }
+        add(RouteNode(internet, Icons.Rounded.Public))
     }
 }
 
-/** A label over a value, on the same bordered surface the bento tiles use. */
+/**
+ * The exit, as a flag and a code.
+ *
+ * Live country once verified; otherwise the country the user asked Tor or
+ * Psiphon for; otherwise what actually happens - Cloudflare's edge for Aether
+ * alone, the core's own choice for everything else.
+ */
 @Composable
-private fun GlassChip(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    tint: Color,
-    modifier: Modifier = Modifier,
+private fun exitReadout(
+    profile: ConnectionProfile,
+    state: ConnectionState,
+    ipInfo: IpEndpoint?,
+): Pair<String, String> {
+    val live = ipInfo?.countryCode?.trim()?.uppercase(Locale.US)
+        ?.takeIf { state.isConnected && it.length == 2 }
+    val requested = when {
+        profile.chain.usesTor -> profile.torExitCountry
+        profile.chain.usesPsiphon -> PsiphonRegions.sanitize(profile.psiphonRegion)
+        else -> ""
+    }.trim().uppercase(Locale.US)
+    return when {
+        live != null -> PsiphonRegions.flag(live) to live
+        requested.length == 2 -> PsiphonRegions.flag(requested) to requested
+        profile.chain == ChainMode.AETHER ->
+            PsiphonRegions.GLOBE to stringResource(R.string.conn_exit_warp)
+        else -> PsiphonRegions.GLOBE to stringResource(R.string.conn_exit_auto)
+    }
+}
+
+/**
+ * THE ROUTE CARD: which cores carry this session, drawn as a path, plus the
+ * three facts that explain a wait (exit, scan mode, protocol).
+ *
+ * The whole card is the button that opens the route picker, and it is only a
+ * button while the profile is editable. Locked, it says why instead of
+ * silently ignoring the tap.
+ */
+@Composable
+private fun RouteCard(
+    profile: ConnectionProfile,
+    state: ConnectionState,
+    step: Int?,
+    ipInfo: IpEndpoint?,
+    tone: Color,
+    editable: Boolean,
+    onOpen: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
+    val meta by EngineMeta.state.collectAsStateWithLifecycle()
+    val chain = profile.chain
+    val nodes = routeNodes(chain)
+    val lit = litRouteNodes(state, step, nodes.size)
+    val (flag, exit) = exitReadout(profile, state, ipInfo)
+
+    val tech = buildList {
+        if (chain.usesAether) {
+            add(
+                if (profile.hasManualPeer) {
+                    endpointLabel(EndpointMode.MANUAL_PEER)
+                } else {
+                    scanLabel(profile.scanMode)
+                },
+            )
+            val liveProtocol = meta.protocol?.takeIf { state.isConnected && it.isNotBlank() }
+            add(liveProtocol ?: protocolLabel(profile.protocol))
+        }
+    }.joinToString(" \u00B7 ")
+
     Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
         color = accents.card,
-        border = BorderStroke(1.dp, accents.cardBorder),
+        border = BorderStroke(1.dp, if (editable) accents.cardBorder else tone.copy(alpha = 0.30f)),
     ) {
-        Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            Modifier
+                .clickable(
+                    enabled = editable,
+                    onClickLabel = stringResource(R.string.conn_route_change),
+                    role = Role.Button,
+                    onClick = onOpen,
+                )
+                .background(
+                    Brush.verticalGradient(listOf(tone.copy(alpha = 0.09f), Color.Transparent)),
+                )
+                .padding(18.dp),
         ) {
-            Icon(icon, null, Modifier.size(15.dp), tint)
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconChip(Icons.Rounded.Layers, tone)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.conn_route_title),
+                        style = AetherMetaLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    Text(
+                        chainLabel(chain),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                TierBadge(chain)
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    if (editable) Icons.Rounded.KeyboardArrowDown else Icons.Rounded.Lock,
+                    contentDescription = null,
+                    modifier = Modifier.size(if (editable) 22.dp else 16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+            RoutePath(
+                nodes = nodes,
+                lit = lit,
+                tone = tone,
+                flowing = state.isConnected,
+                reaching = step != null,
+                broken = state is ConnectionState.Error,
+            )
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider(color = accents.cardBorder)
+            Spacer(Modifier.height(12.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    label,
+                    stringResource(R.string.conn_exit_label),
                     style = AetherMetaLabel,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(flag, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    value,
-                    style = MaterialTheme.typography.labelLarge,
+                    exit,
+                    style = MaterialTheme.typography.labelLarge.copy(textDirection = TextDirection.Ltr),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    tech,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (!editable) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.conn_route_locked),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -587,20 +843,498 @@ private fun GlassChip(
 }
 
 /**
- * The four phases as ONE animated object.
+ * The route as nodes and links.
  *
- * Four capsules: the finished ones lit with a gradient rather than flat paint (a
- * solid capsule reads as a disabled control), the running one carrying a band of
- * light travelling through it, the future ones dim. Same integer as the old
- * four-row list, now also stated in words as "step N of 4", because a bar is a
- * feeling and a sentence is a fact.
+ *   done link      solid, and once verified two packets travel along it
+ *   reaching link  dashed, with a band of light moving toward the next node
+ *   broken link    dashed in the failure tone, where the attempt stopped
+ *   future link    dashed and dim
  *
- * RTL: the segments and the wave are mirrored from the draw scope's own layout
- * direction, so in Persian progress runs right to left and the labels underneath
- * (a plain Row, which Compose already mirrors) stay attached to their segments.
+ * RTL: the Row already mirrors the nodes, and each link mirrors its own motion
+ * from the draw scope's layout direction, so in Persian traffic flows right to
+ * left toward the Internet node. One content description reads the whole path.
+ */
+@Composable
+private fun RoutePath(
+    nodes: List<RouteNode>,
+    lit: Int,
+    tone: Color,
+    flowing: Boolean,
+    reaching: Boolean,
+    broken: Boolean,
+) {
+    val reduced = LocalReducedMotion.current
+    val accents = LocalAetherAccents.current
+    val flow = remember { Animatable(0f) }
+    val moving = !reduced && (flowing || reaching)
+    LaunchedEffect(moving) {
+        if (!moving) {
+            flow.snapTo(0f)
+            return@LaunchedEffect
+        }
+        flow.snapTo(0f)
+        flow.animateTo(1f, infiniteRepeatable(tween(1400, easing = LinearEasing)))
+    }
+    val track = MaterialTheme.colorScheme.outlineVariant
+    val description = nodes.joinToString(" \u2192 ") { it.label }
+    val nodeWidth = if (nodes.size <= 3) 60.dp else 50.dp
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clearAndSetSemantics { contentDescription = description },
+        verticalAlignment = Alignment.Top,
+    ) {
+        nodes.forEachIndexed { index, node ->
+            val on = index < lit
+            Column(
+                Modifier.width(nodeWidth),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    Modifier
+                        .size(NODE_SIZE)
+                        .clip(CircleShape)
+                        .background(if (on) tone.copy(alpha = 0.16f) else accents.card)
+                        .border(
+                            1.dp,
+                            if (on) tone.copy(alpha = 0.70f) else accents.cardBorder,
+                            CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        node.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = if (on) tone else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    node.label,
+                    Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (on) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (index < nodes.lastIndex) {
+                val done = index + 1 < lit
+                val active = reaching && index + 1 == lit
+                val snapped = broken && index + 1 == lit
+                Canvas(
+                    Modifier
+                        .weight(1f)
+                        .height(NODE_SIZE),
+                ) {
+                    val y = size.height / 2f
+                    val rtl = layoutDirection == LayoutDirection.Rtl
+                    val stroke = 2.dp.toPx()
+                    val dash = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx()))
+                    val start = Offset(0f, y)
+                    val end = Offset(size.width, y)
+                    when {
+                        done -> {
+                            drawLine(tone.copy(alpha = 0.85f), start, end, stroke, StrokeCap.Round)
+                            if (flowing && !reduced) {
+                                repeat(2) { k ->
+                                    val f = (flow.value + k / 2f) % 1f
+                                    val x = if (rtl) size.width * (1f - f) else size.width * f
+                                    drawCircle(tone.copy(alpha = 0.25f), 5.dp.toPx(), Offset(x, y))
+                                    drawCircle(tone, 2.5.dp.toPx(), Offset(x, y))
+                                }
+                            }
+                        }
+                        active -> {
+                            drawLine(
+                                track.copy(alpha = 0.6f), start, end, stroke,
+                                StrokeCap.Round, dash,
+                            )
+                            if (!reduced) {
+                                val band = size.width * 0.5f
+                                val travel = -band + flow.value * (size.width + band)
+                                val left = if (rtl) size.width - travel - band else travel
+                                drawLine(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(Color.Transparent, tone, Color.Transparent),
+                                        startX = left,
+                                        endX = left + band,
+                                    ),
+                                    start = start,
+                                    end = end,
+                                    strokeWidth = stroke,
+                                    cap = StrokeCap.Round,
+                                )
+                            } else {
+                                // No motion: half a link in the tone says "this
+                                // one is being reached" just as clearly.
+                                val half = size.width / 2f
+                                drawLine(
+                                    tone,
+                                    if (rtl) Offset(size.width, y) else start,
+                                    Offset(half, y),
+                                    stroke,
+                                    StrokeCap.Round,
+                                )
+                            }
+                        }
+                        snapped -> drawLine(tone, start, end, stroke, StrokeCap.Round, dash)
+                        else -> drawLine(
+                            track.copy(alpha = 0.6f), start, end, stroke,
+                            StrokeCap.Round, dash,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun IconChip(icon: ImageVector, tint: Color) {
+    Box(
+        Modifier
+            .size(28.dp)
+            .clip(MaterialTheme.shapes.small)
+            .background(tint.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, null, Modifier.size(15.dp), tint)
+    }
+}
+
+/**
+ * Fast / slower / slowest, from the hops themselves - the same ordering the
+ * Chain settings page uses, so a mode never has two different price tags.
+ */
+@Composable
+private fun TierBadge(mode: ChainMode) {
+    val accents = LocalAetherAccents.current
+    val label: String
+    val tone: Color
+    when {
+        mode.usesTor -> {
+            label = stringResource(R.string.chain_tier_slow)
+            tone = accents.failed
+        }
+        mode.usesPsiphon -> {
+            label = stringResource(R.string.chain_tier_moderate)
+            tone = accents.working
+        }
+        else -> {
+            label = stringResource(R.string.chain_tier_fast)
+            tone = accents.protected
+        }
+    }
+    Surface(color = tone.copy(alpha = 0.14f), shape = MaterialTheme.shapes.small) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            style = AetherMetaLabel,
+            color = tone,
+            maxLines = 1,
+        )
+    }
+}
+
+// --------------------------------------------------------------- route sheet --
+
+/**
+ * The route picker, where the route is.
  *
- * The clock is pinned LTR and monospaced: it is an instrument readout, and in
- * the Persian locale a bidi-reordered duration is worse than no duration.
+ * Same rules as the Chain settings page: one radio group for all seven modes,
+ * modes whose core is missing from this build are dimmed AND unselectable with
+ * the missing core named, and every mode carries its cost tier. Per-core
+ * options (exit countries, bridges) stay on the settings page - this sheet
+ * answers "which path", not "how is each hop tuned".
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RouteSheet(
+    selected: ChainMode,
+    onDismiss: () -> Unit,
+    onSelect: (ChainMode) -> Unit,
+) {
+    val context = LocalContext.current
+    // Install-time facts: read once, never per recomposition.
+    val cores = remember(context) { CoreAvailability.of(context) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+        ) {
+            Text(
+                stringResource(R.string.conn_route_sheet_title),
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.semantics { heading() },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.conn_route_sheet_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(18.dp))
+            Column(Modifier.fillMaxWidth().selectableGroup()) {
+                Text(
+                    stringResource(R.string.chain_group_single),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                ChainMode.entries.filterNot { it.isChained }.forEach { mode ->
+                    RouteOption(mode, selected, cores, onSelect)
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    stringResource(R.string.chain_group_stacked),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                ChainMode.entries.filter { it.isChained }.forEach { mode ->
+                    RouteOption(mode, selected, cores, onSelect)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteOption(
+    mode: ChainMode,
+    selected: ChainMode,
+    cores: CoreAvailability.Snapshot,
+    onSelect: (ChainMode) -> Unit,
+) {
+    val accents = LocalAetherAccents.current
+    val missing = cores.missing(mode)
+    val runnable = missing.isEmpty()
+    val active = mode == selected
+    val alpha = if (runnable) 1f else 0.45f
+    val tint = if (active) accents.brand else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .selectable(
+                selected = active,
+                enabled = runnable,
+                role = Role.RadioButton,
+                onClick = { onSelect(mode) },
+            ),
+        shape = MaterialTheme.shapes.medium,
+        color = if (active) accents.brandWash else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, if (active) accents.brand else accents.cardBorder),
+    ) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            HopStack(mode, tint, alpha)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        chainLabel(mode),
+                        Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TierBadge(mode)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    chainDescription(mode),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!runnable) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(
+                            R.string.chain_mode_unavailable,
+                            missing.joinToString(", ") { it.label },
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = accents.failed,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                if (active) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = tint.copy(alpha = alpha),
+            )
+        }
+    }
+}
+
+/** The hops of a mode as overlapping chips, entry first. Fixed width so rows align. */
+@Composable
+private fun HopStack(mode: ChainMode, tint: Color, alpha: Float) {
+    val accents = LocalAetherAccents.current
+    val hops = mode.hops.asReversed()
+    Box(
+        Modifier
+            .width(HOP_CHIP + HOP_STEP * 2)
+            .height(HOP_CHIP),
+    ) {
+        hops.forEachIndexed { index, hop ->
+            Box(
+                Modifier
+                    .offset(x = HOP_STEP * index)
+                    .size(HOP_CHIP)
+                    .clip(CircleShape)
+                    .background(accents.card)
+                    .border(1.dp, tint.copy(alpha = 0.5f * alpha), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(hopIcon(hop), null, Modifier.size(14.dp), tint.copy(alpha = alpha))
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------- live traffic --
+
+/**
+ * Live traffic, one tile per direction: rate now, a level meter, session total.
+ *
+ * A fresh session never shows the previous one's last reading, not even for
+ * the frame between Connected and the monitor's first tick.
+ */
+@Composable
+private fun LiveTraffic(connectedSince: Long?) {
+    val accents = LocalAetherAccents.current
+    val latest by TrafficMonitor.sample.collectAsStateWithLifecycle()
+    val zero = remember(connectedSince) { TrafficMonitor.Sample() }
+    val sample = if (latest.live) latest else zero
+    Row(Modifier.fillMaxWidth()) {
+        RateTile(
+            label = stringResource(R.string.traffic_download),
+            rate = sample.downloadRate,
+            total = sample.downloadBytes,
+            icon = Icons.Rounded.ArrowDownward,
+            tint = accents.protected,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        RateTile(
+            label = stringResource(R.string.traffic_upload),
+            rate = sample.uploadRate,
+            total = sample.uploadBytes,
+            icon = Icons.Rounded.ArrowUpward,
+            tint = accents.brand,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun RateTile(
+    label: String,
+    rate: Long,
+    total: Long,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    val accents = LocalAetherAccents.current
+    val track = MaterialTheme.colorScheme.outlineVariant
+    val level by animateFloatAsState(
+        targetValue = rateLevel(rate),
+        animationSpec = tween(aetherDuration(AetherDur.Base), easing = AetherEaseOut),
+        label = "rate",
+    )
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = accents.card,
+        border = BorderStroke(1.dp, accents.cardBorder),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconChip(icon, tint)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    label,
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                TrafficMonitor.formatRate(rate),
+                style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(8.dp))
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clearAndSetSemantics { },
+            ) {
+                val radius = CornerRadius(size.height / 2f)
+                drawRoundRect(color = track.copy(alpha = 0.4f), cornerRadius = radius)
+                val width = size.width * level
+                if (width > 0.5f) {
+                    val rtl = layoutDirection == LayoutDirection.Rtl
+                    drawRoundRect(
+                        brush = Brush.horizontalGradient(listOf(tint.copy(alpha = 0.55f), tint)),
+                        topLeft = Offset(if (rtl) size.width - width else 0f, 0f),
+                        size = Size(width, size.height),
+                        cornerRadius = radius,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                TrafficMonitor.formatBytes(total),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = AetherMono,
+                    textDirection = TextDirection.Ltr,
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------- phase track --
+
+/**
+ * The four phases as ONE animated object: finished capsules lit with a
+ * gradient, the running one carrying a travelling band, the future ones dim,
+ * plus "step N of 4" so the progress is also a sentence. RTL-mirrored from the
+ * draw scope's layout direction; the clock is pinned LTR and monospaced.
  */
 @Composable
 private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
@@ -675,7 +1409,6 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
                 val done = index < current
                 val running = index == current
 
-                // Glow first, so the capsule sits on top of its own halo.
                 if (done || running) {
                     val spread = 3.dp.toPx()
                     drawRoundRect(
@@ -686,9 +1419,6 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
                     )
                 }
                 if (done) {
-                    // Lit, not painted: a vertical gradient gives the capsule a
-                    // light source, which is the difference between "finished"
-                    // and "switched off".
                     drawRoundRect(
                         brush = Brush.verticalGradient(
                             colors = listOf(tone, tone.copy(alpha = 0.68f)),
@@ -709,8 +1439,6 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
                 }
                 if (running) {
                     if (reduced) {
-                        // No travelling band with motion off: a half-filled
-                        // capsule says "this one is running" just as clearly.
                         drawRoundRect(
                             color = tone.copy(alpha = 0.55f),
                             topLeft = Offset(left, top),
@@ -765,16 +1493,13 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
     }
 }
 
+// ------------------------------------------------------------- session bento --
+
 /**
- * THE BENTO GRID: everything factual about the live session, ranked.
- *
- *   row 1  the exit IP, wide, over a tonal wash, with its flag and country - the
- *          fact that proves traffic is leaving through the tunnel, and the first
- *          thing anyone checks
- *   row 2  the protocol that actually won, and how long this session has been up
- *
- * Every value is monospaced and pinned LTR. That BiDi fix is load-bearing in the
- * Persian locale, where `104.28.197.15` otherwise renders reordered.
+ * Everything factual about the live session, ranked: the exit IP wide over a
+ * tonal wash, then the winning protocol and the session clock. Every value is
+ * monospaced and pinned LTR - load-bearing in Persian, where an IP address
+ * otherwise renders reordered.
  */
 @Composable
 private fun SessionBento(
@@ -824,13 +1549,7 @@ private fun SessionBento(
     }
 }
 
-/**
- * The headline tile: whose network the internet sees you coming out of.
- *
- * The tonal wash behind it is the only gradient on a factual surface in the app,
- * and it is here because this tile is the ANSWER - it should not look like the
- * two tiles under it that merely describe how the answer was reached.
- */
+/** The headline tile: whose network the internet sees you coming out of. */
 @Composable
 private fun ExitTile(
     ipInfo: IpEndpoint?,
@@ -910,14 +1629,7 @@ private fun ExitTile(
     }
 }
 
-/**
- * One cell of the grid.
- *
- * Its own bordered surface rather than a [StatTile] inside a card: the bento is
- * a grid of objects, and a tile that shares a background with its neighbours is
- * a table row wearing a grid's spacing. The icon sits in a tinted chip so the
- * tile has a focal point at a glance instead of two lines of equal-weight text.
- */
+/** One cell of the grid, with its icon in a tinted chip as the focal point. */
 @Composable
 private fun BentoTile(
     label: String,
@@ -937,15 +1649,7 @@ private fun BentoTile(
         Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (icon != null) {
-                    Box(
-                        Modifier
-                            .size(24.dp)
-                            .clip(MaterialTheme.shapes.small)
-                            .background(tint.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(icon, null, Modifier.size(14.dp), tint)
-                    }
+                    IconChip(icon, tint)
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
@@ -973,13 +1677,9 @@ private fun BentoTile(
 }
 
 /**
- * A monotonic clock, for an in-flight attempt or a live session.
- *
- * Sleeps to the next whole second OF THE PERIOD rather than a flat 1000ms, so
- * the error does not accumulate into a digit that shows the same second twice
- * and then skips one. Lifecycle-scoped, so a backgrounded app is not redrawing a
- * counter nobody can see - and stopped entirely when nothing is running, because
- * an idle screen has no business running a loop.
+ * A monotonic clock, for an in-flight attempt or a live session. Sleeps to the
+ * next whole second of the period, lifecycle-scoped, and stopped entirely when
+ * nothing is running.
  */
 @Composable
 private fun tickingElapsed(since: Long?, running: Boolean): String {
@@ -999,14 +1699,7 @@ private fun tickingElapsed(since: Long?, running: Boolean): String {
     return formatSessionUptime(since, now)
 }
 
-/**
- * The word INSIDE the ring.
- *
- * Deliberately not [connectionStatusLabel] and not [connectionTitle]: the ring
- * has room for one or two words at headline size, and the full sentence lives
- * under the orb where it can wrap. Same four words the badge and the dock use,
- * so the three never disagree.
- */
+/** The word INSIDE the ring. Same four words the badge uses. */
 @Composable
 private fun stateWord(state: ConnectionState): String = stringResource(
     when {
@@ -1042,13 +1735,26 @@ private fun connectionTitle(state: ConnectionState): String = stringResource(
     },
 )
 
+/**
+ * The sentence under the title. Chain-aware: "through Cloudflare WARP" and "the
+ * scan mode" only mean something when Aether is in the chain.
+ */
 @Composable
 private fun connectionHint(state: ConnectionState, profile: ConnectionProfile): String =
     when (state) {
-        is ConnectionState.Idle -> stringResource(R.string.passage_start_hint)
+        is ConnectionState.Idle ->
+            if (profile.chain == ChainMode.AETHER) {
+                stringResource(R.string.passage_start_hint)
+            } else {
+                stringResource(R.string.conn_start_hint_chain, chainLabel(profile.chain))
+            }
         is ConnectionState.Connected -> stringResource(R.string.passage_connected_hint)
         is ConnectionState.Launching, is ConnectionState.Connecting ->
-            stringResource(R.string.busy_hint, scanLabel(profile.scanMode))
+            if (profile.chain.usesAether) {
+                stringResource(R.string.busy_hint, scanLabel(profile.scanMode))
+            } else {
+                stringResource(R.string.conn_busy_chain, chainLabel(profile.chain))
+            }
         is ConnectionState.Verifying -> stringResource(R.string.state_verify_hint)
         is ConnectionState.Reconnecting ->
             stringResource(R.string.reconnect_attempt, state.attempt, state.maxAttempts)

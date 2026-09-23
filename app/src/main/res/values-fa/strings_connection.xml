@@ -5,4 +5,22 @@
 
     <!-- نوار مراحل: خودِ نوار حس پیشرفت می‌دهد، این جمله واقعیت را می‌گوید -->
     <string name="conn_phase_step">مرحلهٔ %1$d از %2$d · %3$s</string>
+
+    <!-- کارت مسیر -->
+    <string name="conn_route_title">مسیر</string>
+    <string name="conn_route_change">تغییر مسیر</string>
+    <string name="conn_route_locked">برای تغییر مسیر، ابتدا اتصال را قطع کنید.</string>
+    <string name="conn_node_you">شما</string>
+    <string name="conn_node_internet">اینترنت</string>
+    <string name="conn_exit_label">خروجی</string>
+    <string name="conn_exit_warp">لبهٔ Cloudflare</string>
+    <string name="conn_exit_auto">خودکار</string>
+
+    <!-- برگهٔ انتخاب مسیر -->
+    <string name="conn_route_sheet_title">مسیر اتصال را انتخاب کنید</string>
+    <string name="conn_route_sheet_note">هر لایهٔ اضافه از فیلترهای بیشتری عبور می‌کند و سرعت را کم می‌کند. از سریع‌ترین شروع کنید و فقط وقتی جواب نداد لایه اضافه کنید.</string>
+
+    <!-- راهنمای وابسته به زنجیره. %1$s نام زنجیره است. -->
+    <string name="conn_start_hint_chain">با یک لمس از طریق %1$s متصل شوید.</string>
+    <string name="conn_busy_chain">در حال راه‌اندازی %1$s. زنجیره‌های دارای Tor ممکن است چند دقیقه طول بکشند.</string>
 </resources>

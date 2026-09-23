@@ -2,9 +2,27 @@
 <!-- Copy that belongs to the redesigned connection tab only. Kept separate so
      the shared UI strings stay a stable diff. -->
 <resources>
-    <!-- Stack strip above the hero control -->
+    <!-- Stack strip above the hero control (kept for older layouts) -->
     <string name="conn_stack_scan">Scan mode</string>
 
     <!-- Phase track: the bar is a feeling, this is the fact -->
     <string name="conn_phase_step">Step %1$d of %2$d · %3$s</string>
+
+    <!-- Route card -->
+    <string name="conn_route_title">Route</string>
+    <string name="conn_route_change">Change route</string>
+    <string name="conn_route_locked">Disconnect to change the route.</string>
+    <string name="conn_node_you">You</string>
+    <string name="conn_node_internet">Internet</string>
+    <string name="conn_exit_label">Exit</string>
+    <string name="conn_exit_warp">Cloudflare edge</string>
+    <string name="conn_exit_auto">Automatic</string>
+
+    <!-- Route picker sheet -->
+    <string name="conn_route_sheet_title">Choose your route</string>
+    <string name="conn_route_sheet_note">Every extra hop gets past more filters, and costs speed. Start with the fastest and only stack when it does not get through.</string>
+
+    <!-- Chain-aware hints. %1$s is the chain name, e.g. "Tor over Aether". -->
+    <string name="conn_start_hint_chain">One tap to connect through %1$s.</string>
+    <string name="conn_busy_chain">Starting %1$s. Chains with Tor can take a few minutes.</string>
 </resources>
