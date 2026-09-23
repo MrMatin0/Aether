@@ -10,20 +10,31 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.ui.scanDescription
 import studio.cluvex.aether.ui.scanEta
 import studio.cluvex.aether.ui.scanLabel
 
-/** Keep the choice and its time cost readable even with large Persian text. */
+/**
+ * Keep the choice and its time cost readable even with large Persian text.
+ *
+ * Only the modes the BUNDLED engine parses are listed ([ScanMode.offeredBy]):
+ * an unknown flag is fatal to the engine, so Verified appears once the core is
+ * 2.1.0 and not before. A stored mode this core cannot run is shown as the mode
+ * it is actually run with ([ScanMode.effectiveFor]), so the highlighted row is
+ * always the truth.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ScanModeSelector(
     selected: ScanMode, onSelect: (ScanMode) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
 ) {
+    val core = BuildConfig.CORE_VERSION
+    val shown = selected.effectiveFor(core)
     Column(modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ScanMode.entries.forEach { mode ->
-            val chosen = mode == selected
+        ScanMode.offeredBy(core).forEach { mode ->
+            val chosen = mode == shown
             val colors = MaterialTheme.colorScheme
             Surface(shape = MaterialTheme.shapes.medium,
                 color = if (chosen) colors.primaryContainer else colors.surface,

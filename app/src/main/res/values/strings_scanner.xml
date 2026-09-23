@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Scan modes. Kept in its own file so the historical strings.xml stays a
-     stable diff. These three names are the only ones the UI knows; the five
-     retired ones (scan_balanced, scan_thorough, scan_stealth, scan_ironclad)
-     are no longer referenced from Kotlin. -->
+     stable diff. These four names are the only ones the UI knows (Verified only
+     appears with core 2.1.0 or newer); the five retired ones (scan_balanced,
+     scan_thorough, scan_stealth, scan_ironclad) are no longer referenced from
+     Kotlin. -->
 <resources>
     <string name="scan_mode_hint">This is a trade: how long the app looks for a server before it settles on one. Turbo is enough on most networks.</string>
 
@@ -13,6 +14,10 @@
     <string name="scan_mode_precise">Precise</string>
     <string name="scan_mode_precise_desc">Collects several working servers and keeps the fastest one. Recommended.</string>
     <string name="scan_mode_precise_eta">1-3 min</string>
+
+    <string name="scan_mode_verified">Verified</string>
+    <string name="scan_mode_verified_desc">Only dials servers measured to actually carry a tunnel, never a guessed neighbour. With MASQUE-in-MASQUE or WARP×2 it also keeps the two hops in different ranges, which is what changes your exit address.</string>
+    <string name="scan_mode_verified_eta">about 1 min</string>
 
     <string name="scan_mode_ultra">Very precise</string>
     <string name="scan_mode_ultra_desc">Only accepts a server that carries a real request all the way through. For heavily filtered networks, where the tunnel connects but nothing loads.</string>

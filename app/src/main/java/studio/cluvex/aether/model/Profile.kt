@@ -1,5 +1,6 @@
 package studio.cluvex.aether.model
 
+import studio.cluvex.aether.BuildConfig
 
 /**
  * Transport protocol, mapped 1:1 to the engine's CLI flags.
@@ -33,34 +34,68 @@ enum class Protocol {
 }
 
 /**
- * How hard the engine's endpoint scanner tries. THREE modes, and that is the
- * whole surface the UI offers.
+ * How hard the engine's endpoint scanner tries.
  *
- * WHY THREE AND NOT FIVE: this used to be TURBO, BALANCED, THOROUGH, STEALTH
- * and IRONCLAD. Two of those were the same intention with a different amount of
- * patience (balanced vs thorough), one was "balanced, but slower and quieter"
- * (stealth), and the only genuinely different one - every candidate has to
- * carry a REAL request end to end before it is accepted - was called
- * "ironclad", a word that cannot be ranked against "thorough" by anyone who has
- * not read the engine source. Five options, three meanings, no guidance.
+ * WHY SO FEW: this used to be TURBO, BALANCED, THOROUGH, STEALTH and IRONCLAD.
+ * Two of those were the same intention with a different amount of patience
+ * (balanced vs thorough), one was "balanced, but slower and quieter" (stealth),
+ * and the only genuinely different one - every candidate has to carry a REAL
+ * request end to end before it is accepted - was called "ironclad", a word that
+ * cannot be ranked against "thorough" by anyone who has not read the engine
+ * source. Five options, three meanings, no guidance.
  *
- * So the modes are now the three questions a user actually has:
+ * So the modes are the questions a user actually has:
  *
- *  - [TURBO]   "just get me online"      -> first edge that answers wins
- *  - [PRECISE] "give me a good one"      -> collect several, keep the fastest
- *  - [ULTRA]   "nothing works here"      -> only accept an edge that proves
+ *  - [TURBO]    "just get me online"     -> first edge that answers wins
+ *  - [PRECISE]  "give me a good one"     -> collect several, keep the fastest
+ *  - [VERIFIED] "only proven edges"      -> dial only edges measured to answer
+ *                                           connect-ip, never a guessed
+ *                                           neighbour; on gool and mim the two
+ *                                           hops come from different ranges,
+ *                                           which is what moves the exit
+ *  - [ULTRA]    "nothing works here"     -> only accept an edge that proves
  *                                           itself with a real request
+ *
+ * ENGINE FLAGS ARE UPSTREAM'S OWN NAMES. Until 1.5.0 this sent `--precise` and
+ * `--ultra`, which only this repo's patched cli.rs understood - so an upstream
+ * sync that dropped the patch would have failed every connect on the default
+ * mode with "unknown option". The aliases are still carried in cli.rs for
+ * shells and scripts, but nothing in the app depends on them any more.
+ *
+ * [sinceCore] is the first engine version that parses [engineFlag]. The engine
+ * treats an unknown option as fatal, so a mode newer than the bundled core is
+ * neither offered ([offeredBy]) nor sent ([effectiveFor]).
  *
  * [engineFlag] is the single place a mode becomes an engine argument, and
  * [fromStored] is the single place an older saved name becomes one of these.
  */
-enum class ScanMode(val engineFlag: String) {
+enum class ScanMode(val engineFlag: String, val sinceCore: String? = null) {
     TURBO("--turbo"),
-    PRECISE("--precise"),
-    ULTRA("--ultra"),
+    PRECISE("--balanced"),
+    VERIFIED("--verified", sinceCore = "2.1.0"),
+    ULTRA("--ironclad"),
     ;
 
+    /** True when an engine of [coreVersion] parses this mode's flag. */
+    fun isSupportedBy(coreVersion: String): Boolean =
+        sinceCore?.let { CoreVersion.atLeast(coreVersion, it) } ?: true
+
+    /**
+     * The mode an engine of [coreVersion] is actually run with.
+     *
+     * A mode the core cannot parse becomes [PRECISE] rather than an argument
+     * the engine refuses. That only happens with a profile saved by a newer
+     * build (or imported from one) and run against an older core; the picker
+     * never offers such a mode in the first place.
+     */
+    fun effectiveFor(coreVersion: String): ScanMode =
+        if (isSupportedBy(coreVersion)) this else PRECISE
+
     companion object {
+        /** The modes the picker offers for an engine of [coreVersion], in order. */
+        fun offeredBy(coreVersion: String): List<ScanMode> =
+            entries.filter { it.isSupportedBy(coreVersion) }
+
         /**
          * Reads a mode from a persisted / transported name, or null when the
          * value means nothing (the caller then keeps its own default).
@@ -71,6 +106,10 @@ enum class ScanMode(val engineFlag: String) {
          * user who had chosen THOROUGH would silently be moved to the default
          * on upgrade - and "my settings reset themselves" is exactly the kind
          * of thing that gets read as a broken update.
+         *
+         * A stored STEALTH still means PRECISE, not VERIFIED: it was chosen as
+         * "quiet and patient", and upstream 2.1.0 reusing the word as an alias
+         * of verified does not change what the user asked for.
          */
         fun fromStored(raw: String?): ScanMode? {
             val name = raw?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
@@ -81,6 +120,33 @@ enum class ScanMode(val engineFlag: String) {
                 else -> null
             }
         }
+    }
+}
+
+/**
+ * Dotted engine versions as written to native/aether/CORE_VERSION (and from
+ * there to BuildConfig.CORE_VERSION): `2.1.0`, optionally `v`-prefixed or with
+ * a `-suffix`. Anything unparseable - `unknown` on a build without a vendored
+ * core - is treated as older than every requirement, because a flag the engine
+ * does not know is fatal and "not offered" is the safe side of that.
+ */
+object CoreVersion {
+
+    fun parse(raw: String?): List<Int>? {
+        val text = raw?.trim()?.removePrefix("v")?.removePrefix("V") ?: return null
+        val numbers = text.split('.', '-', '+').take(3).map { it.toIntOrNull() ?: return null }
+        return numbers.takeIf { it.isNotEmpty() }
+    }
+
+    fun atLeast(actual: String?, required: String): Boolean {
+        val have = parse(actual) ?: return false
+        val need = parse(required) ?: return true
+        for (i in 0 until maxOf(have.size, need.size)) {
+            val a = have.getOrElse(i) { 0 }
+            val b = need.getOrElse(i) { 0 }
+            if (a != b) return a > b
+        }
+        return true
     }
 }
 
@@ -133,6 +199,12 @@ enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("war
  * was a second, independent Tor with its own bridges and bootstrap competing
  * with the first - so the engine is built without it and this profile has no way
  * to ask for it.
+ *
+ * ONE PSIPHON. Same rule, same reason. Engine v2.1.0 can spawn its own
+ * psiphon-tunnel-core ConsoleClient (`--psiphon*`), built from a second fork
+ * and branch. The app already has a Psiphon - core/PsiphonCore.kt, built from
+ * source to close audit finding F-8 - so this profile never emits `--psiphon*`
+ * or `AETHER_PSIPHON*`. EngineOverlayGuardTest holds both rules.
  */
 data class ConnectionProfile(
     val protocol: Protocol = Protocol.AUTO,
@@ -282,7 +354,7 @@ data class ConnectionProfile(
      *
      * None of the fields below reach the engine's CLI - they configure the
      * Psiphon and Tor children instead (see PsiphonCore / TorCore). TorCore is
-     * the app's ONLY Tor.
+     * the app's ONLY Tor, and PsiphonCore its ONLY Psiphon.
      */
     val chain: ChainMode = ChainMode.AETHER,
 
@@ -469,8 +541,15 @@ data class ConnectionProfile(
             torBridgeLines.lines().map { it.trim() }.filter { it.isNotEmpty() }
         }
 
-    /** Command-line arguments passed to the `aether` engine binary. */
-    fun toArgs(): List<String> {
+    /**
+     * Command-line arguments passed to the `aether` engine binary.
+     *
+     * [coreVersion] is the engine these arguments are for. It defaults to the
+     * core bundled in this APK and only exists as a parameter so tests can pin
+     * it: a flag the engine does not know is fatal, so what is emitted has to
+     * depend on which engine will read it.
+     */
+    fun toArgs(coreVersion: String = BuildConfig.CORE_VERSION): List<String> {
         val args = mutableListOf<String>()
 
         when (protocol) {
@@ -488,8 +567,9 @@ data class ConnectionProfile(
 
         // A pinned peer makes scan mode irrelevant, so only emit it otherwise.
         // The flag lives on the mode itself, so there is exactly one place
-        // where a mode becomes an engine argument.
-        if (!hasManualPeer) args += scanMode.engineFlag
+        // where a mode becomes an engine argument - and effectiveFor() makes
+        // sure it is one this engine parses.
+        if (!hasManualPeer) args += scanMode.effectiveFor(coreVersion).engineFlag
 
         when (ipVersion) {
             IpVersion.V4 -> args += "-4"
@@ -574,8 +654,10 @@ data class ConnectionProfile(
 
         sanitizedMark()?.let { args += "--mark"; args += it }
 
-        // Deliberately NO --tor / --tor-reverse / --tor-only here. Tor is the
-        // app's TorCore, reached through the chain modes; see the class doc.
+        // Deliberately NO --tor / --tor-reverse / --tor-only and NO --psiphon /
+        // --psiphon-reverse / --psiphon-only here. Tor is the app's TorCore and
+        // Psiphon its PsiphonCore, both reached through the chain modes; see
+        // the class doc.
 
         return args
     }
@@ -684,22 +766,31 @@ data class ConnectionProfile(
      * giving up.
      *
      * This MUST comfortably exceed the engine's OWN scan budget for the chosen
-     * mode (prober/scan.rs: 45 s turbo, 150 s precise, 300 s ultra on MASQUE),
-     * otherwise the app aborts an attempt while the engine is still
-     * legitimately scanning - which looks exactly like a failure and is not
-     * one. A pinned peer connects almost immediately.
+     * mode (prober.rs strategy(): 45 s turbo, 120-150 s balanced, 60 s verified,
+     * 180-300 s ironclad on MASQUE, depending on the core), otherwise the app
+     * aborts an attempt while the engine is still legitimately scanning - which
+     * looks exactly like a failure and is not one. A pinned peer connects almost
+     * immediately.
+     *
+     * Verified gets twice its engine budget because on gool and mim it scans for
+     * two hops in two different ranges.
+     *
+     * The budget is the one for the mode the engine will actually RUN
+     * ([ScanMode.effectiveFor]), so a Verified profile on a pre-2.1.0 core is
+     * waited on like the Precise scan it becomes.
      *
      * Chained cores are NOT included here: each of them has its own budget in
      * VpnTunables and its own readiness signal, and folding them into one
      * number would mean a slow Tor bootstrap looked like a slow endpoint scan.
      */
-    fun connectTimeoutMs(): Long =
+    fun connectTimeoutMs(coreVersion: String = BuildConfig.CORE_VERSION): Long =
         if (hasManualPeer) {
             45_000L
         } else {
-            when (scanMode) {
+            when (scanMode.effectiveFor(coreVersion)) {
                 ScanMode.TURBO -> 60_000L
                 ScanMode.PRECISE -> 190_000L
+                ScanMode.VERIFIED -> 120_000L
                 ScanMode.ULTRA -> 340_000L
             }
         }

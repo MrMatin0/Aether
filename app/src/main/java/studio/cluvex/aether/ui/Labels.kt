@@ -48,6 +48,7 @@ internal fun protocolLabel(protocol: Protocol): String = when (protocol) {
 internal fun scanLabel(mode: ScanMode): String = when (mode) {
     ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo)
     ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise)
+    ScanMode.VERIFIED -> stringResource(R.string.scan_mode_verified)
     ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra)
 }
 
@@ -56,6 +57,7 @@ internal fun scanLabel(mode: ScanMode): String = when (mode) {
 internal fun scanDescription(mode: ScanMode): String = when (mode) {
     ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo_desc)
     ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise_desc)
+    ScanMode.VERIFIED -> stringResource(R.string.scan_mode_verified_desc)
     ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra_desc)
 }
 
@@ -64,6 +66,7 @@ internal fun scanDescription(mode: ScanMode): String = when (mode) {
 internal fun scanEta(mode: ScanMode): String = when (mode) {
     ScanMode.TURBO -> stringResource(R.string.scan_mode_turbo_eta)
     ScanMode.PRECISE -> stringResource(R.string.scan_mode_precise_eta)
+    ScanMode.VERIFIED -> stringResource(R.string.scan_mode_verified_eta)
     ScanMode.ULTRA -> stringResource(R.string.scan_mode_ultra_eta)
 }
 
