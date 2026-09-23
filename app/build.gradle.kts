@@ -33,8 +33,8 @@ plugins {
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
-val appVersionName = "1.4.6"
-val appBaseVersionCode = 14
+val appVersionName = "1.5.0"
+val appBaseVersionCode = 15
 
 // Each split APK needs its own code, and the universal one must outrank both,
 // otherwise a device that can take the arm64 split could still be offered the
