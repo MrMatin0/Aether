@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -55,6 +56,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var onboardingStore: OnboardingStore
     private var pendingProfile: ConnectionProfile? = null
 
+    /**
+     * True from the moment a connect tap is accepted until the attempt has been
+     * handed to the controller (or consent has come back).
+     *
+     * WHAT WAS WRONG: prepare() is asynchronous and the controller does not
+     * leave Idle until connect() runs, so for that whole window the orb still
+     * said "Connect". A fast double tap (or a tap racing connect-on-launch)
+     * started two attempts, or stacked two system consent dialogs on top of
+     * each other. Instance scope is enough: a recreated activity cannot have a
+     * tap in flight.
+     */
+    private var connectInFlight = false
+
     private val uiProfile = MutableStateFlow<ConnectionProfile?>(null)
     private val profileSaves = MutableSharedFlow<ConnectionProfile>(
         replay = 1,
@@ -65,7 +79,14 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val requested = pendingProfile
             pendingProfile = null
-            if (result.resultCode != RESULT_OK) return@registerForActivityResult
+            connectInFlight = false
+            if (result.resultCode != RESULT_OK) {
+                // Used to return silently: the user tapped Connect, answered a
+                // system dialog, and the screen looked exactly as before. Say
+                // what happened and what to do about it.
+                showToast(R.string.conn_vpn_denied)
+                return@registerForActivityResult
+            }
             // The process can be killed while the consent dialog is on screen;
             // the registry redelivers RESULT_OK to the recreated activity, but
             // its pendingProfile is null then. Fall back to the persisted
@@ -195,7 +216,11 @@ class MainActivity : ComponentActivity() {
                                 uiProfile.value = updated
                                 profileSaves.tryEmit(updated)
                             },
-                            onToggleConnection = { toggleConnection(state) },
+                            // The LIVE state, read at tap time. The composed
+                            // `state` can be a frame behind the controller, and
+                            // acting on it turned a tap during a transition into
+                            // the opposite of what the orb was showing.
+                            onToggleConnection = { toggleConnection(AetherController.state.value) },
                         )
                     }
                 }
@@ -228,20 +253,43 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleConnection(state: ConnectionState) {
+        // Teardown is already under way. A second disconnect is noise, and the
+        // orb deliberately offers neither connect nor cancel here.
+        if (state is ConnectionState.Disconnecting) return
         if (state.isConnected || state.isBusy) {
             AetherController.disconnect(this)
             return
         }
+        if (connectInFlight) return
+        connectInFlight = true
         lifecycleScope.launch {
-            val profile = uiProfile.value ?: profileStore.profile.first()
-            val consent = AetherController.prepare(this@MainActivity)
-            if (consent != null) {
-                pendingProfile = profile
-                vpnPermissionLauncher.launch(consent)
-            } else {
-                AetherController.connect(this@MainActivity, profile)
+            var awaitingConsent = false
+            try {
+                val profile = uiProfile.value ?: profileStore.profile.first()
+                val consent = AetherController.prepare(this@MainActivity)
+                if (consent != null) {
+                    pendingProfile = profile
+                    // Some OEM builds ship without the consent activity, and an
+                    // always-on VPN owned by another app can refuse it: either
+                    // used to crash the tap or swallow it.
+                    awaitingConsent = runCatching { vpnPermissionLauncher.launch(consent) }.isSuccess
+                    if (!awaitingConsent) {
+                        pendingProfile = null
+                        showToast(R.string.conn_vpn_unavailable)
+                    }
+                } else {
+                    AetherController.connect(this@MainActivity, profile)
+                }
+            } finally {
+                // While consent is on screen the flag stays up; the launcher
+                // callback lowers it.
+                if (!awaitingConsent) connectInFlight = false
             }
         }
+    }
+
+    private fun showToast(message: Int) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     /**

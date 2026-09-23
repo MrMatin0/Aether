@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="conn_error_hint">دوباره تلاش کنید، یا از پایین مسیر دیگری انتخاب کنید.</string>
+    <string name="conn_disconnecting_hint">در حال بستن تونل و بازگرداندن اتصال عادی شما.</string>
+    <string name="conn_vpn_denied">اندروید اجازه VPN را نداد، پس اتصالی برقرار نشد. برای تلاش دوباره «اتصال» را بزنید.</string>
+    <string name="conn_vpn_unavailable">صفحه مجوز VPN اندروید باز نشد. مطمئن شوید برنامه دیگری به عنوان VPN همیشه روشن تنظیم نشده باشد.</string>
+</resources>
