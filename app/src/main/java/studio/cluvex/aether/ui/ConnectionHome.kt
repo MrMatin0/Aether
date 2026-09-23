@@ -161,6 +161,18 @@ internal fun buttonMode(state: ConnectionState): ButtonMode = when {
     else -> ButtonMode.IDLE
 }
 
+/**
+ * Whether the orb takes a tap at all.
+ *
+ * Everything but teardown: busy stages must stay cancellable, and Error is a
+ * retry. During Disconnecting the action label already refuses to offer connect
+ * or cancel (see connectionActionLabel), but the orb itself still squeezed,
+ * buzzed and fired a second disconnect - a control that said one thing and did
+ * another.
+ */
+internal fun connectControlEnabled(state: ConnectionState): Boolean =
+    state !is ConnectionState.Disconnecting
+
 /** Only the forward states have a phase; teardown and failure are not progress. */
 internal fun connectionStep(state: ConnectionState): Int? = when (state) {
     is ConnectionState.Launching -> 0
@@ -254,6 +266,7 @@ internal fun ConnectionHome(
                 actionLabel = stringResource(connectionActionLabel(state)),
                 detail = if (working) elapsed else null,
                 progress = phaseProgress(step),
+                enabled = connectControlEnabled(state),
             )
         }
 
@@ -324,9 +337,14 @@ internal fun ConnectionHome(
                 tone = tone,
             )
             Spacer(Modifier.height(16.dp))
-        } else if (step == null) {
+        } else if (step == null && state !is ConnectionState.Disconnecting) {
             // Disconnected or failed: the same question, answered the other way
             // round - where the internet currently thinks you are.
+            //
+            // Not while tearing down: the IP probe is parked in that window
+            // (ipInfo null, not loading), so the card flashed "unavailable" for
+            // exactly the moment the user is waiting to see their own IP come
+            // back.
             ConnectionMeta(
                 connected = false,
                 connectedSince = null,
@@ -1738,6 +1756,11 @@ private fun connectionTitle(state: ConnectionState): String = stringResource(
 /**
  * The sentence under the title. Chain-aware: "through Cloudflare WARP" and "the
  * scan mode" only mean something when Aether is in the chain.
+ *
+ * Never a repeat of something already on screen: Disconnecting used to echo the
+ * title word for word, and Error printed the engine message here AND in the
+ * notice bar twelve dp below it. The notice bar owns the engine's words; this
+ * line says what to do next.
  */
 @Composable
 private fun connectionHint(state: ConnectionState, profile: ConnectionProfile): String =
@@ -1758,6 +1781,6 @@ private fun connectionHint(state: ConnectionState, profile: ConnectionProfile): 
         is ConnectionState.Verifying -> stringResource(R.string.state_verify_hint)
         is ConnectionState.Reconnecting ->
             stringResource(R.string.reconnect_attempt, state.attempt, state.maxAttempts)
-        is ConnectionState.Disconnecting -> stringResource(R.string.state_disconnecting)
-        is ConnectionState.Error -> state.message
+        is ConnectionState.Disconnecting -> stringResource(R.string.conn_disconnecting_hint)
+        is ConnectionState.Error -> stringResource(R.string.conn_error_hint)
     }
