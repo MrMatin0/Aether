@@ -2,10 +2,8 @@ package studio.cluvex.aether.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -117,6 +115,8 @@ fun HomeScreen(
                                     { route = route.open(it) }, scrollState = settingsScroll)
                                 route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(diagnosticsScroll)
                                 else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
+                                    editable = editable,
+                                    onProfileChange = onProfileChange,
                                     onToggleConnection = {
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onToggleConnection()
@@ -128,13 +128,16 @@ fun HomeScreen(
                     Surface(color = MaterialTheme.colorScheme.surface) {
                         Column(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            if (route.tab == HomeTab.HOME) ConnectionDock(state) {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onToggleConnection()
-                            } else TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                                Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(stringResource(R.string.nav_connection) + " \u00B7 " + stringResource(connectionStatusLabel(state)))
+                            // The connection tab has no dock any more: the orb IS the
+                            // control, and a second button 40dp below it was the same
+                            // intent twice. Every other tab keeps the one-line status
+                            // shortcut back to it.
+                            if (route.tab != HomeTab.HOME) {
+                                TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                    Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.nav_connection) + " \u00B7 " + stringResource(connectionStatusLabel(state)))
+                                }
                             }
                             if (!rail) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
                                 windowInsets = WindowInsets(0, 0, 0, 0)) {
@@ -200,76 +203,5 @@ private fun DiagnosticsDestination(scrollState: ScrollState) {
     ) {
         DiagnosticsPanel(consoleMaxHeight = 420.dp)
         Spacer(Modifier.height(40.dp))
-    }
-}
-
-/**
- * The connection tab's dock.
- *
- * WHAT THIS REPLACES: a full-width, 60dp-tall primary button. That was the right
- * shape while the tab had no control of its own, and the wrong one the moment the
- * orb became the control - two objects, same intent, 40dp apart, the larger of
- * which is not the primary. It was also styled by STATE rather than by weight
- * (filled to connect, outlined to disconnect), so the most destructive action on
- * the screen looked like the quietest.
- *
- * Now it is a status strip: the state dot and the same status words the chip and
- * the ring use, plus one secondary-weight button. It exists so the action is
- * still reachable once the orb is scrolled off, and it is deliberately
- * FIXED-HEIGHT: the nav bar sits directly underneath, and a dock that changed
- * height per state would shuffle the tab bar while a connection came up.
- *
- * The label still comes from [connectionActionLabel], so Disconnecting offers
- * nothing to tap and every busy stage offers cancellation rather than a second
- * connection.
- */
-@Composable
-private fun ConnectionDock(state: ConnectionState, onClick: () -> Unit) {
-    val accents = LocalAetherAccents.current
-    val tone = when {
-        state.isConnected -> accents.protected
-        state is ConnectionState.Error -> accents.failed
-        state.isBusy -> accents.working
-        else -> accents.neutral
-    }
-    val label = stringResource(connectionActionLabel(state))
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(10.dp).background(tone, CircleShape))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                stringResource(R.string.nav_connection),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-            Text(
-                stringResource(connectionStatusLabel(state)),
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.width(16.dp))
-        if (state.isConnected || state.isBusy) {
-            OutlinedButton(
-                onClick = onClick,
-                enabled = state !is ConnectionState.Disconnecting,
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1) }
-        } else {
-            Button(
-                onClick = onClick,
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) {
-                Icon(if (state is ConnectionState.Error) Icons.Rounded.Refresh else Icons.Rounded.PowerSettingsNew, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-            }
-        }
     }
 }
