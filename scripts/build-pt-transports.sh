@@ -36,7 +36,7 @@
 #
 # Usage:  build-pt-transports.sh [lyrebird|snowflake|webtunnel|all]   (default: all)
 #
-# Requires: ANDROID_NDK_HOME, Go 1.21+, git. Every network access happens here
+# Requires: ANDROID_NDK_HOME, Go 1.23+, git. Every network access happens here
 # or in CI, never on device.
 set -euo pipefail
 
@@ -56,9 +56,20 @@ GITLAB="https://""gitlab.torproject.org/tpo/anti-censorship/pluggable-transports
 
 # Pinned, and overridable. An unpinned circumvention binary means the thing that
 # talks to a censor is whatever was tagged that morning.
-LYREBIRD_REF="${LYREBIRD_REF:-lyrebird-0.6.1}"
-SNOWFLAKE_REF="${SNOWFLAKE_REF:-v2.11.0}"
-WEBTUNNEL_REF="${WEBTUNNEL_REF:-v0.0.9}"
+#
+# EVERY REF HERE MUST BE A TAG THAT ACTUALLY EXISTS UPSTREAM. A missing ref does
+# not fail: build_go_transport falls back to the default branch, which silently
+# turns a pin into "latest". (webtunnel was pinned to a v0.0.9 that was never
+# tagged, and was being built from main as a result.)
+#
+#   lyrebird-0.8.1 : utls security fix (0.6.2), webtunnel hardening (0.7.0),
+#                    multiple meek url/front pairs (0.8.0), chrome120 fix.
+#   v2.14.1        : pion security fix, covert-dtls, WebRTC offer/answer
+#                    validation (issue 40546). Needs Go >= 1.23.
+#   v0.0.4         : newest webtunnel tag.
+LYREBIRD_REF="${LYREBIRD_REF:-lyrebird-0.8.1}"
+SNOWFLAKE_REF="${SNOWFLAKE_REF:-v2.14.1}"
+WEBTUNNEL_REF="${WEBTUNNEL_REF:-v0.0.4}"
 
 mkdir -p "${NATIVE_DIR}"
 
