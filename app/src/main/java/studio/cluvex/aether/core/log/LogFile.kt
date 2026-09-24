@@ -19,25 +19,21 @@ import java.io.RandomAccessFile
  * trim racing the crash-line append could destroy exactly the line the log
  * exists to preserve.
  *
- * THREE FIXES IN THIS REVISION, all about the same failure - the process dying
- * mid-write, which for this app is the NORMAL case rather than the exotic one:
+ * THREE FILES, THREE MEANINGS:
  *
- *  1. ATOMIC REPLACEMENT. The trim used to `readLines()` then `writeText()`
- *     over the live file. A SIGKILL between those two calls leaves a truncated
- *     or empty log: the trim destroys the evidence it was supposed to shrink.
- *     Content is now staged in a sibling temp file, fsync'd, and moved into
- *     place with a rename - which is atomic on the filesystem, so a reader ever
- *     sees the old file or the new one and never a half of either.
+ *   `<name>`       the live session
+ *   `<name>.prev`  whatever was last rotated aside: the pre-trim file, the
+ *                  session before a clear, or the previous launch at attach
+ *   `<name>.last`  the PREVIOUS LAUNCH, written once at attach and never again
  *
- *  2. REAL UTF-8 BYTES. Budgets were measured in String length. Persian log
- *     text is two to three bytes per character, so a "512 KB" cap was really a
- *     1 MB+ file on a Farsi device, and the trim it triggered kept the wrong
- *     number of lines. [utf8ByteLength] counts what actually lands on disk,
- *     surrogate pairs included, without allocating a byte array.
+ * `.last` exists because `.prev` alone could not hold a crash log: the first
+ * trim or clear of the NEW session rotated over it, so the evidence of a crash
+ * survived exactly until the log grew past its cap or the reader tapped Clear.
  *
- *  3. NO WHOLE-FILE READS ON THE EXPORT PATH. `.prev` can be as large as the
- *     cap, and readText() on it allocates the file twice over. [forEachLine]
- *     and [openStream] hand out a streaming reader instead.
+ * Durability rules, all about the process dying mid-write (the NORMAL case for
+ * this app): content is staged in a sibling temp file, fsync'd and renamed into
+ * place; budgets are counted in real UTF-8 bytes; export paths stream instead
+ * of reading whole files.
  */
 internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: Int) {
 
@@ -51,7 +47,8 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
 
     /**
      * Points the store at [target] and returns the PREVIOUS session's lines
-     * (which are also preserved as `<name>.prev` before the file is reused).
+     * (which are also preserved as `<name>.prev` and `<name>.last` before the
+     * file is reused).
      *
      * The read is byte-bounded from the END of the file: a log that somehow
      * grew past its cap (a crash between append and trim) must not be able to
@@ -64,7 +61,14 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
         } else {
             emptyList()
         }
-        if (previous.isNotEmpty()) rotateLocked(target)
+        if (previous.isNotEmpty()) {
+            rotateLocked(target)
+            copyAsideLocked(target, LAST_LAUNCH_SUFFIX)
+        } else {
+            // A launch with nothing before it must not present a log from two
+            // launches ago as "the previous launch".
+            target.parentFile?.let { runCatching { File(it, target.name + LAST_LAUNCH_SUFFIX).delete() } }
+        }
         previous
     }
 
@@ -72,9 +76,6 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
      * Appends [lines] as ONE write, and trims the file when it outgrows its
      * budget. Returns false when there was nothing to write to, or the write
      * failed - the caller then re-queues instead of losing the lines.
-     *
-     * One append per batch replaces the old open/write/close syscall trio PER
-     * LINE that the inline flush did on the connect path.
      */
     fun append(lines: List<String>): Boolean {
         if (lines.isEmpty()) return true
@@ -89,7 +90,7 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
 
     /**
      * Starts a fresh session: the current file is rotated aside (never silently
-     * destroyed, so a crash log stays recoverable) and emptied.
+     * destroyed) and emptied. `.last` is not touched.
      */
     fun reset() {
         val target = file ?: return
@@ -103,20 +104,14 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
 
     /**
      * Streams the log a line at a time. Nothing larger than one line is ever
-     * held in memory, which is the whole point: `.prev` is allowed to be as big
-     * as the cap, and the export path used to read it whole.
-     *
-     * Returns false when there is no such file.
+     * held in memory. Returns false when there is no such file.
      */
-    fun forEachLine(previous: Boolean = false, action: (String) -> Unit): Boolean {
-        val target = resolve(previous) ?: return false
-        return runCatching {
-            target.bufferedReader(Charsets.UTF_8).use { reader ->
-                reader.lineSequence().forEach(action)
-            }
-            true
-        }.getOrDefault(false)
-    }
+    fun forEachLine(previous: Boolean = false, action: (String) -> Unit): Boolean =
+        streamLines(resolve(previous), action)
+
+    /** Streams the previous launch's log. False when there is none. */
+    fun forEachLastLaunchLine(action: (String) -> Unit): Boolean =
+        streamLines(resolveLastLaunch(), action)
 
     /**
      * A raw stream over the log, for handing to a share sheet or a file copy.
@@ -138,6 +133,23 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
         return resolved.takeIf { it.exists() }
     }
 
+    /** The previous launch's log. Null when absent or unattached. */
+    fun resolveLastLaunch(): File? {
+        val target = file ?: return null
+        val parent = target.parentFile ?: return null
+        return File(parent, target.name + LAST_LAUNCH_SUFFIX).takeIf { it.exists() }
+    }
+
+    private fun streamLines(target: File?, action: (String) -> Unit): Boolean {
+        if (target == null) return false
+        return runCatching {
+            target.bufferedReader(Charsets.UTF_8).use { reader ->
+                reader.lineSequence().forEach(action)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
     /**
      * Keeps the file bounded without giving up crash survivability: the tail is
      * chosen by line count AND by real byte budget, and swapped in atomically.
@@ -153,19 +165,21 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
         }
     }
 
+    private fun rotateLocked(target: File) = copyAsideLocked(target, PREVIOUS_SUFFIX)
+
     /**
-     * Copies the live file aside as `<name>.prev`, staged and renamed so a
-     * death mid-copy cannot leave a truncated rotation either.
+     * Copies the live file aside as `<name><suffix>`, staged and renamed so a
+     * death mid-copy cannot leave a truncated copy either.
      */
-    private fun rotateLocked(target: File) {
+    private fun copyAsideLocked(target: File, suffix: String) {
         val parent = target.parentFile ?: return
         runCatching {
-            val previous = File(parent, target.name + PREVIOUS_SUFFIX)
-            val staging = File(parent, target.name + PREVIOUS_SUFFIX + STAGING_SUFFIX)
+            val aside = File(parent, target.name + suffix)
+            val staging = File(parent, target.name + suffix + STAGING_SUFFIX)
             staging.delete()
             target.copyTo(staging, overwrite = true)
-            if (!staging.renameTo(previous)) {
-                staging.copyTo(previous, overwrite = true)
+            if (!staging.renameTo(aside)) {
+                staging.copyTo(aside, overwrite = true)
                 staging.delete()
             }
         }
@@ -228,6 +242,7 @@ internal class LogFile(private val maxBytes: Long, private val keepLinesOnTrim: 
 
     private companion object {
         const val PREVIOUS_SUFFIX = ".prev"
+        const val LAST_LAUNCH_SUFFIX = ".last"
         const val STAGING_SUFFIX = ".tmp"
         const val MIN_READ_BYTES = 64L * 1024L
         const val MAX_READ_BYTES = 4L * 1024L * 1024L

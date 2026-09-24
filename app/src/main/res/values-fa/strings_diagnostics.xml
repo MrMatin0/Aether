@@ -5,15 +5,15 @@
     <string name="diag_integrity_value">%1$d از %2$d بررسی موفق</string>
     <string name="diag_end_to_end">تأخیر انتها‌به‌انتها</string>
     <string name="diag_local_proxy">پراکسی SOCKS5 محلی</string>
-    <string name="diag_layer_verified">رمزنگاری‌شده \u00B7 انتها‌به‌انتها تأیید شد</string>
-    <string name="diag_layer_probing">در حال آزمودن تونل\u2026</string>
+    <string name="diag_layer_verified">رمزنگاری‌شده · انتها‌به‌انتها تأیید شد</string>
+    <string name="diag_layer_probing">در حال آزمودن تونل…</string>
     <string name="diag_layer_fault">خرابی در خط لوله شناسایی شد</string>
     <string name="diag_layer_idle">هنوز اندازه‌گیری نشده</string>
     <string name="diag_hero_idle">برای اندازه‌گیری انتها‌به‌انتهای تونل، خودآزمون را اجرا کنید.</string>
     <string name="diag_hero_working">خط لوله در حال آزمودن است. هنوز نتیجه‌ای قطعی نیست.</string>
     <string name="diag_hero_passed">همهٔ مراحل پاسخ دادند. ترافیک باید عبور کند.</string>
-    <string name="diag_hero_failed">نخستین مرحلهٔ ناموفق را بخوانید \u2014 خط لوله همان‌جا می‌شکند.</string>
-    <string name="diag_unmeasured">\u2014</string>
+    <string name="diag_hero_failed">نخستین مرحلهٔ ناموفق را بخوانید — خط لوله همان‌جا می‌شکند.</string>
+    <string name="diag_unmeasured">—</string>
 
     <!-- خط لولهٔ خودآزمون -->
     <string name="diag_pipeline">خط لولهٔ خودآزمون</string>
@@ -29,14 +29,25 @@
     <string name="diag_search_note">با کل خط نمایش‌داده‌شده مطابقت می‌کند، بدون حساسیت به بزرگی و کوچکی حروف.</string>
     <string name="diag_search_clear">پاک کردن پالایه</string>
     <string name="diag_regex">Regex</string>
-    <string name="diag_regex_bad">الگو هنوز معتبر نیست \u2014 به‌صورت متن ساده تطبیق می‌شود.</string>
+    <string name="diag_regex_bad">الگو هنوز معتبر نیست — به‌صورت متن ساده تطبیق می‌شود.</string>
+    <string name="diag_regex_slow">این الگو روی برخی خطوط بیش از حد کند بود و آن خطوط نادیده گرفته شدند.</string>
     <string name="diag_no_matches">هیچ خطی با این پالایه مطابقت ندارد.</string>
     <string name="diag_follow">پیمایش خودکار</string>
     <string name="diag_follow_note">همیشه روی تازه‌ترین خط بمان</string>
     <string name="diag_jump_bottom">پرش به تازه‌ترین</string>
+    <string name="diag_new_lines">%1$d خط جدید</string>
+    <string name="diag_session_previous">اجرای قبلی</string>
+    <string name="diag_session_current">نشست فعلی</string>
+    <string name="diag_more">گزینه‌های بیشتر لاگ</string>
+    <string name="diag_mask_ips">پنهان کردن IPهای عمومی</string>
     <string name="diag_export">رونوشت پاک‌سازی‌شده</string>
     <string name="diag_export_note">توکن‌ها، کلیدها، رمزها و نشانی‌های ایمیل پیش از خروج لاگ از این دستگاه حذف می‌شوند.</string>
     <string name="diag_exported">لاگ پاک‌سازی‌شده رونوشت شد</string>
+    <string name="diag_share">اشتراک‌گذاری لاگ</string>
+    <string name="diag_share_title">اشتراک‌گذاری لاگ پاک‌سازی‌شده</string>
+    <string name="diag_line_title">خط لاگ</string>
+    <string name="diag_copy_line">رونوشت این خط</string>
+    <string name="diag_line_copied">خط رونوشت شد</string>
     <string name="diag_clear_title">لاگ پاک شود؟</string>
-    <string name="diag_clear_body">خطوط این نشست از پنل حذف می‌شوند. فایل ابتدا کنار گذاشته می‌شود، بنابراین لاگ یک کرش همچنان قابل بازیابی است.</string>
+    <string name="diag_clear_body">خطوط این نشست از پنل حذف می‌شوند. لاگ اجرای قبلی، از جمله هر کرش، روی این دستگاه می‌ماند و هنگام اشتراک‌گذاری همچنان همراه آن فرستاده می‌شود.</string>
 </resources>

@@ -22,6 +22,12 @@ data class LogLine(
     val message: String,
     /** Restored-from-disk lines are already formatted; print them verbatim. */
     val raw: Boolean = false,
+    /**
+     * Monotonic id assigned by [DiagnosticsLog]. The console keys its rows on
+     * it, so a full ring buffer evicting its head does not shift every row
+     * under the reader, and "N new lines" is a comparison instead of a diff.
+     */
+    val seq: Long = 0L,
 ) {
     fun format(): String {
         if (raw) return message
@@ -45,6 +51,33 @@ private val LogLevel.symbol: String
         LogLevel.WARN -> "W"
         LogLevel.ERROR -> "E"
     }
+
+/**
+ * A line read back from the on-disk log, WITH its severity.
+ *
+ * Restored lines used to become DEBUG / "prev" wholesale. That painted the
+ * error that explains a crash grey and kept it out of the Errors filter, which
+ * is the one place a reader looks for it. The file holds exactly what
+ * [LogLine.format] wrote, so the level letter and the tag are recoverable.
+ * Anything that does not parse (an overflow marker, a torn write) stays DEBUG.
+ *
+ * The line is kept [LogLine.raw]: it is printed verbatim, timestamp included.
+ */
+internal fun parseRestoredLine(text: String, seq: Long = 0L): LogLine {
+    val match = RESTORED_LINE.find(text)
+    val level = when (match?.groupValues?.get(1)) {
+        "E" -> LogLevel.ERROR
+        "W" -> LogLevel.WARN
+        "I" -> LogLevel.INFO
+        else -> LogLevel.DEBUG
+    }
+    val tag = match?.groupValues?.get(2)?.takeIf { it.isNotBlank() } ?: "prev"
+    return LogLine(0L, tag, level, text, raw = true, seq = seq)
+}
+
+/** `HH:mm:ss.SSS L/tag: ` - the tag itself may contain a slash (core/HevTunnel). */
+private val RESTORED_LINE =
+    Regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3} ([DIWE])/([^:]*): ")
 
 enum class CheckState { PENDING, RUNNING, PASS, FAIL }
 

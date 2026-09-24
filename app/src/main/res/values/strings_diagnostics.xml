@@ -8,15 +8,15 @@
     <string name="diag_integrity_value">%1$d of %2$d checks passed</string>
     <string name="diag_end_to_end">End-to-end latency</string>
     <string name="diag_local_proxy">Local SOCKS5 proxy</string>
-    <string name="diag_layer_verified">Encrypted \u00B7 verified end to end</string>
-    <string name="diag_layer_probing">Probing the tunnel\u2026</string>
+    <string name="diag_layer_verified">Encrypted · verified end to end</string>
+    <string name="diag_layer_probing">Probing the tunnel…</string>
     <string name="diag_layer_fault">Fault detected in the pipeline</string>
     <string name="diag_layer_idle">Not measured yet</string>
     <string name="diag_hero_idle">Run the self-test to measure the tunnel end to end.</string>
     <string name="diag_hero_working">Probing the pipeline. Nothing has been concluded yet.</string>
     <string name="diag_hero_passed">Every stage answered. Traffic should flow.</string>
-    <string name="diag_hero_failed">Read the first failing step \u2014 that is where the pipeline breaks.</string>
-    <string name="diag_unmeasured">\u2014</string>
+    <string name="diag_hero_failed">Read the first failing step — that is where the pipeline breaks.</string>
+    <string name="diag_unmeasured">—</string>
 
     <!-- Self-test pipeline -->
     <string name="diag_pipeline">Self-test pipeline</string>
@@ -32,14 +32,25 @@
     <string name="diag_search_note">Matches the whole rendered line, ignoring case.</string>
     <string name="diag_search_clear">Clear filter</string>
     <string name="diag_regex">Regex</string>
-    <string name="diag_regex_bad">Not a valid pattern yet \u2014 matching as plain text.</string>
+    <string name="diag_regex_bad">Not a valid pattern yet — matching as plain text.</string>
+    <string name="diag_regex_slow">This pattern is too slow on some lines, so they were skipped.</string>
     <string name="diag_no_matches">No lines match this filter.</string>
     <string name="diag_follow">Auto-scroll</string>
     <string name="diag_follow_note">Stay pinned to the newest line</string>
     <string name="diag_jump_bottom">Jump to newest</string>
+    <string name="diag_new_lines">%1$d new lines</string>
+    <string name="diag_session_previous">Previous launch</string>
+    <string name="diag_session_current">This session</string>
+    <string name="diag_more">More log actions</string>
+    <string name="diag_mask_ips">Hide public IP addresses</string>
     <string name="diag_export">Copy sanitized</string>
     <string name="diag_export_note">Tokens, secrets, keys and e-mail addresses are removed before the log leaves this device.</string>
     <string name="diag_exported">Sanitized log copied</string>
+    <string name="diag_share">Share log</string>
+    <string name="diag_share_title">Share the sanitized log</string>
+    <string name="diag_line_title">Log line</string>
+    <string name="diag_copy_line">Copy this line</string>
+    <string name="diag_line_copied">Line copied</string>
     <string name="diag_clear_title">Clear the log?</string>
-    <string name="diag_clear_body">This session\u2019s lines are removed from the panel. The file is rotated aside first, so a crash log stays recoverable.</string>
+    <string name="diag_clear_body">This session’s lines are removed from the panel. The previous launch’s log, including any crash, stays on this device and is still included when you share.</string>
 </resources>

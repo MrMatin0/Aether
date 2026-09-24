@@ -1,10 +1,8 @@
 package studio.cluvex.aether.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
@@ -83,8 +81,9 @@ fun HomeScreen(
     onToggleConnection: () -> Unit, modifier: Modifier = Modifier,
 ) {
     var route by rememberSaveable(stateSaver = HomeRouteSaver) { mutableStateOf(HomeRoute()) }
+    // One-shot: "See the error" asks the console to open on the Errors filter.
+    var focusErrors by rememberSaveable { mutableStateOf(false) }
     val homeScroll = rememberScrollState()
-    val diagnosticsScroll = rememberScrollState()
     val settingsScroll = rememberScrollState()
     val pages = rememberSaveableStateHolder()
     val haptics = LocalHapticFeedback.current
@@ -113,7 +112,10 @@ fun HomeScreen(
                                 page != null -> SettingsPageBody(page, state, profile, onProfileChange, editable)
                                 route.tab == HomeTab.SETTINGS -> SettingsHub(!editable, profile,
                                     { route = route.open(it) }, scrollState = settingsScroll)
-                                route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(diagnosticsScroll)
+                                route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(
+                                    focusErrors = focusErrors,
+                                    onFocusConsumed = { focusErrors = false },
+                                )
                                 else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
                                     editable = editable,
                                     onProfileChange = onProfileChange,
@@ -121,7 +123,10 @@ fun HomeScreen(
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onToggleConnection()
                                     },
-                                    onOpenDiagnostics = { route = route.select(HomeTab.DIAGNOSTICS) })
+                                    onOpenDiagnostics = {
+                                        focusErrors = true
+                                        route = route.select(HomeTab.DIAGNOSTICS)
+                                    })
                             }
                         }
                     }
@@ -136,7 +141,7 @@ fun HomeScreen(
                                 TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                                     Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
-                                    Text(stringResource(R.string.nav_connection) + " \u00B7 " + stringResource(connectionStatusLabel(state)))
+                                    Text(stringResource(R.string.nav_connection) + " · " + stringResource(connectionStatusLabel(state)))
                                 }
                             }
                             if (!rail) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
@@ -179,29 +184,27 @@ private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
 }
 
 /**
- * The diagnostics destination.
+ * The diagnostics destination: the console, filling the tab.
+ *
+ * NO VERTICAL SCROLL HERE any more. The console is a LazyColumn that owns its
+ * own scrolling; nesting it in a scrolling column forced a fixed 420dp height
+ * and gave the rest of the screen to controls.
  *
  * EDGE-TO-EDGE: the root inserts the status bar, the navigation bar and the IME,
  * which covers the vertical edges and nothing else. A display cutout in
  * landscape and a rounded-corner inset both land on the HORIZONTAL edges, and
- * this destination is the one screen whose content runs right up to them - a
- * monospace console with no natural margin, so a clipped column loses
- * characters rather than whitespace.
- *
- * safeDrawing's horizontal side is resolved by the layout direction, so one
- * modifier is correct in Persian and English; a mirrored start/end pair would
- * be a second thing to keep in sync.
+ * this is the one screen whose content runs right up to them - a monospace
+ * console with no natural margin. safeDrawing's horizontal side is resolved by
+ * the layout direction, so one modifier is correct in Persian and English.
  */
 @Composable
-private fun DiagnosticsDestination(scrollState: ScrollState) {
-    Column(
-        Modifier
+private fun DiagnosticsDestination(focusErrors: Boolean, onFocusConsumed: () -> Unit) {
+    DiagnosticsPanel(
+        modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(scrollState)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
-            .padding(horizontal = 24.dp),
-    ) {
-        DiagnosticsPanel(consoleMaxHeight = 420.dp)
-        Spacer(Modifier.height(40.dp))
-    }
+            .padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
+        focusErrors = focusErrors,
+        onFocusConsumed = onFocusConsumed,
+    )
 }
