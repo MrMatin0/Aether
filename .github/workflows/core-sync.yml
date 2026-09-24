@@ -45,9 +45,14 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Core version to vendor, e.g. 2.0.0 (blank = the pin in this workflow)"
+        description: "Core version to vendor, e.g. 2.1.0 (blank = the pin in this workflow)"
         required: false
         type: string
+      allow_drift:
+        description: "Upgrade even if that discards engine changes outside PATCHED_FILES (see scripts/sync-core.sh)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -63,12 +68,14 @@ env:
   RUST_TARGETS: "aarch64-linux-android,armv7-linux-androideabi"
   CARGO_NDK_VERSION: "4.1.2" # keep in step with .github/workflows/build.yml
   # The reviewed engine version. Bump it in a pull request, never in place.
-  CORE_TARGET_PIN: "2.0.0"
+  # 2.1.0: reviewed in docs/CORE_V2_1.md.
+  CORE_TARGET_PIN: "2.1.0"
   # Aether core 2.0.0 raised its own minimum (its crate needs Rust 1.98). The
   # `stable` toolchain satisfies that today, but "today" is not a guarantee a
   # weekly job should rely on silently: without the check below, too old a
   # toolchain surfaces as a wall of E0658/E0599 from a dependency, which reads
   # exactly like the upstream regression this job exists to catch.
+  # Core 2.1.0 keeps the same minimum.
   MIN_RUST: "1.98.0"
 
 jobs:
@@ -94,6 +101,11 @@ jobs:
           # The dispatch input wins so a maintainer can test a version without
           # committing to it; otherwise the pin decides. Never "latest".
           CORE_TARGET: ${{ github.event.inputs.target || env.CORE_TARGET_PIN }}
+          # sync-core.sh refuses to upgrade over engine changes outside
+          # PATCHED_FILES and names them (the 2.0.0 sync deleted such work
+          # without a word). Only a maintainer ticking allow_drift on a manual
+          # run overrides that; a scheduled run never does.
+          CORE_SYNC_ALLOW_DRIFT: ${{ github.event.inputs.allow_drift == 'true' && '1' || '0' }}
 
       - name: Anything to do?
         id: check
@@ -226,8 +238,13 @@ jobs:
             CI_NOTE="NO CHECKS WILL APPEAR ON THIS PULL REQUEST. It was opened with the default GITHUB_TOKEN, and GitHub does not trigger \`pull_request\` workflows for those. Push any commit to the branch, or close and reopen the PR, to get Build to run - or add a CORE_SYNC_TOKEN secret so future syncs trigger it themselves."
           fi
 
-          if gh pr view "$BRANCH" >/dev/null 2>&1; then
-            echo "A pull request for ${BRANCH} is already open; pushed the update to it."
+          # Only an OPEN pull request counts. `gh pr view <branch>` also finds
+          # closed and merged ones, and the first 2.1.0 sync hit exactly that:
+          # it pushed this branch, found #83 (merged, same branch name), said
+          # "already open" and never opened a pull request for the upgrade.
+          OPEN_PR="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${OPEN_PR}" ]; then
+            echo "Pull request #${OPEN_PR} for ${BRANCH} is already open; pushed the update to it."
             exit 0
           fi
           # Built into a variable rather than written inline: a multi-line
