@@ -242,6 +242,49 @@ struct Strategy {
     sample_per_cidr: usize,
 }
 
+/// What the collection loop in [`hunt_best_gateway`] does after its `found`-th
+/// working gateway.
+///
+/// Aether Mobile patch (2026-09-24, fix/masque-scan). Upstream armed the quiet
+/// window only once `target_successes` gateways had answered, so a scan that
+/// found one to five gateways on a filtered network - the common case in the
+/// field - sat out the whole `overall_deadline` (120 s on balanced) before it
+/// used any of them, while the app was already counting down its own budget.
+/// The window now starts at the first gateway and restarts with every new one
+/// until the target is reached, which is what its name and the "no new
+/// gateways recently" log line describe. From the target on nothing changes:
+/// one final window, not stretched by later answers. Turbo (first answer wins)
+/// and thorough (no target, sweep everything) behave exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterSuccess {
+    /// Target reached and no quiet window configured: pick the best now.
+    Stop,
+    /// (Re)start the quiet window: finish once nothing new answers for this long.
+    QuietFor(Duration),
+    /// Past the target: keep the final window that is already running.
+    KeepWindow,
+    /// No target: keep sweeping until the overall deadline.
+    Continue,
+}
+
+fn after_success(st: &Strategy, found: usize) -> AfterSuccess {
+    if st.target_successes == 0 {
+        return AfterSuccess::Continue;
+    }
+    let reached = found >= st.target_successes;
+    if st.quiet_after_first.is_zero() {
+        return if reached {
+            AfterSuccess::Stop
+        } else {
+            AfterSuccess::Continue
+        };
+    }
+    if found > st.target_successes {
+        return AfterSuccess::KeepWindow;
+    }
+    AfterSuccess::QuietFor(st.quiet_after_first)
+}
+
 #[derive(Clone)]
 pub struct MasqueProbe {
     pub sni: String,
@@ -340,13 +383,30 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
                         });
                         found += 1;
 
-                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
-                            log::info!("[+] reached target of {} gateways, selecting best", st.target_successes);
-                            if !st.quiet_after_first.is_zero() {
-                                quiet_until = Some(Instant::now() + st.quiet_after_first);
-                            } else {
+                        // Aether Mobile patch (fix/masque-scan): see after_success().
+                        match after_success(&st, found) {
+                            AfterSuccess::Stop => {
+                                log::info!(
+                                    "[+] reached target of {} gateways, selecting best",
+                                    st.target_successes
+                                );
                                 break;
                             }
+                            AfterSuccess::QuietFor(window) => {
+                                if found == st.target_successes {
+                                    log::info!(
+                                        "[+] reached target of {} gateways, selecting best",
+                                        st.target_successes
+                                    );
+                                } else if quiet_until.is_none() {
+                                    log::info!(
+                                        "[+] gateway found; finalizing once none new answers for {:?}",
+                                        window
+                                    );
+                                }
+                                quiet_until = Some(Instant::now() + window);
+                            }
+                            AfterSuccess::KeepWindow | AfterSuccess::Continue => {}
                         }
                     }
                 }
@@ -468,32 +528,22 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
         .filter_map(|s| s.parse().ok())
         .collect();
 
+    // Aether Mobile patch (2026-09-24, fix/masque-scan): the DNS-over-HTTPS
+    // ranges never serve MASQUE, which is why MASQUE_CIDRS_V4 lists them last
+    // (see the tests below). The round-robin sweep still gave them 2 of every
+    // 14 probes from the very first round, so they are now queued after every
+    // other candidate instead. Nothing is dropped.
+    let (sweep_v4, doh_v4): (Vec<&'static str>, Vec<&'static str>) = masque_cidrs_v4()
+        .into_iter()
+        .partition(|c| !MASQUE_DOH_CIDRS_V4.contains(c));
+
     if ip.want_v4() {
         for a in &seeds {
             if seen.insert((IpAddr::V4(*a), primary)) {
                 out.push((IpAddr::V4(*a), primary));
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = masque_cidrs_v4()
-            .iter()
-            .map(|c| {
-                if st.full_subnet {
-                    enumerate_cidr_v4(c)
-                } else {
-                    sample_cidr_v4(c, st.sample_per_cidr)
-                }
-            })
-            .collect();
-        let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
-        for i in 0..max_len {
-            for hosts in &cidr_hosts {
-                if let Some(a) = hosts.get(i) {
-                    if seen.insert((IpAddr::V4(*a), primary)) {
-                        out.push((IpAddr::V4(*a), primary));
-                    }
-                }
-            }
-        }
+        push_interleaved_v4(st, &sweep_v4, primary, &mut seen, &mut out);
     }
 
     if ip.want_v6() {
@@ -542,7 +592,44 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
         }
     }
 
+    if ip.want_v4() {
+        push_interleaved_v4(st, &doh_v4, primary, &mut seen, &mut out);
+    }
+
     out
+}
+
+/// Samples (or, on a full-subnet strategy, enumerates) every range in `cidrs`
+/// and queues the hosts round-robin, one per range per round, skipping any
+/// address already queued. Aether Mobile patch (fix/masque-scan): the body of
+/// upstream's v4 sweep, lifted out so it can run twice.
+fn push_interleaved_v4(
+    st: &Strategy,
+    cidrs: &[&str],
+    port: u16,
+    seen: &mut HashSet<(IpAddr, u16)>,
+    out: &mut Vec<(IpAddr, u16)>,
+) {
+    let cidr_hosts: Vec<Vec<Ipv4Addr>> = cidrs
+        .iter()
+        .map(|c| {
+            if st.full_subnet {
+                enumerate_cidr_v4(c)
+            } else {
+                sample_cidr_v4(c, st.sample_per_cidr)
+            }
+        })
+        .collect();
+    let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for hosts in &cidr_hosts {
+            if let Some(a) = hosts.get(i) {
+                if seen.insert((IpAddr::V4(*a), port)) {
+                    out.push((IpAddr::V4(*a), port));
+                }
+            }
+        }
+    }
 }
 
 fn parse_cidr_v4(cidr: &str) -> Option<(u32, u8)> {
@@ -655,6 +742,90 @@ mod tests {
         let tail = &MASQUE_CIDRS_V4[MASQUE_CIDRS_V4.len() - MASQUE_DOH_CIDRS_V4.len()..];
         for entry in MASQUE_DOH_CIDRS_V4 {
             assert!(tail.contains(entry), "{entry} should be at the end");
+        }
+    }
+
+    fn in_cidr_v4(ip: Ipv4Addr, cidr: &str) -> bool {
+        let (base, prefix) = parse_cidr_v4(cidr).expect("cidr");
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - u32::from(prefix))
+        };
+        (u32::from(ip) & mask) == (base & mask)
+    }
+
+    fn is_doh(ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => MASQUE_DOH_CIDRS_V4.iter().any(|c| in_cidr_v4(*v4, c)),
+            IpAddr::V6(_) => false,
+        }
+    }
+
+    fn assert_doh_swept_last(mode: ScanMode) {
+        let candidates = build_candidates(&mode.strategy(), MASQUE_PORTS, IpScan::V4);
+        let first_doh = candidates
+            .iter()
+            .position(|(ip, _)| is_doh(ip))
+            .expect("the dns-over-https ranges are still swept, only last");
+        assert!(first_doh > 0, "{}: the sweep opens with them", mode.label());
+        assert!(
+            candidates[first_doh..].iter().all(|(ip, _)| is_doh(ip)),
+            "{}: a candidate outside the dns-over-https ranges is queued behind them",
+            mode.label()
+        );
+    }
+
+    #[test]
+    fn the_dns_over_https_ranges_are_probed_after_every_other_candidate() {
+        assert_doh_swept_last(ScanMode::Turbo);
+        assert_doh_swept_last(ScanMode::Balanced);
+        assert_doh_swept_last(ScanMode::Verified);
+        assert_doh_swept_last(ScanMode::Ironclad);
+        assert_doh_swept_last(ScanMode::Thorough);
+    }
+
+    fn assert_quiet_window_after_every_gateway(mode: ScanMode) {
+        let st = mode.strategy();
+        assert!(st.target_successes > 1, "{}", mode.label());
+        assert!(!st.quiet_after_first.is_zero(), "{}", mode.label());
+        for found in 1..=st.target_successes {
+            assert_eq!(
+                after_success(&st, found),
+                AfterSuccess::QuietFor(st.quiet_after_first),
+                "{} after {found} gateway(s)",
+                mode.label()
+            );
+        }
+        assert_eq!(
+            after_success(&st, st.target_successes + 1),
+            AfterSuccess::KeepWindow,
+            "{}: the final window is not stretched past the target",
+            mode.label()
+        );
+    }
+
+    #[test]
+    fn a_scan_with_a_target_stops_waiting_once_the_edge_goes_quiet_after_a_gateway() {
+        assert_quiet_window_after_every_gateway(ScanMode::Balanced);
+        assert_quiet_window_after_every_gateway(ScanMode::Verified);
+        assert_quiet_window_after_every_gateway(ScanMode::Ironclad);
+    }
+
+    #[test]
+    fn turbo_still_takes_the_first_gateway_and_thorough_still_sweeps_to_the_end() {
+        assert_eq!(after_success(&ScanMode::Turbo.strategy(), 1), AfterSuccess::Stop);
+        let thorough = ScanMode::Thorough.strategy();
+        for found in [1, 5, 50] {
+            assert_eq!(after_success(&thorough, found), AfterSuccess::Continue);
+        }
+    }
+
+    #[test]
+    fn every_quiet_window_is_shorter_than_its_deadline() {
+        for mode in [ScanMode::Balanced, ScanMode::Verified, ScanMode::Ironclad] {
+            let st = mode.strategy();
+            assert!(st.quiet_after_first < st.overall_deadline, "{}", mode.label());
         }
     }
 
