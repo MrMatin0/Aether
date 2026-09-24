@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification accent. Unlike colors.xml (which deliberately tracks the dark
+     scheme for the window background and widget), the notification now sits
+     on the SYSTEM shade, so its accent must stay readable on a light shade too.
+     This is the light-shade value; values-night holds the Halo mint. -->
+<resources>
+    <color name="notif_accent">#0A7F57</color>
+</resources>

@@ -2,17 +2,15 @@ package studio.cluvex.aether.vpn
 
 import android.app.Notification
 import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Intent
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import studio.cluvex.aether.AetherApp
-import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.TrafficMonitor
+import studio.cluvex.aether.model.ChainMode
+import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.widget.AetherWidgetProvider
 
@@ -20,10 +18,17 @@ import studio.cluvex.aether.widget.AetherWidgetProvider
  * Everything the session puts on screen: the ongoing notification, the live
  * speed card, the Quick Settings tile and the home-screen widgets.
  *
- * Extracted from the service because none of it is VPN plumbing, and because
- * the ordering rules between the three surfaces (who is allowed to repaint the
- * shade, and how often) are far easier to keep straight when they live in one
- * file instead of being interleaved with TUN and engine lifecycle code.
+ * STATE-AWARE: the notification is chosen from [AetherController.state], not
+ * from the text a caller happens to pass. Each phase has its own shape:
+ *
+ *   BUSY       progress bar + elapsed time, route as subtext, Cancel
+ *   CONNECTED  the live card ([TrafficNotification])
+ *   ERROR      the actual failure reason, Retry + Disconnect
+ *   CLOSING    progress bar, no actions
+ *
+ * The text argument is still honoured as the busy-phase line, because the
+ * service knows finer steps ("Analyzing your network\u2026") than the state
+ * machine models.
  */
 internal class VpnNotifications(
     private val service: AetherVpnService,
@@ -40,20 +45,35 @@ internal class VpnNotifications(
     private var trafficJob: Job? = null
 
     /**
-     * The notification that belongs on screen RIGHT NOW.
-     *
-     * While the tunnel is up and the meter has a reading, the speed card IS the
-     * status; rebuilding the plain text notification instead would blank the
-     * numbers for a second. Shared by [update] and by the startForeground()
-     * call in `onStartCommand`, so promoting the service can never wipe a live
-     * reading either.
+     * The chain the current session runs, for the route line. Set by the
+     * service as soon as it knows (and again after hydration, which can change
+     * it on a system restart).
+     */
+    @Volatile
+    var chain: ChainMode? = null
+
+    /** When the current busy stretch began, for the elapsed-time chronometer. 0 = not busy. */
+    @Volatile
+    private var busySince: Long = 0L
+
+    /**
+     * The notification that belongs on screen RIGHT NOW. Shared by [update]
+     * and by the startForeground() call in `onStartCommand`, so promoting the
+     * service can never wipe a live reading either.
      */
     fun current(text: String): Notification {
-        val sample = TrafficMonitor.sample.value
-        return if (sample.live && AetherController.state.value.isConnected) {
-            TrafficNotification.build(service, sample)
-        } else {
-            build(text)
+        val state = AetherController.state.value
+        val phase = phaseOf(state)
+        busySince = when {
+            phase != NotifPhase.BUSY -> 0L
+            busySince == 0L -> System.currentTimeMillis()
+            else -> busySince
+        }
+        return when (phase) {
+            NotifPhase.CONNECTED -> TrafficNotification.build(service, TrafficMonitor.sample.value, session())
+            NotifPhase.ERROR -> buildError((state as? ConnectionState.Error)?.message ?: text)
+            NotifPhase.CLOSING -> buildBusy(text, cancellable = false)
+            NotifPhase.BUSY -> buildBusy(busyLine(text, state), cancellable = true)
         }
     }
 
@@ -95,10 +115,13 @@ internal class VpnNotifications(
             TrafficMonitor.sample.collect { sample ->
                 if (!sample.live) return@collect
                 // A state transition owns the notification while it is busy:
-                // "Connecting…" must never be replaced by a speed card.
+                // "Connecting\u2026" must never be replaced by a speed card.
                 if (!AetherController.state.value.isConnected) return@collect
                 runCatching {
-                    notificationManager()?.notify(NOTIF_ID, TrafficNotification.build(service, sample))
+                    notificationManager()?.notify(
+                        NOTIF_ID,
+                        TrafficNotification.build(service, sample, session()),
+                    )
                 }
             }
         }
@@ -110,37 +133,86 @@ internal class VpnNotifications(
         TrafficMonitor.stop()
     }
 
-    private fun notificationManager(): NotificationManager? =
-        service.getSystemService(NotificationManager::class.java)
+    private fun session(): SessionInfo = SessionInfo(
+        chain = chain,
+        // Only a lookup made THROUGH the tunnel is the exit; the direct one is
+        // the user's own operator and would be actively misleading here.
+        countryCode = AetherController.ipInfo.value?.takeIf { it.viaTunnel }?.countryCode,
+        connectedSince = AetherController.connectedSince.value,
+    )
 
-    private fun build(text: String): Notification {
-        val openIntent = PendingIntent.getActivity(
-            service,
-            0,
-            Intent(service, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val disconnectIntent = PendingIntent.getService(
-            service,
-            1,
-            Intent(service, AetherVpnService::class.java).apply {
-                action = AetherVpnService.ACTION_DISCONNECT
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        return NotificationCompat.Builder(service, AetherApp.CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
+    private fun busyLine(text: String, state: ConnectionState): String =
+        if (state is ConnectionState.Reconnecting) {
+            text + " \u00B7 " +
+                service.getString(R.string.reconnect_attempt, state.attempt, state.maxAttempts)
+        } else {
+            text
+        }
+
+    /**
+     * Busy and closing phases: plain platform styles only. A native progress
+     * bar and chronometer look right on every OEM shade and scale with the
+     * device by construction, which is the whole point of this redesign.
+     *
+     * The bar is indeterminate on purpose. Scan budgets exist per attempt, but
+     * Smart Auto walks a ladder of attempts with different budgets and chains
+     * add bootstrap time on top, so a determinate bar would reach 100% and
+     * start over, which reads as "stuck". Elapsed time is the honest number.
+     */
+    private fun buildBusy(line: String, cancellable: Boolean): Notification {
+        val builder = NotificationKit.base(service, line)
             .setContentTitle(service.getString(R.string.notif_title))
-            .setContentText(text)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setContentIntent(openIntent)
-            // The action LABEL is what the button says, so it has to be the
-            // verb ("Disconnect"), not the state it leads to ("Disconnecting…").
-            .addAction(0, service.getString(R.string.action_disconnect), disconnectIntent)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentText(line)
+            .setProgress(0, 0, true)
+        routeLabel(chain).takeIf { it.isNotEmpty() }?.let(builder::setSubText)
+        if (busySince > 0L) {
+            builder.setWhen(busySince).setUsesChronometer(true).setShowWhen(true)
+        } else {
+            builder.setShowWhen(false)
+        }
+        if (cancellable) {
+            // Same intent as Disconnect: the service decides what stopping means
+            // (including the strict kill switch). The LABEL is what differs,
+            // because nothing is connected yet.
+            builder.addAction(
+                0,
+                service.getString(R.string.notif_action_cancel),
+                NotificationKit.disconnectIntent(service),
+            )
+        }
+        return builder.build()
+    }
+
+    /**
+     * The error phase shows the REAL reason ("Tor did not bootstrap in time\u2026")
+     * instead of a generic "Connection failed", expandable because those
+     * reasons are written to be actionable and are rarely one line long.
+     */
+    private fun buildError(message: String): Notification {
+        val killSwitch = message == service.getString(R.string.state_killswitch)
+        val title = service.getString(
+            if (killSwitch) R.string.kill_switch_title else R.string.notif_error_title,
+        )
+        return NotificationKit.base(service, title)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setShowWhen(false)
+            .addAction(
+                0,
+                service.getString(R.string.notif_action_retry),
+                NotificationKit.retryIntent(service),
+            )
+            .addAction(
+                0,
+                service.getString(R.string.action_disconnect),
+                NotificationKit.disconnectIntent(service),
+            )
             .build()
     }
+
+    private fun notificationManager(): NotificationManager? =
+        service.getSystemService(NotificationManager::class.java)
 
     companion object {
         /** The one ongoing notification this service ever posts. */

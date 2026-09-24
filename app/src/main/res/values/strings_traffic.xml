@@ -10,4 +10,9 @@
 
     <!-- Notification fallback line, for anything that ignores custom views -->
     <string name="notif_speed_summary">↓ %1$s · ↑ %2$s</string>
+
+    <!-- State-aware notification -->
+    <string name="notif_action_cancel">Cancel</string>
+    <string name="notif_action_retry">Retry</string>
+    <string name="notif_error_title">Couldn\'t connect</string>
 </resources>

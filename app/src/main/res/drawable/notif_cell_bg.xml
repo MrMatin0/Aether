@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One direction cell inside the notification card. -->
+<!-- Meter cell. A translucent neutral instead of a fixed dark fill, so the cell
+     reads as a subtle well on light AND dark shades alike (the text on top of
+     it follows the shade via TextAppearance.Compat.Notification). -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#171C14" />
+    <solid android:color="#1F808080" />
     <corners android:radius="10dp" />
 </shape>

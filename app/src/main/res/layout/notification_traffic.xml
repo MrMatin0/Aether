@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bounded columns prevent long counters from consuming adjacent readouts. -->
+<!-- Expanded connected card.
+     No background, no outer padding: the decorated custom view already sits
+     inside the shade's own margins, and adding ours on top is what made the
+     card look shrunken or crowded depending on the OEM. Text colours come
+     from TextAppearance.Compat.Notification so light and dark shades both
+     read correctly; every size is a dimen with smallest-width variants. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/notif_card_bg"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:paddingBottom="@dimen/notif_row_gap">
+
+    <!-- Row 1: live dot, state, exit country -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -17,7 +23,7 @@
             android:layout_height="wrap_content"
             android:importantForAccessibility="no"
             android:text="●"
-            android:textColor="@color/aether_primary"
+            android:textColor="@color/notif_accent"
             android:textSize="9sp" />
         <TextView
             android:id="@+id/notif_state"
@@ -28,26 +34,56 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:text="@string/state_connected"
-            android:textColor="@color/aether_text"
-            android:textSize="13sp"
+            android:textAppearance="@style/TextAppearance.Compat.Notification.Title"
+            android:textSize="@dimen/notif_state_text"
             android:textStyle="bold" />
         <TextView
-            android:id="@+id/notif_session"
-            android:layout_width="0dp"
+            android:id="@+id/notif_country"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
             android:layout_marginStart="8dp"
-            android:gravity="end"
-            android:ellipsize="end"
             android:maxLines="1"
-            android:textColor="@color/aether_text_muted"
-            android:textSize="11sp" />
+            android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+            android:textDirection="ltr"
+            android:textSize="@dimen/notif_label_text" />
     </LinearLayout>
+
+    <!-- Row 2: route, session total -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="2dp"
+        android:gravity="center_vertical"
         android:orientation="horizontal">
+        <TextView
+            android:id="@+id/notif_route"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+            android:textDirection="ltr"
+            android:textAlignment="viewStart"
+            android:textSize="@dimen/notif_label_text" />
+        <TextView
+            android:id="@+id/notif_session"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:gravity="end"
+            android:maxLines="1"
+            android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+            android:textSize="@dimen/notif_label_text" />
+    </LinearLayout>
+
+    <!-- Row 3: one meter cell per direction -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/notif_row_gap"
+        android:orientation="horizontal">
+
         <LinearLayout
             android:id="@+id/notif_down_cell"
             android:layout_width="0dp"
@@ -55,75 +91,81 @@
             android:layout_weight="1"
             android:background="@drawable/notif_cell_bg"
             android:orientation="vertical"
-            android:padding="10dp">
+            android:padding="@dimen/notif_cell_padding">
             <TextView
                 android:id="@+id/notif_down_label"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:maxLines="1"
                 android:ellipsize="end"
+                android:maxLines="1"
                 android:text="@string/traffic_download"
-                android:textColor="@color/aether_text_muted"
-                android:textSize="10sp" />
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+                android:textSize="@dimen/notif_label_text" />
             <TextView
                 android:id="@+id/notif_down_rate"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
+                android:layout_height="@dimen/notif_rate_height"
+                android:autoSizeMaxTextSize="@dimen/notif_rate_text_max"
+                android:autoSizeMinTextSize="@dimen/notif_rate_text_min"
+                android:autoSizeStepGranularity="1sp"
+                android:autoSizeTextType="uniform"
                 android:fontFamily="monospace"
+                android:gravity="center_vertical|start"
                 android:maxLines="1"
-                android:ellipsize="end"
-                android:textColor="@color/aether_primary"
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Title"
+                android:textColor="@color/notif_accent"
                 android:textDirection="ltr"
-                android:textSize="17sp"
                 android:textStyle="bold" />
             <TextView
                 android:id="@+id/notif_down_total"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:maxLines="1"
                 android:ellipsize="end"
-                android:textColor="@color/aether_text_muted"
-                android:textSize="10sp" />
+                android:maxLines="1"
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+                android:textSize="@dimen/notif_label_text" />
         </LinearLayout>
+
         <LinearLayout
             android:id="@+id/notif_up_cell"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="@dimen/notif_cell_gap"
             android:layout_weight="1"
             android:background="@drawable/notif_cell_bg"
             android:orientation="vertical"
-            android:padding="10dp">
+            android:padding="@dimen/notif_cell_padding">
             <TextView
                 android:id="@+id/notif_up_label"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:maxLines="1"
                 android:ellipsize="end"
+                android:maxLines="1"
                 android:text="@string/traffic_upload"
-                android:textColor="@color/aether_text_muted"
-                android:textSize="10sp" />
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+                android:textSize="@dimen/notif_label_text" />
             <TextView
                 android:id="@+id/notif_up_rate"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
+                android:layout_height="@dimen/notif_rate_height"
+                android:autoSizeMaxTextSize="@dimen/notif_rate_text_max"
+                android:autoSizeMinTextSize="@dimen/notif_rate_text_min"
+                android:autoSizeStepGranularity="1sp"
+                android:autoSizeTextType="uniform"
                 android:fontFamily="monospace"
+                android:gravity="center_vertical|start"
                 android:maxLines="1"
-                android:ellipsize="end"
-                android:textColor="@color/aether_text"
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Title"
                 android:textDirection="ltr"
-                android:textSize="17sp"
                 android:textStyle="bold" />
             <TextView
                 android:id="@+id/notif_up_total"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:maxLines="1"
                 android:ellipsize="end"
-                android:textColor="@color/aether_text_muted"
-                android:textSize="10sp" />
+                android:maxLines="1"
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+                android:textSize="@dimen/notif_label_text" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

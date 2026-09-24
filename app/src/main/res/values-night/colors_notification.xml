@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark shade: the brand mint from colors.xml (aether_primary). -->
+<resources>
+    <color name="notif_accent">#3FE0A6</color>
+</resources>
