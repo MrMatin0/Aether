@@ -77,12 +77,11 @@ internal object VpnTunables {
      */
     const val PORT_RELEASE_WAIT_MS = 3_000L
 
-    /**
-     * Cap for the FIRST attempt of a hand-picked protocol, so a throttled
-     * network cannot hold the user on "Connecting" for the whole scan
-     * budget before the hardened second pass is even tried.
-     */
-    const val FIRST_PASS_MAX_MS = 75_000L
+    // There is deliberately no cap on the FIRST attempt of a hand-picked
+    // protocol any more (fix/masque-scan). FIRST_PASS_MAX_MS = 75 s sat under
+    // the engine's own 120 s balanced / 180 s ironclad MASQUE sweep, so the
+    // attempt was killed mid-scan on exactly the networks where the scan was
+    // slow but working. See ConnectionPlanner.manualProtocol.
 
     // ------------------------------------------------------------ chain hops
 

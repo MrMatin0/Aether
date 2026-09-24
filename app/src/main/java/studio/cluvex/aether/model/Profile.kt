@@ -243,16 +243,24 @@ data class ConnectionProfile(
     val manualPeer: String = "",
     /**
      * Comma-separated IP range(s) used when [endpointMode] is MANUAL_RANGE,
-     * e.g. "8.6.112.x" or "188.114.96.0/24, 162.159.192.0/24". The engine
-     * scans exactly these ranges (see AETHER_SCAN_CIDRS in prober/scan.rs) for
-     * BOTH transports, and accepts either shape.
+     * e.g. "8.6.112.x" or "188.114.96.0/24, 162.159.192.0/24", handed to the
+     * engine as AETHER_SCAN_CIDRS / AETHER_MASQUE_CIDRS / AETHER_WG_CIDRS (see
+     * [toEnv]).
+     *
+     * KNOWN GAP: prober/scan.rs, which read them, was deleted by the core 2.0.0
+     * sync, and neither upstream prober.rs nor wg_prober.rs reads them, so the
+     * vendored engine currently scans its built-in ranges whatever is set here
+     * (scripts/sync-core.sh, NOTE 1.5.0; docs/MASQUE_SCAN.md).
      */
     val manualRange: String = "",
     /** WireGuard persistent keepalive, seconds. 0 = engine default (5). */
     val keepalive: Int = 0,
     /** Fragment the TLS ClientHello on the HTTP/2 transport (anti-DPI). */
     val fragment: Boolean = false,
-    /** Enable Encrypted Client Hello (hides the real SNI). */
+    /**
+     * Enable Encrypted Client Hello (hides the real SNI). Never sent to the
+     * MASQUE transports, whose endpoint does not accept it; see [sendsEch].
+     */
     val ech: Boolean = false,
 
     // ---- App-side only (never reach the engine CLI) ----
@@ -522,6 +530,21 @@ data class ConnectionProfile(
         get() = protocol == Protocol.MIM
 
     /**
+     * True when [ech] actually reaches the engine as `--ech auto`.
+     *
+     * Never for the MASQUE transports (fix/masque-scan). The WARP MASQUE
+     * endpoint does not accept ECH - upstream's own resolve_ech() says so - yet
+     * with `--ech auto` the engine first spends up to ~18 s of DNS fetching an
+     * ECHConfigList, before it scans anything, and then injects it into the
+     * HTTP/3 tunnel handshake. The scan probes never carry ECH, so an edge that
+     * passed the scan was dialled with a handshake the scan had never tested.
+     * Over HTTP/2 the engine ignores the value, so there it was only the delay.
+     * WireGuard and Gool are unchanged.
+     */
+    val sendsEch: Boolean
+        get() = ech && !protocol.isMasque
+
+    /**
      * The bridge lines to configure tor with, unvalidated.
      *
      * Returns nothing when bridges are off, so switching them off never depends
@@ -596,7 +619,8 @@ data class ConnectionProfile(
         }
 
         if (fragment) args += "--fragment"
-        if (ech) { args += "--ech"; args += "auto" }
+        // Never to a MASQUE transport, whose endpoint does not accept ECH; see sendsEch.
+        if (sendsEch) { args += "--ech"; args += "auto" }
         if (keepalive > 0) { args += "--keepalive"; args += keepalive.toString() }
 
         // ---- engine v1.5.0 ----
@@ -673,8 +697,11 @@ data class ConnectionProfile(
         // itself, which is the natural behaviour of the core.
         val userRange = manualRange.trim()
         if (endpointMode == EndpointMode.MANUAL_RANGE && userRange.isNotBlank()) {
-            // prober.rs reads AETHER_MASQUE_CIDRS then AETHER_SCAN_CIDRS;
-            // wg_prober.rs reads AETHER_WG_CIDRS then AETHER_SCAN_CIDRS.
+            // The manual-range patch read AETHER_MASQUE_CIDRS (MASQUE) and
+            // AETHER_WG_CIDRS (WireGuard), then AETHER_SCAN_CIDRS. It did not
+            // survive the core 2.0.0 sync, so today's engine ignores all three
+            // (see [manualRange]); they stay set so a re-applied patch works
+            // without an app change.
             put("AETHER_SCAN_CIDRS", userRange)
             put("AETHER_MASQUE_CIDRS", userRange)
             put("AETHER_WG_CIDRS", userRange)
@@ -775,6 +802,14 @@ data class ConnectionProfile(
      * Verified gets twice its engine budget because on gool and mim it scans for
      * two hops in two different ranges.
      *
+     * The MASQUE transports with quick reconnect get
+     * [MASQUE_QUICK_RECONNECT_ALLOWANCE_MS] on top (fix/masque-scan): from core
+     * 2.1.0 the engine re-verifies up to eight remembered gateways, one at a
+     * time and 5 s each, BEFORE its scan starts. On a network that has just
+     * blocked them that is 40 s no scan budget above accounts for - enough to
+     * end a 60 s Turbo attempt (Smart Auto's mode on every rung) before its
+     * sweep had really begun.
+     *
      * The budget is the one for the mode the engine will actually RUN
      * ([ScanMode.effectiveFor]), so a Verified profile on a pre-2.1.0 core is
      * waited on like the Precise scan it becomes.
@@ -783,17 +818,21 @@ data class ConnectionProfile(
      * VpnTunables and its own readiness signal, and folding them into one
      * number would mean a slow Tor bootstrap looked like a slow endpoint scan.
      */
-    fun connectTimeoutMs(coreVersion: String = BuildConfig.CORE_VERSION): Long =
-        if (hasManualPeer) {
-            45_000L
-        } else {
-            when (scanMode.effectiveFor(coreVersion)) {
-                ScanMode.TURBO -> 60_000L
-                ScanMode.PRECISE -> 190_000L
-                ScanMode.VERIFIED -> 120_000L
-                ScanMode.ULTRA -> 340_000L
-            }
+    fun connectTimeoutMs(coreVersion: String = BuildConfig.CORE_VERSION): Long {
+        if (hasManualPeer) return 45_000L
+        val scan = when (scanMode.effectiveFor(coreVersion)) {
+            ScanMode.TURBO -> 60_000L
+            ScanMode.PRECISE -> 190_000L
+            ScanMode.VERIFIED -> 120_000L
+            ScanMode.ULTRA -> 340_000L
         }
+        val ring = if (protocol.isMasque && quickReconnect) {
+            MASQUE_QUICK_RECONNECT_ALLOWANCE_MS
+        } else {
+            0L
+        }
+        return scan + ring
+    }
 
     /** Accepts `500` or `16-32` style ranges; anything else is dropped. */
     private fun sanitizedRange(raw: String): String? {
@@ -842,6 +881,14 @@ data class ConnectionProfile(
         /** Hard caps so a pasted blob can't build a gigantic argv. */
         const val MAX_DNS_SERVERS = 8
         const val MAX_ROUTE_RULES = 256
+
+        /**
+         * What a MASQUE attempt with quick reconnect waits on top of its scan
+         * budget (see [connectTimeoutMs]): engine 2.1.0 re-verifies up to
+         * lastconn::RECENT_CAP = 8 remembered gateways with a 5 s timeout each,
+         * sequentially, in lib.rs run_masque before it scans. 40 s, plus slack.
+         */
+        const val MASQUE_QUICK_RECONNECT_ALLOWANCE_MS = 45_000L
 
         /**
          * `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port).
