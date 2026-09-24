@@ -1,6 +1,6 @@
 # Aether+ for Android
 
-**An Android client for censorship circumvention, powered by Aether, Psiphon, and Tor.**
+**An Android client for censorship circumvention, powered by Aether, Psiphon, and Tor**
 
 [English](README.md) · [فارسی](README.fa.md) · [Downloads](https://github.com/MrMatin0/Aether/releases) · [Build workflow](https://github.com/MrMatin0/Aether/actions/workflows/build.yml)
 
