@@ -218,6 +218,51 @@ internal fun rateLevel(bytesPerSecond: Long): Float {
     return level.toFloat().coerceIn(0f, 1f)
 }
 
+/**
+ * Where a travelling band of light starts, in a track that runs from [left] to
+ * [left] + [width], [phase] (0..1) of the way through one sweep of a [band]-wide
+ * light.
+ *
+ * The band travels the way PROGRESS travels: rightwards in English, leftwards in
+ * Persian. The phase track used to mirror its segments for RTL but not the band
+ * running inside the current one, so in Persian the light ran backwards - from
+ * the phases still to come toward the finished ones - and "Establishing tunnel"
+ * looked like it was unwinding. The route card's reaching link had its own,
+ * correct, copy of this arithmetic; both now ask this one function.
+ *
+ * At phase 0 the band sits just outside the leading edge and at phase 1 just
+ * past the trailing edge, so every sweep enters and leaves cleanly.
+ */
+internal fun shimmerBandStart(
+    left: Float,
+    width: Float,
+    band: Float,
+    phase: Float,
+    rtl: Boolean,
+): Float {
+    val travel = -band + phase.coerceIn(0f, 1f) * (width + band)
+    return if (rtl) left + width - travel - band else left + travel
+}
+
+/**
+ * The readout under the word inside the orb: the attempt clock while an attempt
+ * is in flight, the session clock once the tunnel is verified, nothing at rest.
+ *
+ * The session clock used to live only in the session section, below the fold,
+ * which is not where anyone looks to check that a tunnel is still up. No stamp
+ * yet means no readout, rather than a placeholder in the hero.
+ */
+internal fun orbDetail(
+    state: ConnectionState,
+    connectedSince: Long?,
+    attemptClock: String,
+    sessionClock: String,
+): String? = when {
+    connectionStep(state) != null -> attemptClock
+    state is ConnectionState.Connected && connectedSince != null -> sessionClock
+    else -> null
+}
+
 @Composable
 internal fun ConnectionHome(
     state: ConnectionState,
@@ -258,13 +303,17 @@ internal fun ConnectionHome(
         StatusRail(state, tone, connectedSince)
 
         OrbitalHero(mode = mode, chain = profile.chain, tone = tone) {
+            // Read here, in the hero's own scope: once the tunnel is verified
+            // this ticks every second, and the tick should recompose the orb -
+            // not the whole tab around it.
+            val sessionClock = tickingElapsed(connectedSince, state is ConnectionState.Connected)
             // THE CONTROL. Not a status graphic with a button somewhere else.
             ConnectButton(
                 mode = mode,
                 onClick = onToggleConnection,
                 stateLabel = stateWord(state),
                 actionLabel = stringResource(connectionActionLabel(state)),
-                detail = if (working) elapsed else null,
+                detail = orbDetail(state, connectedSince, elapsed, sessionClock),
                 progress = phaseProgress(step),
                 enabled = connectControlEnabled(state),
             )
@@ -977,8 +1026,9 @@ private fun RoutePath(
                             )
                             if (!reduced) {
                                 val band = size.width * 0.5f
-                                val travel = -band + flow.value * (size.width + band)
-                                val left = if (rtl) size.width - travel - band else travel
+                                // Same arithmetic, and so the same direction,
+                                // as the phase track's band.
+                                val left = shimmerBandStart(0f, size.width, band, flow.value, rtl)
                                 drawLine(
                                     brush = Brush.horizontalGradient(
                                         colors = listOf(Color.Transparent, tone, Color.Transparent),
@@ -1352,7 +1402,10 @@ private fun RateTile(
  * The four phases as ONE animated object: finished capsules lit with a
  * gradient, the running one carrying a travelling band, the future ones dim,
  * plus "step N of 4" so the progress is also a sentence. RTL-mirrored from the
- * draw scope's layout direction; the clock is pinned LTR and monospaced.
+ * draw scope's layout direction - the segments AND the band running inside the
+ * current one, which travels the way progress does ([shimmerBandStart]). Under
+ * the track, finished phases carry a check and the running one the state tone.
+ * The clock is pinned LTR and monospaced.
  */
 @Composable
 private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
@@ -1465,7 +1518,10 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
                         )
                     } else {
                         val bandWidth = segmentWidth * 0.55f
-                        val travel = -bandWidth + phase * (segmentWidth + bandWidth)
+                        // Mirrored with the segments: in Persian the light runs
+                        // right to left, toward the phases still to come.
+                        val bandStart =
+                            shimmerBandStart(left, segmentWidth, bandWidth, phase, mirrored)
                         clipRect(
                             left = left,
                             top = top - 1f,
@@ -1479,8 +1535,8 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
                                         tone,
                                         Color.Transparent,
                                     ),
-                                    startX = left + travel,
-                                    endX = left + travel + bandWidth,
+                                    startX = bandStart,
+                                    endX = bandStart + bandWidth,
                                 ),
                                 topLeft = Offset(left, top),
                                 size = Size(segmentWidth, barHeight),
@@ -1494,18 +1550,36 @@ private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             labels.forEachIndexed { index, label ->
-                Text(
-                    stringResource(label),
+                // Finished phases carry a check, the running one the state
+                // colour: the row reads "done, doing, to do" at a glance instead
+                // of three greys and a slightly darker grey.
+                val done = index < current
+                Row(
                     Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (index <= current) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                )
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (done) {
+                        Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = tone,
+                        )
+                        Spacer(Modifier.width(3.dp))
+                    }
+                    Text(
+                        stringResource(label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            index == current -> tone
+                            done -> MaterialTheme.colorScheme.onSurface
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
