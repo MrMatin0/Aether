@@ -401,7 +401,7 @@ android {
         getByName("main") {
             // Fetched font binaries live outside res/ so the committed resource
             // tree stays free of blobs. See fetchVazirmatn above.
-            res.srcDir("src/main/res-fonts")
+            res.directories("src/main/res-fonts")
         }
     }
 
@@ -564,7 +564,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
