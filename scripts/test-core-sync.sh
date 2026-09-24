@@ -12,6 +12,9 @@
 #   2. Upstream rewrites it beyond merge -> pure upstream is kept (compiles),
 #                                           and the run is flagged, not failed.
 #   3. Downgrade / same version         -> no-op.
+#   4. Engine changes outside            -> the upgrade is refused and names
+#      PATCHED_FILES (drift guard)          them, nothing is touched;
+#                                           CORE_SYNC_ALLOW_DRIFT=1 overrides.
 #
 # Usage: bash scripts/test-core-sync.sh
 #
@@ -83,6 +86,8 @@ make_upstream_repo() {
 
   upstream_v1 > "$wt/aether/src/prober.rs"
   echo "fn wg() {}" > "$wt/aether/src/wg_prober.rs"
+  # lib.rs stands for upstream code the app does NOT patch (see scenario 4).
+  echo "pub mod prober;" > "$wt/aether/src/lib.rs"
   git -C "$wt" add -A && git -C "$wt" commit -qm v1 && git -C "$wt" tag 1.4
 
   "$2" > "$wt/aether/src/prober.rs"
@@ -99,6 +104,7 @@ make_app_repo() {
   echo "1.4" > "$app/native/aether/CORE_VERSION"
   ours_v1 > "$app/native/aether/aether/src/prober.rs"
   echo "fn wg() {}" > "$app/native/aether/aether/src/wg_prober.rs"
+  echo "pub mod prober;" > "$app/native/aether/aether/src/lib.rs"
   printf '## v1.2.2\n<!-- core-sync:en -->\n' > "$app/README.md"
   printf '## v1.2.2\n<!-- core-sync:fa -->\n' > "$app/README.fa.md"
   git -C "$app" init -q
@@ -109,9 +115,16 @@ make_app_repo() {
   echo "$app"
 }
 
+# run_sync <app> <target> [VAR=value ...]
+# CORE_API_BASE points at a closed local port: CORE_TARGET pins the version,
+# but the script still asks the releases API for the latest tag first, and
+# without this the test would reach out to api.github.com (and hang on a
+# machine with no network).
 run_sync() {
-  ( cd "$1" && CORE_TARGET="$2" CORE_GIT_BASE="file://$TMP/upstream" \
-      bash scripts/sync-core.sh ) 2>&1
+  local dir="$1" target="$2"
+  shift 2
+  ( cd "$dir" && env "$@" CORE_TARGET="$target" CORE_GIT_BASE="file://$TMP/upstream" \
+      CORE_API_BASE="http://127.0.0.1:9" bash scripts/sync-core.sh ) 2>&1
 }
 
 # ------------------------------------------------------- 1. merge scenario
@@ -145,6 +158,8 @@ grep -q '1.5' "$APP/README.fa.md" && r=yes || r=no
 check "Persian changelog documented the upgrade" "$r"
 echo "$out" | grep -qi 'invalid option' && r=no || r=yes
 check "no 'grep: invalid option' noise" "$r"
+echo "$out" | grep -qF 'Drift guard: outside PATCHED_FILES' && r=yes || r=no
+check "drift guard ran and found nothing outside PATCHED_FILES" "$r"
 
 # --------------------------------------------------- 2. unmergeable rewrite
 echo
@@ -182,6 +197,55 @@ echo "$out3" | grep -q 'already current' && r=yes || r=no
 check "a downgrade is refused" "$r"
 [[ "$(tr -d '[:space:]' < "$APP3/native/aether/CORE_VERSION")" == "1.4" ]] && r=yes || r=no
 check "vendored core left untouched" "$r"
+
+# ------------------------------------------- 4. drift outside PATCHED_FILES
+echo
+echo "[4] engine changes outside PATCHED_FILES (drift guard)"
+make_upstream_repo "$TMP/upstream" upstream_v2
+APP4="$(make_app_repo)"
+core4="$APP4/native/aether/aether"
+# What the 2.0.0 sync deleted without a word: a new module, wired into an
+# upstream file the app does not patch.
+printf 'pub mod prober;\npub mod masque_range;\n' > "$core4/src/lib.rs"
+echo "pub fn masque_range() {}" > "$core4/src/masque_range.rs"
+# Build output is not work: an ignored target/ must not trip the guard.
+echo "target/" > "$APP4/native/aether/.gitignore"
+mkdir -p "$core4/target/debug"
+echo "junk" > "$core4/target/debug/aether"
+git -C "$APP4" add -A
+git -C "$APP4" commit -qm "engine work outside PATCHED_FILES"
+
+rc4=0
+out4="$(run_sync "$APP4" 1.5)" || rc4=$?
+echo "$out4" | sed 's/^/      /'
+drift4="$(echo "$out4" | grep -E '^\[core-sync\]   (changed|added|removed) ' || true)"
+[[ "$rc4" -ne 0 ]] && r=yes || r=no
+check "the upgrade is refused with a non-zero exit" "$r"
+echo "$drift4" | grep -qF 'changed  aether/src/lib.rs' && r=yes || r=no
+check "names the edited upstream file" "$r"
+echo "$drift4" | grep -qF 'added    aether/src/masque_range.rs' && r=yes || r=no
+check "names the file upstream does not ship" "$r"
+[[ "$(echo "$drift4" | grep -c .)" -eq 2 ]] && r=yes || r=no
+check "reports exactly those two (not patched files, not target/)" "$r"
+[[ "$(tr -d '[:space:]' < "$APP4/native/aether/CORE_VERSION")" == "1.4" ]] && r=yes || r=no
+check "CORE_VERSION left at 1.4" "$r"
+[[ -f "$core4/src/masque_range.rs" ]] && grep -q 'masque_range' "$core4/src/lib.rs" && r=yes || r=no
+check "the local engine work is still in place" "$r"
+[[ -z "$(git -C "$APP4" status --porcelain)" ]] && r=yes || r=no
+check "nothing touched: clean tree, no snapshot, no state marker" "$r"
+
+out4b="$(run_sync "$APP4" 1.5 CORE_SYNC_ALLOW_DRIFT=1)" || true
+echo "$out4b" | sed 's/^/      /'
+[[ "$(tr -d '[:space:]' < "$APP4/native/aether/CORE_VERSION")" == "1.5" ]] && r=yes || r=no
+check "CORE_SYNC_ALLOW_DRIFT=1 upgrades anyway" "$r"
+echo "$out4b" | grep -q 'discarding 2 local change' &&
+  echo "$out4b" | grep -qF 'added    aether/src/masque_range.rs' && r=yes || r=no
+check "and still names what it discards" "$r"
+[[ ! -e "$core4/src/masque_range.rs" ]] && r=yes || r=no
+check "the discarded file is gone" "$r"
+grep -q 'expected_pins' "$core4/src/prober.rs" &&
+  grep -qF "$app_patch_marker" "$core4/src/prober.rs" && r=yes || r=no
+check "patched files are still three-way merged" "$r"
 
 echo
 printf 'core-sync tests: %d passed, %d failed\n' "$pass" "$fail"

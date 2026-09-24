@@ -55,14 +55,30 @@
 # for any reason at all. An automatic engine upgrade must never be able to
 # break a release.
 #
+# NOTHING OUTSIDE PATCHED_FILES IS LOST SILENTLY (drift guard, core 2.1.0)
+# -------------------------------------------------------------------------
+# Only PATCHED_FILES are merged back; the rest of aether/ is replaced
+# wholesale. That is right for upstream's own code and silently destructive
+# for anything else: the 2.0.0 sync (af58736, 2026-09-14) deleted the app's
+# engine work that lived outside the list - the prober/, masque_h2/,
+# wireguard/ and masque/ modules among it - and nothing in the log said so.
+# Before it touches the tree, the script now compares the vendored core with
+# pristine upstream at the vendored version and stops, naming every file it
+# would lose, unless CORE_SYNC_ALLOW_DRIFT=1 says to discard them on purpose.
+#
 # The script is deliberately conservative: any failure to reach GitHub leaves
 # the vendored core untouched and exits 0, so a network hiccup can never break
-# a release build. It only ever moves FORWARD (never downgrades).
+# a release build. It only ever moves FORWARD (never downgrades). The one
+# deliberate failure is the drift guard: it exits 1, because a red run gets
+# looked at and silently deleted work does not.
 #
 # Usage:
 #   scripts/sync-core.sh                   # sync to latest upstream release
 #   CORE_TARGET=1.4 scripts/sync-core.sh   # pin a specific version
 #   CORE_SYNC=off scripts/sync-core.sh     # disable (use vendored core)
+#   CORE_SYNC_ALLOW_DRIFT=1 scripts/sync-core.sh
+#                                          # upgrade even though it discards
+#                                          # local changes outside PATCHED_FILES
 #
 set -euo pipefail
 
@@ -112,6 +128,10 @@ BASELINE="1.5.0"
 # upstream - the manual-range patch did not survive the 2.0.0 sync, and neither
 # upstream file reads AETHER_SCAN_CIDRS. They stay listed so that a re-applied
 # patch is carried forward by the next upgrade instead of being overwritten.
+#
+# A change under aether/ that is NOT listed here is not merged, it is deleted
+# by the next upgrade. The drift guard below refuses to upgrade until such a
+# change is either listed or explicitly given up (CORE_SYNC_ALLOW_DRIFT=1).
 PATCHED_FILES=(
   "aether/src/prober.rs"
   "aether/src/wg_prober.rs"
@@ -124,6 +144,7 @@ warn() { printf '[core-sync] %s\n' "$*" >&2; }
 # GitHub Actions annotations, so problems are visible in the run summary and
 # not just buried in the log.
 notice_gh() { [[ -n "${GITHUB_ACTIONS:-}" ]] && printf '::warning::%s\n' "$*" || true; }
+error_gh() { [[ -n "${GITHUB_ACTIONS:-}" ]] && printf '::error title=Core sync::%s\n' "$*" || true; }
 
 rm -f "$STATE_FILE"
 
@@ -207,6 +228,84 @@ if [[ ! -d "$staging/new/aether" ]]; then
   exit 0
 fi
 
+# ------------------------------------------------------------ drift guard
+# Everything under aether/ is about to be replaced by the new upstream tree,
+# and only PATCHED_FILES are merged back. So any OTHER difference between the
+# vendored tree and pristine upstream at the vendored version is work this run
+# would delete without a word (see the header). Compare first:
+#
+#   changed  an upstream file edited here. Add it to PATCHED_FILES and it is
+#            three-way merged like the others.
+#   added    a file upstream does not ship. There is nothing to merge it onto,
+#            so fold the change into a listed file or keep it out of
+#            native/aether/aether.
+#   removed  an upstream file deleted here.
+#
+# The vendored side is what git would commit (tracked files, plus untracked
+# ones that are not ignored), so a local cargo target/ is not drift, but a new
+# module nobody has committed yet is.
+allow_drift() { [[ "${CORE_SYNC_ALLOW_DRIFT:-0}" == "1" ]]; }
+
+is_patched() {
+  local p
+  for p in "${PATCHED_FILES[@]}"; do
+    [[ "$1" == "$p" ]] && return 0
+  done
+  return 1
+}
+
+# NUL-separated paths under aether/, relative to the directory holding aether/.
+upstream_files() { git -C "$1" ls-files -z -- aether; }
+vendored_files() {
+  local f
+  if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard -- "$CORE_DIR/aether" |
+      while IFS= read -r -d '' f; do printf '%s\0' "${f#"$CORE_DIR"/}"; done
+  else
+    (cd "$CORE_DIR" && find aether ! -type d -print0)
+  fi
+}
+
+if ! clone_tag "$current_v" "$staging/base" || [[ ! -d "$staging/base/aether" ]]; then
+  rm -rf "$staging/base"
+  if ! allow_drift; then
+    warn "Could not fetch upstream ${current_v}, so the vendored core cannot be checked for local changes - keeping ${current_v}."
+    warn "CORE_SYNC_ALLOW_DRIFT=1 upgrades without the check."
+    notice_gh "Core sync skipped: upstream ${current_v} could not be fetched to check the vendored core for local changes."
+    exit 0
+  fi
+  warn "Could not fetch upstream ${current_v}; CORE_SYNC_ALLOW_DRIFT=1, so upgrading without the drift check."
+else
+  drift=()
+  while IFS= read -r -d '' rel; do
+    is_patched "$rel" && continue
+    if [[ ! -e "$CORE_DIR/$rel" ]]; then
+      drift+=("removed  $rel")
+    elif [[ ! -e "$staging/base/$rel" ]]; then
+      drift+=("added    $rel")
+    elif ! cmp -s "$staging/base/$rel" "$CORE_DIR/$rel"; then
+      drift+=("changed  $rel")
+    fi
+  done < <({ upstream_files "$staging/base"; vendored_files; } | sort -zu)
+
+  if (( ${#drift[@]} == 0 )); then
+    log "Drift guard: outside PATCHED_FILES the vendored core is exactly upstream ${current_v}."
+  elif allow_drift; then
+    warn "CORE_SYNC_ALLOW_DRIFT=1: discarding ${#drift[@]} local change(s) outside PATCHED_FILES:"
+    printf '[core-sync]   %s\n' "${drift[@]}" >&2
+    notice_gh "Core sync discarded ${#drift[@]} vendored engine change(s) outside PATCHED_FILES (CORE_SYNC_ALLOW_DRIFT=1); they are still in git history."
+  else
+    warn "Refusing to upgrade ${current_v} -> ${target_v}: it would silently delete ${#drift[@]} local change(s) outside PATCHED_FILES:"
+    printf '[core-sync]   %s\n' "${drift[@]}" >&2
+    warn "changed: add the file to PATCHED_FILES so it is three-way merged."
+    warn "added: upstream has no such file; fold the change into a listed file, or keep it out of ${CORE_DIR}/aether."
+    warn "removed: restore the file from upstream ${current_v}."
+    warn "Or discard them on purpose with CORE_SYNC_ALLOW_DRIFT=1. Nothing was changed."
+    error_gh "Refusing to upgrade the core: ${#drift[@]} vendored engine change(s) outside PATCHED_FILES would be lost. The log names them."
+    exit 1
+  fi
+fi
+
 # ------------------------------------------------------- baseline for merge
 # The pristine upstream copy of each patched file AT THE CURRENTLY VENDORED
 # VERSION. Without it a three-way merge is impossible and we would be back to
@@ -218,7 +317,9 @@ done
 
 if (( have_baseline == 0 )); then
   log "No cached baseline for ${current_v} - reconstructing it from upstream."
-  if clone_tag "$current_v" "$staging/base" && [[ -d "$staging/base/aether" ]]; then
+  # The drift guard has normally cloned this tag already; reuse it.
+  if [[ -d "$staging/base/aether" ]] ||
+     { clone_tag "$current_v" "$staging/base" && [[ -d "$staging/base/aether" ]]; }; then
     mkdir -p "$BASELINE_DIR"
     for rel in "${PATCHED_FILES[@]}"; do
       if [[ -f "$staging/base/$rel" ]]; then
