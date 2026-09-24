@@ -96,4 +96,35 @@ class StrategyLadderTest {
             assertFalse(it.label.contains("full built-in ranges"))
         }
     }
+
+    /**
+     * fix/masque-scan: three MASQUE rungs asked for ECH, which the engine then
+     * fetched over DNS before scanning and put on an HTTP/3 tunnel handshake
+     * its scan had never tested - and the WARP MASQUE endpoint does not accept
+     * it. A user who switched ECH on still does not get it on MASQUE.
+     */
+    @Test
+    fun `no masque rung asks the engine for ech`() {
+        for (dpi in DpiClass.entries) {
+            val plan = StrategyLadder.build(ConnectionProfile(ech = true), fingerprint(dpi))
+            plan.filter { it.profile.protocol.isMasque }.forEach {
+                assertFalse("--ech" in it.profile.toArgs(), "$dpi: ${it.label}")
+                assertFalse(it.label.contains("· ech"), "$dpi: ${it.label}")
+            }
+        }
+    }
+
+    /**
+     * Every rung scans on turbo (45 s in the engine), and engine 2.1.0 walks up
+     * to 8 remembered gateways at 5 s each before that sweep even starts.
+     */
+    @Test
+    fun `masque turbo rungs outlast the remembered gateway ring plus the sweep`() {
+        for (dpi in DpiClass.entries) {
+            val rungs = StrategyLadder.build(ConnectionProfile(), fingerprint(dpi))
+                .filter { it.profile.protocol.isMasque && it.profile.scanMode == ScanMode.TURBO }
+            assertTrue(rungs.isNotEmpty(), "$dpi")
+            rungs.forEach { assertTrue(it.timeoutMs > 45_000L + 8 * 5_000L, "$dpi: ${it.label}") }
+        }
+    }
 }

@@ -83,11 +83,28 @@ high-level shape of the divergence, by area:
   either fixed in this line or superseded by it. The current audit position is
   in `docs/SECURITY_AUDIT.md`.
 
+## Engine patches
+
+The vendored engine is upstream's, with a small number of changes carried on
+top of it. Each file below is listed in `PATCHED_FILES` in
+`scripts/sync-core.sh`, which three-way merges it onto every new core instead
+of overwriting it:
+
+- `native/aether/aether/src/cli.rs`: `--precise` and `--ultra` are accepted
+  as aliases of `--balanced` and `--ironclad` (1.4.6), with parser tests.
+- `native/aether/aether/src/prober.rs` (2026-09-24, `fix/masque-scan`): a
+  MASQUE scan that aims for a number of gateways stops waiting once no new
+  one has answered for its quiet window after the first, instead of only after
+  reaching the target; and the DNS-over-HTTPS ranges are probed after every
+  other candidate instead of in every round of the sweep. See
+  `docs/MASQUE_SCAN.md`.
+
 ## What this repository inherits unchanged
 
 - The Aether engine, vendored under `native/aether` and pinned by
-  `native/aether/CORE_VERSION`. It is not hand-edited; `scripts/sync-core.sh`
-  moves it. As of this writing it is pinned to engine **2.0.0**.
+  `native/aether/CORE_VERSION` (engine **2.1.0** as of 2026-09-24).
+  `scripts/sync-core.sh` moves it; apart from the engine patches listed
+  above it is not hand-edited.
 - hev-socks5-tunnel, for TUN-to-SOCKS forwarding.
 - Tor, via the Tor Project / Guardian Project build.
 - The AGPL-3.0 license and the copyright notices of the Aether Mobile

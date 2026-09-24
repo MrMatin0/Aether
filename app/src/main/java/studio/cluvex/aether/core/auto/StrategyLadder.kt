@@ -68,6 +68,10 @@ internal object StrategyLadder {
     /**
      * A `when` rather than a map, so adding a [DpiClass] is a compile error here
      * instead of a missing-key crash on someone's phone.
+     *
+     * No MASQUE rung asks for ECH (fix/masque-scan): the WARP MASQUE endpoint
+     * does not accept it, and the engine only spent DNS time fetching a config
+     * for a handshake its scan had never tested. See [ConnectionProfile.sendsEch].
      */
     private fun stepsFor(dpiClass: DpiClass): List<Step> = when (dpiClass) {
         DpiClass.OPEN -> listOf(
@@ -78,15 +82,15 @@ internal object StrategyLadder {
         DpiClass.SNI_FILTERING -> listOf(
             Step(Protocol.WIREGUARD, Noize.BALANCED),
             Step(Protocol.GOOL, Noize.BALANCED),
-            Step(Protocol.MASQUE, Noize.FIREWALL, fragment = true, ech = true),
+            Step(Protocol.MASQUE, Noize.FIREWALL, fragment = true),
         )
         DpiClass.UDP_THROTTLED -> listOf(
-            Step(Protocol.MASQUE, Noize.LIGHT, http2 = true, fragment = true, ech = true),
+            Step(Protocol.MASQUE, Noize.LIGHT, http2 = true, fragment = true),
             Step(Protocol.GOOL, Noize.AGGRESSIVE),
             Step(Protocol.WIREGUARD, Noize.GFW),
         )
         DpiClass.HOSTILE -> listOf(
-            Step(Protocol.MASQUE, Noize.GFW, http2 = true, fragment = true, ech = true),
+            Step(Protocol.MASQUE, Noize.GFW, http2 = true, fragment = true),
             Step(Protocol.GOOL, Noize.AGGRESSIVE),
             Step(Protocol.WIREGUARD, Noize.AGGRESSIVE),
         )
@@ -160,7 +164,8 @@ internal object StrategyLadder {
         append(" · noize=").append(profile.noize.name.lowercase())
         if (profile.masqueHttp2) append(" · h2")
         if (profile.fragment) append(" · fragment")
-        if (profile.ech) append(" · ech")
+        // What the engine is actually sent, not the switch: MASQUE never gets ECH.
+        if (profile.sendsEch) append(" · ech")
         if (ranges.isNotEmpty()) append(" · ranges[").append(ranges).append("]")
         append(" · scan=").append(profile.scanMode.name.lowercase())
     }

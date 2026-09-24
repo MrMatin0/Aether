@@ -2,6 +2,7 @@ package studio.cluvex.aether.vpn.session
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Noize
@@ -11,25 +12,31 @@ import studio.cluvex.aether.model.Protocol
  * These tests are the point of the refactor.
  *
  * The two-pass ladder for a hand-picked protocol was a private method on a
- * `VpnService`, so the only way to check that MASQUE really gets a capped first
+ * `VpnService`, so the only way to check that MASQUE really gets a full first
  * attempt followed by a hardened one was to install the app on a phone, join a
  * throttled network and watch the diagnostics panel. It is a pure function over
  * a profile; now it is tested like one.
  */
 class ConnectionPlannerTest {
 
-    /** The transport fallback must not override the obfuscation setting. */
+    /**
+     * REGRESSION (fix/masque-scan): the first pass was capped at 75 s, under
+     * the engine's own 120 s balanced MASQUE sweep and the remembered-gateway
+     * ring it walks first, so a scan that was slow but working was killed
+     * before it could finish. The transport fallback must not override the
+     * obfuscation setting either.
+     */
     @Test
-    fun `masque gets a capped first pass and a hardened second one`() {
+    fun `masque gets a full first pass and an http2 second one`() {
         val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF)
         val plan = ConnectionPlanner.manualProtocol(profile)
 
         assertEquals(2, plan.size)
-        assertTrue(
-            plan[0].timeoutMs <= VpnTunables.FIRST_PASS_MAX_MS,
-            "the first pass must not eat the whole scan budget",
-        )
         assertEquals(profile, plan[0].profile, "the first pass runs exactly as configured")
+        assertEquals(profile.connectTimeoutMs(), plan[0].timeoutMs, "and is never cut short")
+        // prober.rs balanced sweep (120 s) behind lib.rs's quick-reconnect ring
+        // (up to 8 remembered gateways, 5 s each, one at a time).
+        assertTrue(plan[0].timeoutMs > 120_000L + 8 * 5_000L, "the first pass outlasts the sweep")
         assertEquals(profile.connectTimeoutMs(), plan[1].timeoutMs)
 
         val hardened = plan[1].profile
@@ -38,7 +45,20 @@ class ConnectionPlannerTest {
         assertTrue(hardened.toArgs().windowed(2).contains(listOf("--noize", "off")))
         assertTrue(hardened.masqueHttp2, "the anti-DPI pass turns HTTP/2 on for MASQUE")
         assertTrue(hardened.fragment, "the anti-DPI pass fragments the TLS handshake")
-        assertTrue(hardened.ech, "the anti-DPI pass asks for ECH")
+        assertFalse("--ech" in hardened.toArgs(), "the WARP MASQUE endpoint does not accept ECH")
+    }
+
+    /** Not even when the user switched ECH on: see ConnectionProfile.sendsEch. */
+    @Test
+    fun `no masque attempt ever sends ech`() {
+        for (protocol in listOf(Protocol.MASQUE, Protocol.MIM)) {
+            for (http2 in listOf(false, true)) {
+                val profile = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = true)
+                ConnectionPlanner.manualProtocol(profile).forEach {
+                    assertFalse("--ech" in it.profile.toArgs(), it.label)
+                }
+            }
+        }
     }
 
     @Test
@@ -78,7 +98,7 @@ class ConnectionPlannerTest {
     /**
      * A second, identical pass would only double the time the user waits for the
      * very same failure, so a profile with nothing left to harden gets one rung
-     * on the FULL budget rather than a capped one it cannot finish in.
+     * on the FULL budget.
      */
     @Test
     fun `a profile with nothing left to harden gets a single full budget pass`() {

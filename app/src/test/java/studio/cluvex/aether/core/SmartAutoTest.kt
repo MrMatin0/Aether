@@ -2,6 +2,7 @@ package studio.cluvex.aether.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.EndpointMode
@@ -67,7 +68,8 @@ class SmartAutoTest {
         assertEquals(Protocol.MASQUE, first.protocol)
         assertTrue(first.masqueHttp2)
         assertTrue(first.fragment)
-        assertTrue(first.ech)
+        // fix/masque-scan: the WARP MASQUE endpoint does not accept ECH.
+        assertFalse("--ech" in first.toArgs(), "MASQUE rungs never send --ech")
         plan.forEach {
             assertEquals(Noize.OFF, it.profile.noize)
             assertEquals(user.endpointMode, it.profile.endpointMode)
