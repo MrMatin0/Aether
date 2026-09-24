@@ -98,8 +98,12 @@ object SessionTracker {
                     peakUp = 0L
                 }
                 // A transient reconnect is the SAME session, exactly like the
-                // connected-since timer in AetherController.
-                is ConnectionState.Reconnecting -> Unit
+                // connected-since timer in AetherController - and a reconnect is
+                // Reconnecting, then the Verifying that gates its return to
+                // Connected. Verifying used to fall through to closeSession(), so
+                // every reconnect split one session into two history records. On
+                // the way UP no session is open yet, so it is a no-op there.
+                is ConnectionState.Reconnecting, is ConnectionState.Verifying -> Unit
                 else -> closeSession()
             }
         }

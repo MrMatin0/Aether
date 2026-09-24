@@ -2,12 +2,14 @@ package studio.cluvex.aether.vpn
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
+import studio.cluvex.aether.core.SessionClock
 import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionState
@@ -138,7 +140,16 @@ internal class VpnNotifications(
         // Only a lookup made THROUGH the tunnel is the exit; the direct one is
         // the user's own operator and would be actively misleading here.
         countryCode = AetherController.ipInfo.value?.takeIf { it.viaTunnel }?.countryCode,
-        connectedSince = AetherController.connectedSince.value,
+        // The controller's stamp is monotonic and Notification.when is
+        // wall-clock time: convert here, at the one edge that needs it. Passed
+        // through unconverted, the shade's chronometer would be decades off.
+        connectedAtWall = AetherController.connectedSince.value?.let { stamp ->
+            SessionClock.toWallClock(
+                stamp = stamp,
+                nowElapsed = SystemClock.elapsedRealtime(),
+                nowWall = System.currentTimeMillis(),
+            )
+        },
     )
 
     private fun busyLine(text: String, state: ConnectionState): String =

@@ -13,6 +13,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -98,6 +99,18 @@ private const val START_ANGLE = -90f
  */
 private const val TICK_COUNT = 36
 
+/**
+ * Whether the ladder tick [fraction] of the way round is lit, for an arc of
+ * [sweep].
+ *
+ * `fraction <= sweep` on its own lit the twelve o'clock tick (fraction 0) on an
+ * EMPTY ring, so an idle orb always carried one lit notch at the top: a gauge
+ * reading "a little bit started" while nothing was. An empty arc lights nothing,
+ * and a failure - three broken arcs - lights nothing either.
+ */
+internal fun tickLit(fraction: Float, sweep: Float, mode: ButtonMode): Boolean =
+    mode != ButtonMode.ERROR && sweep > 0f && fraction <= sweep
+
 /** The size the orb was designed at, and the size it uses whenever it fits. */
 private val ORB_MAX = 256.dp
 
@@ -137,7 +150,7 @@ private val ORB_GUTTER = 56.dp
  *      a passed self-test - never shown for Verifying, never for Reconnecting.
  *   4. TICK LADDER. 36 ticks inside the track, lit up to the current progress.
  *      The arc says how far along; the ladder makes that readable as a quantity
- *      rather than a shape.
+ *      rather than a shape. An empty ring lights none of them ([tickLit]).
  *   5. GLASS CORE. A radial-gradient disc, tinted toward the state colour and
  *      brightened on press, with a hairline rim. It gives the words a surface to
  *      sit on instead of floating in the middle of a circle.
@@ -157,6 +170,11 @@ private val ORB_GUTTER = 56.dp
  * its busy colour, but it takes no tap, does not squeeze, drops the outward
  * "reaching" rings (nothing is being reached) and dims its words. TalkBack reads
  * it as disabled instead of offering an action that would do nothing.
+ *
+ * DETAIL. [detail] is an instrument readout under the word - the attempt clock
+ * while an attempt is timed, the session clock once the tunnel is verified - in
+ * a capsule of the state colour, so a ticking counter reads as a live gauge and
+ * not as a caption. Monospaced, Latin figures, pinned LTR.
  *
  * FOCUS. The ripple is switched off on purpose (it fights the ring), and that
  * also switched off the only focus indication the control had - a keyboard,
@@ -413,7 +431,7 @@ fun ConnectButton(
                         val radians = ((START_ANGLE + fraction * 360f) * PI / 180f).toFloat()
                         val dx = cos(radians)
                         val dy = sin(radians)
-                        val lit = mode != ButtonMode.ERROR && fraction <= sweep
+                        val lit = tickLit(fraction, sweep, mode)
                         drawLine(
                             color = if (lit) {
                                 animatedAccent.copy(alpha = 0.45f)
@@ -581,18 +599,28 @@ fun ConnectButton(
                 }
                 if (!detail.isNullOrBlank()) {
                     Spacer(Modifier.height(6.dp))
-                    Text(
-                        // Counters are instrument readouts: monospaced, Latin
-                        // figures, pinned LTR. Prose keeps the locale's digits.
-                        text = detail,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFamily = AetherMono,
-                            textDirection = TextDirection.Ltr,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                    )
+                    // A capsule of the state colour: amber while an attempt is
+                    // timed, mint once the session clock runs. A bare grey line
+                    // under the word read as a caption; this reads as a gauge.
+                    Box(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(animatedAccent.copy(alpha = 0.12f))
+                            .padding(horizontal = 10.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            // Counters are instrument readouts: monospaced, Latin
+                            // figures, pinned LTR. Prose keeps the locale's digits.
+                            text = detail,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontFamily = AetherMono,
+                                textDirection = TextDirection.Ltr,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }

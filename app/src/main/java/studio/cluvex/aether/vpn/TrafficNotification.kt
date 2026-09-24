@@ -99,7 +99,9 @@ internal object TrafficNotification {
                 NotificationKit.disconnectIntent(context),
             )
 
-        val since = session.connectedSince
+        // Wall-clock millis, already converted from the controller's monotonic
+        // stamp (see SessionInfo.connectedAtWall).
+        val since = session.connectedAtWall
         if (since != null) {
             builder.setWhen(since).setUsesChronometer(true).setShowWhen(true)
         } else {

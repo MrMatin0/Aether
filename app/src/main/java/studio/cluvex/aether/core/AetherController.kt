@@ -3,6 +3,7 @@ package studio.cluvex.aether.core
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,7 +31,17 @@ object AetherController {
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
-    /** Epoch millis of when the current session became Connected, or null. */
+    /**
+     * When the current session became Connected, on the
+     * SystemClock.elapsedRealtime() timeline, or null.
+     *
+     * MONOTONIC, NOT EPOCH. Every on-screen clock measures against
+     * elapsedRealtime, and a wall-clock stamp jumps with every NTP correction.
+     * This used to be System.currentTimeMillis(), and subtracting that from
+     * elapsedRealtime froze the in-app session timer on 00:00:00 for the whole
+     * session (see [SessionClock]). An API that wants wall-clock time converts
+     * at the edge with [SessionClock.toWallClock]: today, only the notification.
+     */
     private val _connectedSince = MutableStateFlow<Long?>(null)
     val connectedSince: StateFlow<Long?> = _connectedSince.asStateFlow()
 
@@ -42,17 +53,24 @@ object AetherController {
     private val _ipLoading = MutableStateFlow(false)
     val ipLoading: StateFlow<Boolean> = _ipLoading.asStateFlow()
 
-    /** Called by the service to broadcast state changes. */
+    /**
+     * Called by the service to broadcast state changes.
+     *
+     * Synchronized: the service reports from more than one coroutine (a session
+     * and a teardown can overlap), and the session stamp is a read-modify-write
+     * that has to move together with the state it belongs to.
+     */
+    @Synchronized
     fun setState(newState: ConnectionState) {
-        _state.value = newState
-        when (newState) {
-            is ConnectionState.Connected ->
-                if (_connectedSince.value == null) _connectedSince.value = System.currentTimeMillis()
-            is ConnectionState.Reconnecting -> {
-                // Keep the running timer during a transient reconnect.
-            }
-            else -> _connectedSince.value = null
+        val since = SessionClock.next(_connectedSince.value, newState) {
+            SystemClock.elapsedRealtime()
         }
+        // Stamp first while a session runs, state first once it ends: a screen
+        // that sees Connected always finds its clock already set, instead of
+        // drawing a blank one for the frame in between.
+        if (since != null) _connectedSince.value = since
+        _state.value = newState
+        if (since == null) _connectedSince.value = null
     }
 
     fun setIpInfo(info: IpEndpoint?) {

@@ -60,7 +60,13 @@ internal fun routeLabel(chain: ChainMode?): String =
 internal data class SessionInfo(
     val chain: ChainMode?,
     val countryCode: String?,
-    val connectedSince: Long?,
+    /**
+     * When the session became Connected, as WALL-CLOCK millis, because it feeds
+     * Notification.when. Deliberately not called connectedSince: the
+     * controller's stamp of that name is monotonic (see SessionClock), and
+     * mixing the two timelines up is exactly what froze the in-app timer.
+     */
+    val connectedAtWall: Long?,
 )
 
 /**
