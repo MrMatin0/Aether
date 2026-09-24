@@ -401,7 +401,11 @@ android {
         getByName("main") {
             // Fetched font binaries live outside res/ so the committed resource
             // tree stays free of blobs. See fetchVazirmatn above.
-            res.directories("src/main/res-fonts")
+            //
+            // In AGP 9's DSL `directories` is a MutableSet<String> PROPERTY, not
+            // a function: `res.directories("...")` tries to invoke the set and
+            // the whole build script fails to compile. Add to the set instead.
+            res.directories += "src/main/res-fonts"
         }
     }
 
