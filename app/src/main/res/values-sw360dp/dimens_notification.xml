@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Typical phones. Expanded-card sizes only; see values/dimens_notification.xml. -->
+<resources>
+    <dimen name="notif_state_text">14sp</dimen>
+    <dimen name="notif_label_text">11sp</dimen>
+    <dimen name="notif_rate_text_max">18sp</dimen>
+    <dimen name="notif_rate_height">24dp</dimen>
+    <dimen name="notif_cell_padding">10dp</dimen>
+    <dimen name="notif_cell_gap">8dp</dimen>
+    <dimen name="notif_row_gap">8dp</dimen>
+</resources>

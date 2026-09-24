@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tablets and unfolded foldables: more room, so the readouts can breathe
+     instead of floating in a wide, short card. Expanded-card sizes only. -->
+<resources>
+    <dimen name="notif_state_text">15sp</dimen>
+    <dimen name="notif_label_text">12sp</dimen>
+    <dimen name="notif_rate_text_max">20sp</dimen>
+    <dimen name="notif_rate_height">28dp</dimen>
+    <dimen name="notif_cell_padding">12dp</dimen>
+    <dimen name="notif_cell_gap">12dp</dimen>
+    <dimen name="notif_row_gap">10dp</dimen>
+</resources>

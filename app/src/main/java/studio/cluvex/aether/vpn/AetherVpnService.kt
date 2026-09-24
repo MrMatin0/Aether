@@ -137,6 +137,19 @@ class AetherVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
+        // RETRY: the error notification's Retry action. The failed session's
+        // profile is still held in lastProfile (a failed connect does not clear
+        // it), so reuse it; startTunnel re-reads the Zero Trust secrets itself.
+        // When the session is already gone, rebuild from the persisted profile,
+        // exactly as a system restart would - never from a default profile.
+        // A retry from the kill-switch lockdown lifts it the same way a new
+        // connect does (connectAttempt tears the blackhole TUN down first).
+        if (action == ACTION_RETRY) {
+            val last = lastProfile
+            if (last != null) startTunnel(last) else startTunnel(ConnectionProfile(), restored = true)
+            return START_STICKY
+        }
+
         // A null intent means the SYSTEM restarted us after the process was
         // killed (START_STICKY). There is no payload then, and decoding null
         // used to yield a DEFAULT profile - so the tunnel silently came back up
@@ -178,6 +191,9 @@ class AetherVpnService : VpnService() {
 
     private fun startTunnel(profile: ConnectionProfile, restored: Boolean = false) {
         lastProfile = profile
+        // Route line for the busy notification. A restored session may still
+        // swap in the persisted chain after hydration; connectFlow updates it.
+        notifications.chain = profile.chain
         // 1.2.2 PROTOCOL-SWITCH FIX: this used to bail out silently whenever a
         // previous run coroutine was still winding down ("if active, return"),
         // so a connect tapped right after a disconnect - or right after
@@ -216,7 +232,10 @@ class AetherVpnService : VpnService() {
     private suspend fun connectFlow(requested: ConnectionProfile, restored: Boolean) {
         DiagnosticsLog.clear()
         // Hydrated AFTER the log is cleared, so its notes survive in the panel.
-        val profile = hydrate(requested, restored).also { lastProfile = it }
+        val profile = hydrate(requested, restored).also {
+            lastProfile = it
+            notifications.chain = it.chain
+        }
         // STALE-CIRCLES ROOT-CAUSE FIX: the four self-test circles were only
         // reset inside Diagnostics.run(), which starts AFTER the cores have
         // launched AND finished their endpoint scan / bootstrap - so on a
@@ -740,6 +759,9 @@ class AetherVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "studio.cluvex.aether.CONNECT"
         const val ACTION_DISCONNECT = "studio.cluvex.aether.DISCONNECT"
+
+        /** The error notification's Retry action. See onStartCommand. */
+        const val ACTION_RETRY = "studio.cluvex.aether.RETRY"
         const val EXTRA_PROFILE = "profile"
 
         private const val TAG = "vpn"

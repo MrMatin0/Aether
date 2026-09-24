@@ -8,4 +8,9 @@
 
     <!-- متن جایگزین اعلان -->
     <string name="notif_speed_summary">↓ %1$s · ↑ %2$s</string>
+
+    <!-- اعلان وضعیت‌محور -->
+    <string name="notif_action_cancel">لغو</string>
+    <string name="notif_action_retry">تلاش دوباره</string>
+    <string name="notif_error_title">اتصال برقرار نشد</string>
 </resources>

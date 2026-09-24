@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification sizing. Baseline = compact phones (smallest width < 360dp).
+
+     How the variants resolve:
+       values-sw360dp  typical phones        (expanded card sizes)
+       values-sw600dp  tablets / unfolded    (expanded card sizes)
+       values-v31      Android 12+           (collapsed row only: 48dp budget)
+
+     The collapsed-row dimens are defined ONLY here and in values-v31, never in
+     the sw* folders: smallest-width outranks API level in resource matching,
+     so defining them in sw360dp would silently override the Android 12 values
+     on almost every phone. -->
+<resources>
+    <!-- Expanded card -->
+    <dimen name="notif_state_text">13sp</dimen>
+    <dimen name="notif_label_text">10sp</dimen>
+    <dimen name="notif_rate_text_min">10sp</dimen>
+    <dimen name="notif_rate_text_max">15sp</dimen>
+    <dimen name="notif_rate_height">20dp</dimen>
+    <dimen name="notif_cell_padding">8dp</dimen>
+    <dimen name="notif_cell_gap">6dp</dimen>
+    <dimen name="notif_row_gap">6dp</dimen>
+
+    <!-- Collapsed row (pre-Android 12: the custom area is taller) -->
+    <dimen name="notif_compact_text_min">9sp</dimen>
+    <dimen name="notif_compact_text_max">14sp</dimen>
+    <dimen name="notif_compact_line_height">24dp</dimen>
+</resources>

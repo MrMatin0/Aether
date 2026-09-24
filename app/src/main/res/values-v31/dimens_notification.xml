@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: a decorated custom view gets 48dp for its collapsed content,
+     header included. The old 42dp-minimum row plus padding clipped here. -->
+<resources>
+    <dimen name="notif_compact_text_max">13sp</dimen>
+    <dimen name="notif_compact_line_height">20dp</dimen>
+</resources>
