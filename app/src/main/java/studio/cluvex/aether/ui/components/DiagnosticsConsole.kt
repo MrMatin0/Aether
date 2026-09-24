@@ -10,7 +10,8 @@ import studio.cluvex.aether.core.LogLine
  * WHY THIS IS NOT INSIDE THE COMPOSABLE: "which lines does a reader see" is the
  * only logic in the console that can be wrong in a way that matters - a filter
  * that hides the error, a search that matches nothing because the pattern was
- * half-typed - and none of it was testable while it lived inside a LazyColumn.
+ * half-typed, a pattern that never finishes - and none of it is testable
+ * inside a LazyColumn.
  */
 
 /**
@@ -26,37 +27,70 @@ internal fun matchesLogFilter(level: LogLevel, filter: LogFilter): Boolean = whe
 }
 
 /**
- * The quick-filter pills.
- *
- * Two of them filter by SEVERITY and two by SUBJECT, which is the split a reader
- * actually works in: "show me what broke" and "show me the tunnel" are
- * different questions, and answering the second by reading levels does not work
- * because a tunnel event is usually INFO.
+ * The quick-filter pills: two by SEVERITY, two by SUBJECT. "Show me what
+ * broke" and "show me the tunnel" are different questions, and the second
+ * cannot be answered by level because a tunnel event is usually INFO.
  */
 internal enum class ConsoleFilter { ALL, ERRORS, WARNINGS, TUNNEL, DNS }
 
 /**
- * Substrings that mark a line as being about the tunnel itself.
+ * WORDS that mark a line as being about the tunnel itself.
  *
- * Matched against the TAG first and the message second. The tags are written by
- * a dozen different call sites (core/HevTunnel, core/SocksFront, core/TorCore,
- * core/PsiphonCore, the VpnService) and have never been normalised, so an
- * exact-tag allow-list would go stale the first time one of them is renamed.
+ * WHOLE WORDS, NOT SUBSTRINGS. The previous list was matched with contains(),
+ * so "tor" fired on monitor, factory, connector and the "previous session
+ * restored" header, and "tun" fired on tune and tuning: the Tunnel pill was
+ * mostly noise. A marker followed only by digits still counts (tun0, socks5).
  */
-internal val TUNNEL_MARKERS = listOf(
-    "tun", "vpn", "hev", "engine", "socks", "proxy", "bridge", "tor",
-    "psiphon", "chain", "handshake", "wireguard", "masque",
+internal val TUNNEL_MARKERS: Set<String> = setOf(
+    "tun", "tunnel", "tunnels", "tunneled", "tunneling", "tun2socks",
+    "vpn", "vpnservice", "hev", "engine", "socks", "proxy",
+    "bridge", "bridges", "tor", "torrc", "psiphon", "chain", "handshake",
+    "wireguard", "warp", "masque",
 )
 
-/** Substrings that mark a line as being about name resolution. */
-internal val DNS_MARKERS = listOf("dns", "resolv", "nameserver", "geo", "doh", "hostname")
+/** Words that mark a line as being about name resolution. */
+internal val DNS_MARKERS: Set<String> = setOf(
+    "dns", "resolv", "resolve", "resolved", "resolver", "resolvers", "resolving",
+    "nameserver", "nameservers", "geo", "geoip", "doh", "hostname", "hostnames",
+)
 
-private fun mentions(line: LogLine, markers: List<String>): Boolean {
-    val tag = line.tag.lowercase(Locale.US)
-    if (markers.any { tag.contains(it) }) return true
-    val message = line.message.lowercase(Locale.US)
-    return markers.any { message.contains(it) }
+/**
+ * Calls [predicate] with each lower-cased word of [text] and stops at the first
+ * hit. Words are runs of letters and digits, and a camelCase tag is split at
+ * its humps, so `core/HevTunnel` reads as core, hev, tunnel and
+ * `TrafficMonitor` as traffic, monitor.
+ */
+private fun anyWord(text: String, predicate: (String) -> Boolean): Boolean {
+    val word = StringBuilder()
+    var previousLower = false
+    fun emit(): Boolean {
+        if (word.isEmpty()) return false
+        val hit = predicate(word.toString().lowercase(Locale.US))
+        word.setLength(0)
+        return hit
+    }
+    for (c in text) {
+        if (c.isLetterOrDigit()) {
+            if (c.isUpperCase() && previousLower && emit()) return true
+            word.append(c)
+            previousLower = c.isLowerCase() || c.isDigit()
+        } else {
+            if (emit()) return true
+            previousLower = false
+        }
+    }
+    return emit()
 }
+
+private fun isMarker(word: String, markers: Set<String>): Boolean {
+    if (word in markers) return true
+    val stem = word.trimEnd { it.isDigit() }
+    return stem.length < word.length && stem in markers
+}
+
+/** Tag first (cheap, usually decisive), message second. */
+private fun mentions(line: LogLine, markers: Set<String>): Boolean =
+    anyWord(line.tag) { isMarker(it, markers) } || anyWord(line.message) { isMarker(it, markers) }
 
 internal fun matchesConsoleFilter(line: LogLine, filter: ConsoleFilter): Boolean = when (filter) {
     ConsoleFilter.ALL -> true
@@ -66,14 +100,26 @@ internal fun matchesConsoleFilter(line: LogLine, filter: ConsoleFilter): Boolean
     ConsoleFilter.DNS -> mentions(line, DNS_MARKERS)
 }
 
+/** Outcome of matching one line against the search box. */
+internal enum class QueryMatch { YES, NO, TIMEOUT }
+
+/** Per-line budget for a regex. Generous for any sane pattern on one log line. */
+private const val REGEX_LINE_BUDGET_NANOS = 5_000_000L
+
+/** After this many lines blow their budget, the rest are skipped outright. */
+private const val MAX_REGEX_TIMEOUTS = 3
+
 /**
  * The search box, compiled.
  *
  * REGEX THAT DOES NOT BLANK THE SCREEN: a pattern is invalid for most of the
- * time it is being typed - `(`, `[a-`, `\` are all half-written and all throw.
- * Treating those as "matches nothing" empties the console under the reader's
- * hands, so an uncompilable pattern falls back to a plain substring match and
- * [malformed] lets the UI say why the results look literal.
+ * time it is being typed, so an uncompilable pattern falls back to a plain
+ * substring match and [malformed] lets the UI say why.
+ *
+ * REGEX THAT CANNOT HANG THE APP: java.util.regex backtracks, and a pattern
+ * like `(a+)+$` is exponential on an ordinary log line. The input is handed to
+ * the matcher through a CharSequence that checks a deadline as it is read, so
+ * a runaway match is abandoned instead of freezing the console.
  */
 internal data class ConsoleQuery(val text: String, val regex: Boolean) {
 
@@ -89,26 +135,83 @@ internal data class ConsoleQuery(val text: String, val regex: Boolean) {
     /** Regex mode is on, something is typed, and it does not compile (yet). */
     val malformed: Boolean = regex && text.isNotBlank() && pattern == null
 
-    fun matches(rendered: String): Boolean = when {
-        blank -> true
-        pattern != null -> pattern.containsMatchIn(rendered)
-        else -> rendered.contains(text, ignoreCase = true)
+    fun matches(rendered: String): Boolean = match(rendered) == QueryMatch.YES
+
+    /** [allowRegex] false skips an expensive pattern once it has proven slow. */
+    fun match(rendered: String, allowRegex: Boolean = true): QueryMatch = when {
+        blank -> QueryMatch.YES
+        pattern != null -> if (allowRegex) guardedFind(pattern, rendered) else QueryMatch.TIMEOUT
+        rendered.contains(text, ignoreCase = true) -> QueryMatch.YES
+        else -> QueryMatch.NO
     }
 }
 
-/** The visible slice: filter first (cheap), then search (regex). */
+private class RegexBudgetExceeded : RuntimeException("regex budget exceeded", null, false, false)
+
+/** Reads through to [inner] and aborts the match once [deadlineNanos] passes. */
+private class DeadlineCharSequence(
+    private val inner: CharSequence,
+    private val deadlineNanos: Long,
+) : CharSequence {
+    private var reads = 0
+
+    override val length: Int get() = inner.length
+
+    override fun get(index: Int): Char {
+        reads++
+        if ((reads and 0x3F) == 0 && System.nanoTime() > deadlineNanos) throw RegexBudgetExceeded()
+        return inner[index]
+    }
+
+    override fun subSequence(startIndex: Int, endIndex: Int): CharSequence =
+        DeadlineCharSequence(inner.subSequence(startIndex, endIndex), deadlineNanos)
+
+    override fun toString(): String = inner.toString()
+}
+
+private fun guardedFind(pattern: Regex, rendered: String): QueryMatch = try {
+    val input = DeadlineCharSequence(rendered, System.nanoTime() + REGEX_LINE_BUDGET_NANOS)
+    if (pattern.containsMatchIn(input)) QueryMatch.YES else QueryMatch.NO
+} catch (e: RegexBudgetExceeded) {
+    QueryMatch.TIMEOUT
+}
+
+/** The visible slice, and whether a slow pattern made it incomplete. */
+internal data class ConsoleSlice(val lines: List<LogLine>, val regexTimedOut: Boolean)
+
+/** Filter first (cheap), then search (possibly regex, always time-boxed). */
+internal fun filterConsoleGuarded(
+    lines: List<LogLine>,
+    filter: ConsoleFilter,
+    query: ConsoleQuery,
+): ConsoleSlice {
+    var timeouts = 0
+    val out = ArrayList<LogLine>(lines.size)
+    for (line in lines) {
+        if (!matchesConsoleFilter(line, filter)) continue
+        if (query.blank) {
+            out.add(line)
+            continue
+        }
+        when (query.match(line.format(), allowRegex = timeouts < MAX_REGEX_TIMEOUTS)) {
+            QueryMatch.YES -> out.add(line)
+            QueryMatch.NO -> Unit
+            QueryMatch.TIMEOUT -> timeouts++
+        }
+    }
+    return ConsoleSlice(out, timeouts > 0)
+}
+
+/** The visible slice, without the diagnostics. Kept for existing callers and tests. */
 internal fun filterConsole(
     lines: List<LogLine>,
     filter: ConsoleFilter,
     query: ConsoleQuery,
-): List<LogLine> = lines.filter { line ->
-    matchesConsoleFilter(line, filter) && (query.blank || query.matches(line.format()))
-}
+): List<LogLine> = filterConsoleGuarded(lines, filter, query).lines
 
 /**
  * Badge counters, computed in ONE pass over the buffer rather than one pass per
- * pill. The buffer is 800 lines and the pills are re-measured on every publish
- * tick, so five passes was five times the work for the same numbers.
+ * pill.
  */
 internal fun consoleCounts(lines: List<LogLine>): Map<ConsoleFilter, Int> {
     val counts = HashMap<ConsoleFilter, Int>(ConsoleFilter.entries.size)
@@ -119,4 +222,17 @@ internal fun consoleCounts(lines: List<LogLine>): Map<ConsoleFilter, Int> {
         }
     }
     return counts
+}
+
+/**
+ * Lines in [shown] newer than [anchorSeq], counted from the tail. Drives the
+ * "N new lines" pill while the reader is scrolled up.
+ */
+internal fun newerThan(shown: List<LogLine>, anchorSeq: Long): Int {
+    var count = 0
+    for (index in shown.indices.reversed()) {
+        if (shown[index].seq <= anchorSeq) break
+        count++
+    }
+    return count
 }
