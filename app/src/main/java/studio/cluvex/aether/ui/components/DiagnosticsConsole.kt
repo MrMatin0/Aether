@@ -103,8 +103,19 @@ internal fun matchesConsoleFilter(line: LogLine, filter: ConsoleFilter): Boolean
 /** Outcome of matching one line against the search box. */
 internal enum class QueryMatch { YES, NO, TIMEOUT }
 
-/** Per-line budget for a regex. Generous for any sane pattern on one log line. */
-private const val REGEX_LINE_BUDGET_NANOS = 5_000_000L
+/**
+ * Per-line budget for a regex, in WALL-CLOCK nanoseconds.
+ *
+ * WHY 20 ms AND NOT 5: the clock starts before the matcher runs, so the budget
+ * also pays for whatever the JVM does in the meantime - class loading and JIT
+ * on the first search, a GC pause, a busy CPU. 5 ms was shorter than one of
+ * those on a low-end phone or a loaded CI runner, and an ordinary pattern like
+ * `rep=[0-9]` was reported as too slow (that is what made
+ * DiagnosticsRedesignTest flaky). 20 ms is still bounded: after
+ * [MAX_REGEX_TIMEOUTS] lines blow it, the rest skip the regex outright, so a
+ * catastrophic pattern costs the console roughly 60 ms, once.
+ */
+internal const val REGEX_LINE_BUDGET_NANOS = 20_000_000L
 
 /** After this many lines blow their budget, the rest are skipped outright. */
 private const val MAX_REGEX_TIMEOUTS = 3
@@ -137,10 +148,18 @@ internal data class ConsoleQuery(val text: String, val regex: Boolean) {
 
     fun matches(rendered: String): Boolean = match(rendered) == QueryMatch.YES
 
-    /** [allowRegex] false skips an expensive pattern once it has proven slow. */
-    fun match(rendered: String, allowRegex: Boolean = true): QueryMatch = when {
+    /**
+     * [allowRegex] false skips an expensive pattern once it has proven slow.
+     * [budgetNanos] is the per-line time box for a regex.
+     */
+    fun match(
+        rendered: String,
+        allowRegex: Boolean = true,
+        budgetNanos: Long = REGEX_LINE_BUDGET_NANOS,
+    ): QueryMatch = when {
         blank -> QueryMatch.YES
-        pattern != null -> if (allowRegex) guardedFind(pattern, rendered) else QueryMatch.TIMEOUT
+        pattern != null ->
+            if (allowRegex) guardedFind(pattern, rendered, budgetNanos) else QueryMatch.TIMEOUT
         rendered.contains(text, ignoreCase = true) -> QueryMatch.YES
         else -> QueryMatch.NO
     }
@@ -169,8 +188,8 @@ private class DeadlineCharSequence(
     override fun toString(): String = inner.toString()
 }
 
-private fun guardedFind(pattern: Regex, rendered: String): QueryMatch = try {
-    val input = DeadlineCharSequence(rendered, System.nanoTime() + REGEX_LINE_BUDGET_NANOS)
+private fun guardedFind(pattern: Regex, rendered: String, budgetNanos: Long): QueryMatch = try {
+    val input = DeadlineCharSequence(rendered, System.nanoTime() + budgetNanos)
     if (pattern.containsMatchIn(input)) QueryMatch.YES else QueryMatch.NO
 } catch (e: RegexBudgetExceeded) {
     QueryMatch.TIMEOUT
@@ -184,6 +203,7 @@ internal fun filterConsoleGuarded(
     lines: List<LogLine>,
     filter: ConsoleFilter,
     query: ConsoleQuery,
+    budgetNanos: Long = REGEX_LINE_BUDGET_NANOS,
 ): ConsoleSlice {
     var timeouts = 0
     val out = ArrayList<LogLine>(lines.size)
@@ -193,7 +213,13 @@ internal fun filterConsoleGuarded(
             out.add(line)
             continue
         }
-        when (query.match(line.format(), allowRegex = timeouts < MAX_REGEX_TIMEOUTS)) {
+        when (
+            query.match(
+                line.format(),
+                allowRegex = timeouts < MAX_REGEX_TIMEOUTS,
+                budgetNanos = budgetNanos,
+            )
+        ) {
             QueryMatch.YES -> out.add(line)
             QueryMatch.NO -> Unit
             QueryMatch.TIMEOUT -> timeouts++

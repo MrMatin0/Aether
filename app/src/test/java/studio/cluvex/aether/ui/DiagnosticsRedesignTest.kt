@@ -56,6 +56,7 @@ class DiagnosticsRedesignTest {
         assertEquals("prev", restored.tag)
     }
 
+    // Runs with the REAL default budget: this is the guarantee users get.
     @Test
     fun `a catastrophic pattern cannot hang the console`() {
         val evil = ConsoleQuery("(a+)+$", regex = true)
@@ -68,10 +69,19 @@ class DiagnosticsRedesignTest {
         assertTrue(tookMs < 2_000L, "took $tookMs ms")
     }
 
+    // A generous budget ON PURPOSE. This asserts that a sane pattern matches and
+    // is not flagged, not how fast the machine is: with the default wall-clock
+    // budget, a cold JVM or a GC pause on a busy CI runner (R8 runs in the same
+    // Gradle invocation) used to turn this into a TIMEOUT and fail the build.
     @Test
     fun `a fast pattern is not reported as slow`() {
         val lines = listOf(line("socks", "CONNECT refused rep=1", seq = 1L))
-        val slice = filterConsoleGuarded(lines, ConsoleFilter.ALL, ConsoleQuery("rep=[0-9]", regex = true))
+        val slice = filterConsoleGuarded(
+            lines,
+            ConsoleFilter.ALL,
+            ConsoleQuery("rep=[0-9]", regex = true),
+            budgetNanos = 1_000_000_000L,
+        )
         assertEquals(1, slice.lines.size)
         assertFalse(slice.regexTimedOut)
     }
