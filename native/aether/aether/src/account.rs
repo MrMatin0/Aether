@@ -225,16 +225,23 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
 /// How long the direct route gets to open tcp and finish tls. A filtered
 /// network usually drops the handshake silently rather than resetting it, and
 /// without this the whole 20s request timeout is spent waiting on nothing.
+/// Not applied through an upstream proxy: there the connect also covers the
+/// proxy handshake and circuit setup (tor, psiphon), which regularly takes
+/// longer, and a timeout would then skip every retry as "cut on the wire".
 const API_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 fn http_client() -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(consts::UA_REGISTER)
-        .connect_timeout(API_CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(20));
 
-    if let Some(upstream) = crate::upstream::configured() {
-        builder = builder.proxy(upstream.as_reqwest_proxy()?);
+    match crate::upstream::configured() {
+        Some(upstream) => {
+            builder = builder.proxy(upstream.as_reqwest_proxy()?);
+        }
+        None => {
+            builder = builder.connect_timeout(API_CONNECT_TIMEOUT);
+        }
     }
 
     builder.build().map_err(|e| AetherError::Api(e.to_string()))
