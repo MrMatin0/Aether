@@ -269,6 +269,36 @@ fn worth_retrying(status: reqwest::StatusCode) -> bool {
         || status.is_server_error()
 }
 
+/// True when the request died before any http answer came back: the connection
+/// was refused, reset or aborted, or cut during the tls handshake. On a filtered
+/// network that is the dpi box, and it will do the same on the next attempt, so
+/// backing off and retrying only delays the camouflaged route (and ech) by up to
+/// a couple of minutes.
+fn cut_on_the_wire(error: &reqwest::Error) -> bool {
+    if error.is_connect() {
+        return true;
+    }
+
+    let mut source: Option<&(dyn std::error::Error + 'static)> =
+        std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::BrokenPipe
+            ) {
+                return true;
+            }
+        }
+        source = cause.source();
+    }
+
+    false
+}
+
 fn api_host() -> &'static str {
     consts::API_URL
         .trim_start_matches("https://")
@@ -434,7 +464,15 @@ where
         let response = match build()?.send().await {
             Ok(response) => response,
             Err(error) => {
+                let cut = cut_on_the_wire(&error);
                 last_error = AetherError::Api(format!("{label}: {error}"));
+                if cut {
+                    log::warn!(
+                        "[!] {label}: the direct route was cut before any http answer; \
+                         skipping the remaining retries and moving to the camouflaged route"
+                    );
+                    return Err(last_error);
+                }
                 continue;
             }
         };
@@ -1071,6 +1109,20 @@ mod tests {
         assert!(worth_retrying(reqwest::StatusCode::BAD_GATEWAY));
         assert!(!worth_retrying(reqwest::StatusCode::FORBIDDEN));
         assert!(!worth_retrying(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_counts_as_cut_on_the_wire() {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let error = client
+            .get("http://127.0.0.1:9/")
+            .send()
+            .await
+            .expect_err("nothing listens on the discard port");
+        assert!(cut_on_the_wire(&error));
     }
 
     #[test]
