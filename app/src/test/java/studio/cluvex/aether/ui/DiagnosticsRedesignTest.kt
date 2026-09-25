@@ -57,9 +57,17 @@ class DiagnosticsRedesignTest {
     }
 
     // Runs with the REAL default budget: this is the guarantee users get.
+    //
+    // WHY THE BACK REFERENCE: since JDK 9, java.util.regex memoizes failed
+    // positions for a top-level greedy group loop, so the textbook `(a+)+$` is
+    // NOT exponential on the JVM any more (it finishes in well under 1 ms here
+    // and never times out). That memoization is switched off as soon as the
+    // pattern contains a back reference, so `(a+)+\1?$` keeps the exponential
+    // backtracking this test is about. Without it the test only passed while
+    // the budget was so small that JVM warm-up alone blew it.
     @Test
     fun `a catastrophic pattern cannot hang the console`() {
-        val evil = ConsoleQuery("(a+)+$", regex = true)
+        val evil = ConsoleQuery("(a+)+\\1?$", regex = true)
         val lines = List(50) { line("t", "a".repeat(40) + "!", seq = it.toLong()) }
         val started = System.nanoTime()
         val slice = filterConsoleGuarded(lines, ConsoleFilter.ALL, evil)
