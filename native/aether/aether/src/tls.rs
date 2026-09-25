@@ -23,6 +23,8 @@ extern "C" {
         out_retry_configs: *mut *const u8,
         out_retry_configs_len: *mut usize,
     );
+
+    fn SSL_ech_accepted(ssl: *const c_void) -> c_int;
 }
 
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
@@ -224,6 +226,51 @@ pub fn extract_ech_retry_configs(conn: &mut quiche::Connection) -> Option<Vec<u8
 
     let slice = unsafe { std::slice::from_raw_parts(out, out_len) };
     Some(slice.to_vec())
+}
+
+/// Attach an ECHConfigList to any BoringSSL handle (a TCP `ConnectConfiguration`
+/// derefs to `SslRef`, so this works for the api front as well as quiche).
+pub fn set_ech_config_list(ssl: &mut boring::ssl::SslRef, ech_config_list: &[u8]) -> Result<()> {
+    if ech_config_list.is_empty() {
+        return Err(AetherError::Ech("empty ech config list".into()));
+    }
+
+    let ssl_ptr = ssl.as_ptr() as *mut c_void;
+    let rc = unsafe {
+        SSL_set1_ech_config_list(ssl_ptr, ech_config_list.as_ptr(), ech_config_list.len())
+    };
+
+    if rc != 1 {
+        return Err(AetherError::Ech(format!(
+            "SSL_set1_ech_config_list failed (rc={rc})"
+        )));
+    }
+    Ok(())
+}
+
+/// Fresh keys the server handed back after rejecting our ECH offer, if any.
+pub fn ech_retry_configs(ssl: &boring::ssl::SslRef) -> Option<Vec<u8>> {
+    let ssl_ptr = ssl.as_ptr() as *const c_void;
+
+    let mut out: *const u8 = ptr::null();
+    let mut out_len: usize = 0;
+
+    unsafe {
+        SSL_get0_ech_retry_configs(ssl_ptr, &mut out, &mut out_len);
+    }
+
+    if out.is_null() || out_len == 0 {
+        return None;
+    }
+
+    let slice = unsafe { std::slice::from_raw_parts(out, out_len) };
+    Some(slice.to_vec())
+}
+
+/// Whether the server decrypted the inner client hello.
+pub fn ech_accepted(ssl: &boring::ssl::SslRef) -> bool {
+    let ssl_ptr = ssl.as_ptr() as *const c_void;
+    unsafe { SSL_ech_accepted(ssl_ptr) == 1 }
 }
 
 pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
