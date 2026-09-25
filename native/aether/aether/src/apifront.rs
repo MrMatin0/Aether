@@ -1,15 +1,23 @@
 use std::collections::HashSet;
+use std::ffi::{c_void, CStr};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::os::raw::{c_char, c_int, c_long};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use boring::ssl::{SslConnector, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
 use boring::x509::{X509NameRef, X509StoreContextRef, X509};
+use foreign_types_shared::ForeignTypeRef;
 use rand::RngExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
+
+extern "C" {
+    fn X509_STORE_CTX_get_error(ctx: *const c_void) -> c_int;
+    fn X509_verify_cert_error_string(err: c_long) -> *const c_char;
+}
 
 const EDGE_PREFIX: [u8; 3] = [141, 101, 113];
 const EDGE_SAMPLES: usize = 3;
@@ -173,6 +181,19 @@ fn describe_name(name: &X509NameRef) -> String {
     }
 }
 
+/// The verification error BoringSSL recorded on the context, as text. Read
+/// straight from the C api: the Rust wrapper's accessor for this has changed
+/// name between boring releases.
+fn verify_error(ctx: &X509StoreContextRef) -> String {
+    let code = unsafe { X509_STORE_CTX_get_error(ctx.as_ptr() as *const c_void) };
+    let text = unsafe { X509_verify_cert_error_string(code as c_long) };
+    if text.is_null() {
+        return format!("verify error {code}");
+    }
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+    format!("{text} (code {code})")
+}
+
 /// Leaves the verdict to BoringSSL, but says why a certificate was refused.
 /// A subject of cloudflare-ech.com means the edge rejected ech and answered
 /// with the outer name; anything that is not a cloudflare issuer means the
@@ -180,7 +201,7 @@ fn describe_name(name: &X509NameRef) -> String {
 fn report_verification(preverify_ok: bool, ctx: &mut X509StoreContextRef) -> bool {
     if !preverify_ok {
         let depth = ctx.error_depth();
-        let reason = ctx.error().to_string();
+        let reason = verify_error(ctx);
         let (subject, issuer) = ctx
             .current_cert()
             .map(|cert| {
@@ -796,6 +817,15 @@ mod tests {
             .sign(&key, MessageDigest::sha256())
             .expect("sign");
         builder.build()
+    }
+
+    #[test]
+    fn the_verify_error_text_comes_from_boring() {
+        let text = unsafe { CStr::from_ptr(X509_verify_cert_error_string(20)) }.to_string_lossy();
+        assert!(
+            text.contains("local issuer"),
+            "code 20 should read as unable to get local issuer certificate, got {text}"
+        );
     }
 
     #[test]
