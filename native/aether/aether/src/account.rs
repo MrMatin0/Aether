@@ -222,9 +222,15 @@ pub fn generate_masque_keypair() -> Result<MasqueKeyPair> {
     })
 }
 
+/// How long the direct route gets to open tcp and finish tls. A filtered
+/// network usually drops the handshake silently rather than resetting it, and
+/// without this the whole 20s request timeout is spent waiting on nothing.
+const API_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 fn http_client() -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(consts::UA_REGISTER)
+        .connect_timeout(API_CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(20));
 
     if let Some(upstream) = crate::upstream::configured() {
@@ -270,12 +276,15 @@ fn worth_retrying(status: reqwest::StatusCode) -> bool {
 }
 
 /// True when the request died before any http answer came back: the connection
-/// was refused, reset or aborted, or cut during the tls handshake. On a filtered
-/// network that is the dpi box, and it will do the same on the next attempt, so
-/// backing off and retrying only delays the camouflaged route (and ech) by up to
-/// a couple of minutes.
+/// was refused, reset or aborted, cut during the tls handshake, or simply never
+/// answered before the timeout. `send()` only resolves once the response head
+/// has arrived, so a timeout out of it means nothing came back at all. On a
+/// filtered network that is the dpi box (it either resets the handshake or
+/// silently drops it), and it will do the same on the next attempt, so backing
+/// off and retrying only delays the camouflaged route (and ech) by up to a
+/// couple of minutes.
 fn cut_on_the_wire(error: &reqwest::Error) -> bool {
-    if error.is_connect() {
+    if error.is_connect() || error.is_timeout() {
         return true;
     }
 
@@ -289,6 +298,8 @@ fn cut_on_the_wire(error: &reqwest::Error) -> bool {
                     | std::io::ErrorKind::ConnectionAborted
                     | std::io::ErrorKind::ConnectionRefused
                     | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::UnexpectedEof
             ) {
                 return true;
             }
@@ -1122,6 +1133,30 @@ mod tests {
             .send()
             .await
             .expect_err("nothing listens on the discard port");
+        assert!(cut_on_the_wire(&error));
+    }
+
+    #[tokio::test]
+    async fn a_silent_server_counts_as_cut_on_the_wire() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let _hold = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.expect("accept");
+            std::future::pending::<()>().await;
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .expect("client");
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect_err("the server never answers");
         assert!(cut_on_the_wire(&error));
     }
 
