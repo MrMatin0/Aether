@@ -332,7 +332,25 @@ pub async fn open_identity(path: &str, request: &ProvisionRequest) -> Result<Ide
     }
 
     log::info!("[+] no identity at {path}; provisioning a new one");
-    let identity = provision_identity(request).await?;
+
+    // Registering is the expensive step on a filtered network: it has to cross
+    // the block (often only the ech route gets through) and it counts against
+    // the rate limit. So the device is written to disk the moment it exists,
+    // before the masque key is enrolled. If enrollment is cut off, the next run
+    // finds this file and only repeats the enrollment.
+    let registration = ProvisionRequest {
+        masque_cert: false,
+        ..request.clone()
+    };
+    let identity = provision_identity(&registration).await?;
+    save_identity(path, &identity)?;
+
+    if !request.masque_cert {
+        return Ok(identity);
+    }
+
+    log::info!("[+] saved the new registration to {path}; enrolling the masque key next");
+    let identity = attach_masque_cert(identity).await?;
     save_identity(path, &identity)?;
     Ok(identity)
 }

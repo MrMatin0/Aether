@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use boring::ssl::{SslConnector, SslMethod, SslVersion};
@@ -17,6 +18,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 512 * 1024;
 
+/// Base64 ECHConfigList override, for networks where the dns lookup is tampered with.
+const ECH_ENV: &str = "AETHER_API_ECH";
+
 const LEGACY_CIPHERS: &str = "ECDHE-ECDSA-CHACHA20-POLY1305:\
 ECDHE-ECDSA-AES128-GCM-SHA256:\
 ECDHE-RSA-AES128-GCM-SHA256:\
@@ -27,20 +31,36 @@ AES256-SHA";
 const LEGACY_GROUPS: &str = "X25519:P-256";
 const MODERN_GROUPS: &str = "X25519:P-256:P-384";
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
+const ECH_GROUPS: &str = "X25519:P-256";
 
 const ALPN_HTTP1: &[u8] = b"\x08http/1.1";
 
+static ECH_CACHE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fingerprint {
+    Ech,
     SplitLegacy,
     SplitModern,
     Modern,
     ChromeLike,
 }
 
+fn split_fragments() -> FragmentConfig {
+    FragmentConfig {
+        enabled: true,
+        size_min: 24,
+        size_max: 48,
+        delay_min_ms: 2,
+        delay_max_ms: 8,
+        sni_split: true,
+    }
+}
+
 impl Fingerprint {
     pub fn label(self) -> &'static str {
         match self {
+            Fingerprint::Ech => "ech",
             Fingerprint::SplitLegacy => "split-tls12",
             Fingerprint::SplitModern => "split-tls13",
             Fingerprint::Modern => "plain-tls13",
@@ -48,8 +68,9 @@ impl Fingerprint {
         }
     }
 
-    fn all() -> [Fingerprint; 4] {
+    fn all() -> [Fingerprint; 5] {
         [
+            Fingerprint::Ech,
             Fingerprint::SplitLegacy,
             Fingerprint::SplitModern,
             Fingerprint::Modern,
@@ -59,14 +80,9 @@ impl Fingerprint {
 
     fn fragments(self) -> FragmentConfig {
         match self {
-            Fingerprint::SplitLegacy | Fingerprint::SplitModern => FragmentConfig {
-                enabled: true,
-                size_min: 24,
-                size_max: 48,
-                delay_min_ms: 2,
-                delay_max_ms: 8,
-                sni_split: true,
-            },
+            Fingerprint::Ech | Fingerprint::SplitLegacy | Fingerprint::SplitModern => {
+                split_fragments()
+            }
             _ => FragmentConfig::disabled(),
         }
     }
@@ -78,6 +94,17 @@ impl Fingerprint {
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
 
         match self {
+            Fingerprint::Ech => {
+                builder
+                    .set_min_proto_version(Some(SslVersion::TLS1_3))
+                    .map_err(tls)?;
+                builder
+                    .set_max_proto_version(Some(SslVersion::TLS1_3))
+                    .map_err(tls)?;
+                builder.set_grease_enabled(true);
+                builder.set_curves_list(ECH_GROUPS).map_err(tls)?;
+                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+            }
             Fingerprint::SplitLegacy => {
                 builder
                     .set_min_proto_version(Some(SslVersion::TLS1_2))
@@ -178,6 +205,52 @@ async fn candidates(host: &str) -> Vec<SocketAddr> {
     list
 }
 
+fn cached_ech() -> Option<Vec<u8>> {
+    ECH_CACHE.lock().ok().and_then(|guard| guard.clone())
+}
+
+fn remember_ech(list: Vec<u8>) {
+    if let Ok(mut guard) = ECH_CACHE.lock() {
+        *guard = Some(list);
+    }
+}
+
+/// Where the ECH keys come from, in order: what an edge last handed back,
+/// an operator supplied override, then the same dns lookup the masque path uses.
+/// Cloudflare publishes one shared key set, so the keys for cloudflare-ech.com
+/// also encrypt a client hello meant for the api.
+async fn ech_config_list() -> Option<Vec<u8>> {
+    if let Some(list) = cached_ech() {
+        return Some(list);
+    }
+
+    if let Ok(raw) = std::env::var(ECH_ENV) {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            match crate::tls::decode_ech_config_list(raw) {
+                Ok(list) if !list.is_empty() => {
+                    log::info!("[apifront] using the ECHConfigList from {ECH_ENV}");
+                    remember_ech(list.clone());
+                    return Some(list);
+                }
+                Ok(_) => log::warn!("[apifront] {ECH_ENV} is empty; ignoring it"),
+                Err(e) => log::warn!("[apifront] {ECH_ENV} is not valid base64 ({e}); ignoring it"),
+            }
+        }
+    }
+
+    match crate::dns::fetch_ech_config().await {
+        Ok(list) => {
+            remember_ech(list.clone());
+            Some(list)
+        }
+        Err(e) => {
+            log::info!("[apifront] no ECHConfigList for the api ({e}); skipping the ech route");
+            None
+        }
+    }
+}
+
 fn render_request(request: &ApiRequest) -> Vec<u8> {
     let mut head = String::new();
     head.push_str(&format!("{} {} HTTP/1.1\r\n", request.method, request.path));
@@ -266,6 +339,7 @@ async fn exchange(
     request: &ApiRequest,
     address: SocketAddr,
     fingerprint: Fingerprint,
+    ech: Option<&[u8]>,
 ) -> Result<ApiResponse> {
     let tcp = match crate::upstream::configured() {
         Some(proxy) => tokio::time::timeout(CONNECT_TIMEOUT, proxy.connect(address))
@@ -281,16 +355,45 @@ async fn exchange(
     };
     tcp.set_nodelay(true).ok();
 
-    let config = fingerprint.configure()?;
+    let mut config = fingerprint.configure()?;
+    if let Some(list) = ech {
+        crate::tls::set_ech_config_list(&mut config, list)?;
+    }
     let stream = FragmentingStream::new(tcp, fingerprint.fragments());
 
-    let mut tls = tokio::time::timeout(
+    let handshake = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
         tokio_boring::connect(config, &request.host, stream),
     )
     .await
-    .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?
-    .map_err(|e| AetherError::Api(format!("tls handshake with {address}: {e}")))?;
+    .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?;
+
+    let mut tls = match handshake {
+        Ok(tls) => tls,
+        Err(error) => {
+            if ech.is_some() {
+                if let Some(retry) = error.ssl().and_then(crate::tls::ech_retry_configs) {
+                    remember_ech(retry);
+                    return Err(AetherError::Ech(format!(
+                        "{address} rejected our ech keys and handed back fresh ones: {error}"
+                    )));
+                }
+            }
+            return Err(AetherError::Api(format!(
+                "tls handshake with {address}: {error}"
+            )));
+        }
+    };
+
+    if ech.is_some() {
+        if crate::tls::ech_accepted(tls.ssl()) {
+            log::info!("[apifront] ech accepted by {address}; the api name stayed encrypted");
+        } else {
+            return Err(AetherError::Ech(format!(
+                "{address} completed the handshake without accepting ech"
+            )));
+        }
+    }
 
     if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
         return Err(AetherError::Api(format!(
@@ -331,6 +434,34 @@ async fn exchange(
     })
 }
 
+/// One ech attempt, plus a single retry when the edge rejects our keys but
+/// hands back the ones it currently serves.
+async fn attempt_ech(
+    request: &ApiRequest,
+    address: SocketAddr,
+    ech: &mut Option<Vec<u8>>,
+) -> Result<ApiResponse> {
+    let list = match ech.clone() {
+        Some(list) => list,
+        None => return Err(AetherError::Ech("no ech config list".into())),
+    };
+
+    match exchange(request, address, Fingerprint::Ech, Some(&list)).await {
+        Err(first) => match cached_ech() {
+            Some(fresh) if fresh != list => {
+                log::info!(
+                    "[apifront] retrying {address} with the {} byte ech key set it handed back",
+                    fresh.len()
+                );
+                *ech = Some(fresh.clone());
+                exchange(request, address, Fingerprint::Ech, Some(&fresh)).await
+            }
+            _ => Err(first),
+        },
+        outcome => outcome,
+    }
+}
+
 pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
     let addresses = candidates(&request.host).await;
     if addresses.is_empty() {
@@ -339,28 +470,53 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
         ));
     }
 
+    let mut ech = ech_config_list().await;
+
     let mut rejection: Option<ApiResponse> = None;
     let mut failure: Option<AetherError> = None;
 
     for fingerprint in Fingerprint::all() {
+        if fingerprint == Fingerprint::Ech && ech.is_none() {
+            continue;
+        }
+
         for address in &addresses {
-            match exchange(request, *address, fingerprint).await {
+            let outcome = match fingerprint {
+                Fingerprint::Ech => attempt_ech(request, *address, &mut ech).await,
+                other => exchange(request, *address, other, None).await,
+            };
+
+            match outcome {
                 Ok(response) if (200..300).contains(&response.status) => {
                     return Ok(response);
                 }
                 Ok(response) => {
-                    log::debug!(
-                        "[apifront] {} answered {} via {}",
-                        request.host,
-                        response.status,
-                        response.route
-                    );
+                    if fingerprint == Fingerprint::Ech {
+                        log::info!(
+                            "[apifront] {} answered {} via {}: {}",
+                            request.host,
+                            response.status,
+                            response.route,
+                            response.body.chars().take(160).collect::<String>()
+                        );
+                    } else {
+                        log::debug!(
+                            "[apifront] {} answered {} via {}",
+                            request.host,
+                            response.status,
+                            response.route
+                        );
+                    }
                     if rejection.is_none() || response.status != 403 {
                         rejection = Some(response);
                     }
                 }
                 Err(error) => {
-                    log::debug!("[apifront] {} attempt failed: {error}", fingerprint.label());
+                    if fingerprint == Fingerprint::Ech {
+                        log::info!("[apifront] ech attempt via {address} failed: {error}");
+                    } else {
+                        log::debug!("[apifront] {} attempt failed: {error}", fingerprint.label());
+                    }
                     failure = Some(error);
                 }
             }
@@ -485,7 +641,19 @@ mod tests {
     }
 
     #[test]
+    fn the_ech_route_is_tried_before_anything_else() {
+        assert_eq!(Fingerprint::all()[0], Fingerprint::Ech);
+    }
+
+    #[test]
+    fn an_empty_ech_list_is_refused_before_it_reaches_boring() {
+        let mut config = Fingerprint::Ech.configure().expect("ech configures");
+        assert!(crate::tls::set_ech_config_list(&mut config, &[]).is_err());
+    }
+
+    #[test]
     fn only_the_split_profiles_chop_the_client_hello() {
+        assert!(Fingerprint::Ech.fragments().enabled);
         assert!(Fingerprint::SplitLegacy.fragments().enabled);
         assert!(Fingerprint::SplitModern.fragments().enabled);
         assert!(!Fingerprint::Modern.fragments().enabled);
@@ -505,8 +673,11 @@ mod tests {
 
         let mut reached = 0;
         for fingerprint in Fingerprint::all() {
+            if fingerprint == Fingerprint::Ech {
+                continue;
+            }
             let address = random_edge_address();
-            match exchange(&request, address, fingerprint).await {
+            match exchange(&request, address, fingerprint, None).await {
                 Ok(response) => {
                     reached += 1;
                     println!(
@@ -521,5 +692,33 @@ mod tests {
         }
 
         assert!(reached > 0, "no fingerprint reached the edge");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs live network access to the cloudflare edge"]
+    async fn the_ech_route_reaches_the_warp_api() {
+        let request = ApiRequest {
+            method: "GET".to_string(),
+            host: "api.cloudflareclient.com".to_string(),
+            path: "/v0a4471/reg/nonexistent".to_string(),
+            headers: vec![("User-Agent".to_string(), "WARP for Android".to_string())],
+            body: None,
+        };
+
+        let mut ech = ech_config_list().await;
+        assert!(ech.is_some(), "no ECHConfigList; set {ECH_ENV} to a base64 list");
+
+        let address = random_edge_address();
+        let response = attempt_ech(&request, address, &mut ech)
+            .await
+            .expect("the ech route should reach the api");
+        println!(
+            "ech -> {} via {}: {}",
+            response.status, response.route, response.body
+        );
+        assert!(
+            !response.body.trim_start().starts_with('<'),
+            "an html page means the edge did not route us to the api"
+        );
     }
 }
