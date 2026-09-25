@@ -24,6 +24,9 @@ const EDGE_SAMPLES: usize = 3;
 const RESOLVED_SAMPLES: usize = 2;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+/// Through an upstream proxy (tor, psiphon) the connect also covers building
+/// the circuit, which regularly takes longer than a direct tcp connect.
+const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 512 * 1024;
@@ -32,20 +35,28 @@ const MAX_BODY: usize = 512 * 1024;
 const ECH_ENV: &str = "AETHER_API_ECH";
 
 /// Extra trust anchors: a directory of PEM/DER files, or one PEM bundle.
+/// This is also the only way to trust a user installed CA on purpose.
 const CA_DIR_ENV: &str = "AETHER_CA_DIR";
 const CA_FILE_ENV: &str = "AETHER_CA_FILE";
 
-/// Where the system keeps its root certificates. BoringSSL's built in default
-/// paths (`/etc/ssl/certs`, `/usr/lib/ssl`) do not exist on Android, so without
-/// loading these ourselves every certificate the api presents is rejected with
-/// "unable to get local issuer certificate", ech or not.
+/// Where the system keeps its root certificates, most authoritative first.
+/// BoringSSL's built in default paths (`/etc/ssl/certs`, `/usr/lib/ssl`) do not
+/// exist on Android, so without loading these ourselves every certificate the
+/// api presents is rejected with "unable to get local issuer certificate".
+///
+/// Only the first directory that holds any roots is used. On Android 14+
+/// `/system/etc/security/cacerts` is still there but frozen at the factory
+/// image; merging it with the conscrypt apex would bring back roots an update
+/// has since distrusted.
+///
+/// User installed CAs (`cacerts-added`) are deliberately not trusted, the same
+/// default Android applies to apps since API 24: a root pushed onto the device
+/// must not be able to read the account token.
 const SYSTEM_CA_DIRS: &[&str] = &[
     // Android 14+ ships the roots in the updatable conscrypt module.
     "/apex/com.android.conscrypt/cacerts",
     // Android 13 and older.
     "/system/etc/security/cacerts",
-    // Roots the user installed through the settings app.
-    "/data/misc/user/0/cacerts-added",
     // Desktop linux, for the cli and tests.
     "/etc/ssl/certs",
 ];
@@ -54,6 +65,10 @@ const SYSTEM_CA_FILES: &[&str] = &[
     "/etc/pki/tls/certs/ca-bundle.crt",
     "/etc/ssl/cert.pem",
 ];
+
+/// Where Android keeps copies of the system roots a user switched off in
+/// settings, per android user. `{user}` is replaced with the current one.
+const REMOVED_CA_DIR: &str = "/data/misc/user/{user}/cacerts-removed";
 
 /// The smallest ECHConfig contents worth considering: config id, kem, an x25519
 /// public key, one cipher suite, max name length, a public name and extensions
@@ -138,6 +153,80 @@ fn collect_roots(dirs: &[String], files: &[String]) -> (Vec<X509>, Vec<String>) 
     (roots, sources)
 }
 
+/// True when the directory holds at least one readable certificate.
+fn holds_certificates(dir: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && std::fs::read(&path)
+                .map(|bytes| !parse_certificates(&bytes).is_empty())
+                .unwrap_or(false)
+    })
+}
+
+/// The one system trust store to use: the first directory with roots in it,
+/// else the first bundle file with roots in it.
+fn pick_system_store(dirs: &[&str], files: &[&str]) -> (Vec<String>, Vec<String>) {
+    for dir in dirs {
+        if holds_certificates(dir) {
+            return (vec![dir.to_string()], Vec::new());
+        }
+    }
+    for file in files {
+        let usable = std::fs::read(file)
+            .map(|bytes| !parse_certificates(&bytes).is_empty())
+            .unwrap_or(false);
+        if usable {
+            return (Vec::new(), vec![file.to_string()]);
+        }
+    }
+    (Vec::new(), Vec::new())
+}
+
+/// The android user this process runs as (uid / 100000), 0 off android or
+/// when it cannot be told.
+fn android_user_id() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("Uid:"))
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|uid| uid.parse::<u32>().ok())
+        })
+        .map(|uid| uid / 100_000)
+        .unwrap_or(0)
+}
+
+/// DER of every system root the user switched off in settings.
+fn removed_roots() -> HashSet<Vec<u8>> {
+    let dir = REMOVED_CA_DIR.replace("{user}", &android_user_id().to_string());
+    let (certs, _) = collect_roots(&[dir], &[]);
+    certs.iter().filter_map(|cert| cert.to_der().ok()).collect()
+}
+
+/// Leaves out every root in `removed`. Returns what is left and how many went.
+fn drop_removed(roots: Vec<X509>, removed: &HashSet<Vec<u8>>) -> (Vec<X509>, usize) {
+    if removed.is_empty() {
+        return (roots, 0);
+    }
+    let before = roots.len();
+    let kept: Vec<X509> = roots
+        .into_iter()
+        .filter(|cert| {
+            cert.to_der()
+                .map(|der| !removed.contains(&der))
+                .unwrap_or(true)
+        })
+        .collect();
+    let dropped = before - kept.len();
+    (kept, dropped)
+}
+
 fn env_path(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -148,11 +237,13 @@ fn env_path(name: &str) -> Option<String> {
 fn trust_roots() -> &'static [X509] {
     TRUST_ROOTS.get_or_init(|| {
         let mut dirs: Vec<String> = env_path(CA_DIR_ENV).into_iter().collect();
-        dirs.extend(SYSTEM_CA_DIRS.iter().map(|dir| dir.to_string()));
         let mut files: Vec<String> = env_path(CA_FILE_ENV).into_iter().collect();
-        files.extend(SYSTEM_CA_FILES.iter().map(|file| file.to_string()));
+        let (system_dirs, system_files) = pick_system_store(SYSTEM_CA_DIRS, SYSTEM_CA_FILES);
+        dirs.extend(system_dirs);
+        files.extend(system_files);
 
         let (roots, sources) = collect_roots(&dirs, &files);
+        let (roots, dropped) = drop_removed(roots, &removed_roots());
         if roots.is_empty() {
             log::warn!(
                 "[apifront] no root certificates found on this device; api certificates will \
@@ -160,9 +251,14 @@ fn trust_roots() -> &'static [X509] {
             );
         } else {
             log::info!(
-                "[apifront] trust store: {} roots from {}",
+                "[apifront] trust store: {} roots from {}{}",
                 roots.len(),
-                sources.join(", ")
+                sources.join(", "),
+                if dropped > 0 {
+                    format!(", {dropped} left out because the user disabled them")
+                } else {
+                    String::new()
+                }
             );
         }
         roots
@@ -569,6 +665,18 @@ fn never_connected(error: &AetherError) -> bool {
     matches!(error, AetherError::Api(message) if message.starts_with("connect to "))
 }
 
+/// True when the account api itself answered and refused: a json body with a
+/// 4xx. Another address or fingerprint reaches the same api and gets the same
+/// answer, and on a 429 every extra attempt only digs the rate limit deeper.
+/// A 403 is left out (that is usually the edge refusing this network, which
+/// another route can get past), and so is a 408.
+fn final_api_answer(response: &ApiResponse) -> bool {
+    (400..500).contains(&response.status)
+        && response.status != 403
+        && response.status != 408
+        && response.body.trim_start().starts_with('{')
+}
+
 async fn exchange(
     request: &ApiRequest,
     address: SocketAddr,
@@ -576,9 +684,11 @@ async fn exchange(
     ech: Option<&[u8]>,
 ) -> Result<ApiResponse> {
     let tcp = match crate::upstream::configured() {
-        Some(proxy) => tokio::time::timeout(CONNECT_TIMEOUT, proxy.connect(address))
+        Some(proxy) => tokio::time::timeout(PROXY_CONNECT_TIMEOUT, proxy.connect(address))
             .await
-            .map_err(|_| AetherError::Api(format!("connect to {address} timed out")))?
+            .map_err(|_| {
+                AetherError::Api(format!("connect to {address} through the proxy timed out"))
+            })?
             .map_err(|e| {
                 AetherError::Api(format!("connect to {address} through the proxy: {e}"))
             })?,
@@ -715,6 +825,11 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
     // Load (and log) the trust store up front rather than inside the first handshake.
     let _ = trust_roots();
 
+    // Through an upstream proxy a failed connect says the circuit was slow or
+    // down, not that the edge address is dead, so addresses are never written
+    // off in that case.
+    let proxied = crate::upstream::configured().is_some();
+
     let mut ech = ech_config_list().await;
 
     let mut rejection: Option<ApiResponse> = None;
@@ -748,6 +863,13 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
                         response.route,
                         response.body.chars().take(160).collect::<String>()
                     );
+                    if final_api_answer(&response) {
+                        log::info!(
+                            "[apifront] the api itself refused the request; another route \
+                             would get the same answer, so stopping here"
+                        );
+                        return Ok(response);
+                    }
                     if rejection.is_none() || response.status != 403 {
                         rejection = Some(response);
                     }
@@ -757,7 +879,7 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
                         "[apifront] {} attempt via {address} failed: {error}",
                         fingerprint.label()
                     );
-                    if never_connected(&error) {
+                    if !proxied && never_connected(&error) {
                         log::info!(
                             "[apifront] {address} never accepted a tcp connection; \
                              leaving it out of the remaining attempts"
@@ -819,6 +941,14 @@ mod tests {
         builder.build()
     }
 
+    fn answer(status: u16, body: &str) -> ApiResponse {
+        ApiResponse {
+            status,
+            body: body.to_string(),
+            route: "test".to_string(),
+        }
+    }
+
     #[test]
     fn the_verify_error_text_comes_from_boring() {
         let text = unsafe { CStr::from_ptr(X509_verify_cert_error_string(20)) }.to_string_lossy();
@@ -869,6 +999,69 @@ mod tests {
     }
 
     #[test]
+    fn only_the_first_system_store_with_roots_is_used() {
+        let base = std::env::temp_dir().join(format!("aether-store-pick-{}", std::process::id()));
+        let empty = base.join("empty");
+        let first = base.join("first");
+        let second = base.join("second");
+        for dir in [&empty, &first, &second] {
+            std::fs::create_dir_all(dir).expect("temp dir");
+        }
+        std::fs::write(empty.join("junk"), b"not a certificate").expect("write");
+        std::fs::write(
+            first.join("a.0"),
+            self_signed("aether first store").to_pem().expect("pem"),
+        )
+        .expect("write");
+        std::fs::write(
+            second.join("b.0"),
+            self_signed("aether stale store").to_pem().expect("pem"),
+        )
+        .expect("write");
+
+        let missing = base.join("missing").to_string_lossy().into_owned();
+        let empty = empty.to_string_lossy().into_owned();
+        let first = first.to_string_lossy().into_owned();
+        let second = second.to_string_lossy().into_owned();
+        let candidates = [
+            missing.as_str(),
+            empty.as_str(),
+            first.as_str(),
+            second.as_str(),
+        ];
+        let (dirs, files) = pick_system_store(&candidates, &[]);
+        std::fs::remove_dir_all(&base).ok();
+
+        assert_eq!(dirs, vec![first]);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn user_installed_cas_are_not_a_default_trust_source() {
+        for dir in SYSTEM_CA_DIRS {
+            assert!(
+                !dir.contains("cacerts-added"),
+                "{dir} would let a user installed root read the account token"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_the_user_disabled_is_left_out() {
+        let kept = self_signed("aether kept root");
+        let disabled = self_signed("aether disabled root");
+        let removed: HashSet<Vec<u8>> = [disabled.to_der().expect("der")].into_iter().collect();
+
+        let (roots, dropped) = drop_removed(vec![kept.clone(), disabled], &removed);
+        assert_eq!(dropped, 1);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].to_der().expect("der"), kept.to_der().expect("der"));
+
+        let (roots, dropped) = drop_removed(vec![kept], &HashSet::new());
+        assert_eq!((roots.len(), dropped), (1, 0));
+    }
+
+    #[test]
     fn only_a_failed_tcp_connect_marks_an_address_dead() {
         assert!(never_connected(&AetherError::Api(
             "connect to 141.101.113.234:443 timed out".into()
@@ -877,6 +1070,24 @@ mod tests {
             "tls handshake with 141.101.113.131:443 timed out".into()
         )));
         assert!(!never_connected(&AetherError::Ech("connect to x".into())));
+    }
+
+    #[test]
+    fn a_json_refusal_from_the_api_ends_the_search() {
+        assert!(final_api_answer(&answer(
+            429,
+            "{\"success\":false,\"errors\":[{\"code\":1015}]}"
+        )));
+        assert!(final_api_answer(&answer(400, "  {\"success\":false}")));
+        assert!(final_api_answer(&answer(401, "{\"errors\":[]}")));
+    }
+
+    #[test]
+    fn an_edge_refusal_keeps_the_search_going() {
+        assert!(!final_api_answer(&answer(403, "{\"errors\":[]}")));
+        assert!(!final_api_answer(&answer(408, "{}")));
+        assert!(!final_api_answer(&answer(400, "<html>bad request</html>")));
+        assert!(!final_api_answer(&answer(502, "{}")));
     }
 
     #[test]
