@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use boring::ssl::{SslConnector, SslMethod, SslVersion};
+use boring::ssl::{SslConnector, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
+use boring::x509::{X509NameRef, X509StoreContextRef, X509};
 use rand::RngExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -20,6 +22,30 @@ const MAX_BODY: usize = 512 * 1024;
 
 /// Base64 ECHConfigList override, for networks where the dns lookup is tampered with.
 const ECH_ENV: &str = "AETHER_API_ECH";
+
+/// Extra trust anchors: a directory of PEM/DER files, or one PEM bundle.
+const CA_DIR_ENV: &str = "AETHER_CA_DIR";
+const CA_FILE_ENV: &str = "AETHER_CA_FILE";
+
+/// Where the system keeps its root certificates. BoringSSL's built in default
+/// paths (`/etc/ssl/certs`, `/usr/lib/ssl`) do not exist on Android, so without
+/// loading these ourselves every certificate the api presents is rejected with
+/// "unable to get local issuer certificate", ech or not.
+const SYSTEM_CA_DIRS: &[&str] = &[
+    // Android 14+ ships the roots in the updatable conscrypt module.
+    "/apex/com.android.conscrypt/cacerts",
+    // Android 13 and older.
+    "/system/etc/security/cacerts",
+    // Roots the user installed through the settings app.
+    "/data/misc/user/0/cacerts-added",
+    // Desktop linux, for the cli and tests.
+    "/etc/ssl/certs",
+];
+const SYSTEM_CA_FILES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+];
 
 /// The smallest ECHConfig contents worth considering: config id, kem, an x25519
 /// public key, one cipher suite, max name length, a public name and extensions
@@ -41,6 +67,149 @@ const ECH_GROUPS: &str = "X25519:P-256";
 const ALPN_HTTP1: &[u8] = b"\x08http/1.1";
 
 static ECH_CACHE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+static TRUST_ROOTS: OnceLock<Vec<X509>> = OnceLock::new();
+
+/// Reads every certificate in a PEM bundle (Android's cacerts files carry a
+/// text dump before the PEM block, which the PEM reader skips), falling back to
+/// a single DER certificate.
+fn parse_certificates(bytes: &[u8]) -> Vec<X509> {
+    if let Ok(list) = X509::stack_from_pem(bytes) {
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    X509::from_der(bytes).map(|cert| vec![cert]).unwrap_or_default()
+}
+
+fn collect_roots(dirs: &[String], files: &[String]) -> (Vec<X509>, Vec<String>) {
+    let mut roots: Vec<X509> = Vec::new();
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+    let mut sources: Vec<String> = Vec::new();
+
+    let mut keep = |certs: Vec<X509>, roots: &mut Vec<X509>| -> usize {
+        let mut added = 0;
+        for cert in certs {
+            if let Ok(der) = cert.to_der() {
+                if seen.insert(der) {
+                    roots.push(cert);
+                    added += 1;
+                }
+            }
+        }
+        added
+    };
+
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut added = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(&path) {
+                added += keep(parse_certificates(&bytes), &mut roots);
+            }
+        }
+        if added > 0 {
+            sources.push(format!("{dir} ({added})"));
+        }
+    }
+
+    for file in files {
+        if let Ok(bytes) = std::fs::read(file) {
+            let added = keep(parse_certificates(&bytes), &mut roots);
+            if added > 0 {
+                sources.push(format!("{file} ({added})"));
+            }
+        }
+    }
+
+    (roots, sources)
+}
+
+fn env_path(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn trust_roots() -> &'static [X509] {
+    TRUST_ROOTS.get_or_init(|| {
+        let mut dirs: Vec<String> = env_path(CA_DIR_ENV).into_iter().collect();
+        dirs.extend(SYSTEM_CA_DIRS.iter().map(|dir| dir.to_string()));
+        let mut files: Vec<String> = env_path(CA_FILE_ENV).into_iter().collect();
+        files.extend(SYSTEM_CA_FILES.iter().map(|file| file.to_string()));
+
+        let (roots, sources) = collect_roots(&dirs, &files);
+        if roots.is_empty() {
+            log::warn!(
+                "[apifront] no root certificates found on this device; api certificates will \
+                 fail to verify. Point {CA_DIR_ENV} or {CA_FILE_ENV} at a trust store"
+            );
+        } else {
+            log::info!(
+                "[apifront] trust store: {} roots from {}",
+                roots.len(),
+                sources.join(", ")
+            );
+        }
+        roots
+    })
+}
+
+fn describe_name(name: &X509NameRef) -> String {
+    let parts: Vec<String> = name
+        .entries()
+        .filter_map(|entry| entry.data().as_utf8().ok().map(|text| text.to_string()))
+        .collect();
+    if parts.is_empty() {
+        "?".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Leaves the verdict to BoringSSL, but says why a certificate was refused.
+/// A subject of cloudflare-ech.com means the edge rejected ech and answered
+/// with the outer name; anything that is not a cloudflare issuer means the
+/// connection is being intercepted.
+fn report_verification(preverify_ok: bool, ctx: &mut X509StoreContextRef) -> bool {
+    if !preverify_ok {
+        let depth = ctx.error_depth();
+        let reason = ctx.error().to_string();
+        let (subject, issuer) = ctx
+            .current_cert()
+            .map(|cert| {
+                (
+                    describe_name(cert.subject_name()),
+                    describe_name(cert.issuer_name()),
+                )
+            })
+            .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+        log::info!(
+            "[apifront] certificate refused at depth {depth}: {reason} \
+             (subject: {subject} | issuer: {issuer} | trust store: {} roots)",
+            trust_roots().len()
+        );
+    }
+    preverify_ok
+}
+
+fn install_trust(builder: &mut SslContextBuilder) {
+    let roots = trust_roots();
+    if !roots.is_empty() {
+        let store = builder.cert_store_mut();
+        for root in roots {
+            // A duplicate is not worth failing the handshake over.
+            let _ = store.add_cert(root.clone());
+        }
+    }
+    builder.set_verify_callback(SslVerifyMode::PEER, report_verification);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fingerprint {
@@ -159,6 +328,8 @@ impl Fingerprint {
                 builder.enable_ocsp_stapling();
             }
         }
+
+        install_trust(&mut builder);
 
         builder.build().configure().map_err(tls)
     }
@@ -370,6 +541,13 @@ fn dechunk(body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// True when the tcp connection itself never came up. Such an address is dead
+/// (or null routed) for every fingerprint, so there is no point spending
+/// another connect timeout on it per profile.
+fn never_connected(error: &AetherError) -> bool {
+    matches!(error, AetherError::Api(message) if message.starts_with("connect to "))
+}
+
 async fn exchange(
     request: &ApiRequest,
     address: SocketAddr,
@@ -513,10 +691,14 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
         ));
     }
 
+    // Load (and log) the trust store up front rather than inside the first handshake.
+    let _ = trust_roots();
+
     let mut ech = ech_config_list().await;
 
     let mut rejection: Option<ApiResponse> = None;
     let mut failure: Option<AetherError> = None;
+    let mut unreachable: Vec<SocketAddr> = Vec::new();
 
     for fingerprint in Fingerprint::all() {
         if fingerprint == Fingerprint::Ech && ech.is_none() {
@@ -524,6 +706,10 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
         }
 
         for address in &addresses {
+            if unreachable.contains(address) {
+                continue;
+            }
+
             let outcome = match fingerprint {
                 Fingerprint::Ech => attempt_ech(request, *address, &mut ech).await,
                 other => exchange(request, *address, other, None).await,
@@ -550,9 +736,21 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
                         "[apifront] {} attempt via {address} failed: {error}",
                         fingerprint.label()
                     );
+                    if never_connected(&error) {
+                        log::info!(
+                            "[apifront] {address} never accepted a tcp connection; \
+                             leaving it out of the remaining attempts"
+                        );
+                        unreachable.push(*address);
+                    }
                     failure = Some(error);
                 }
             }
+        }
+
+        if unreachable.len() == addresses.len() {
+            log::info!("[apifront] no edge address accepted a tcp connection; giving up early");
+            break;
         }
     }
 
@@ -566,6 +764,90 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn self_signed(common_name: &str) -> X509 {
+        use boring::asn1::Asn1Time;
+        use boring::ec::{EcGroup, EcKey};
+        use boring::hash::MessageDigest;
+        use boring::nid::Nid;
+        use boring::pkey::PKey;
+        use boring::x509::{X509Builder, X509NameBuilder};
+
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("group");
+        let key = PKey::from_ec_key(EcKey::generate(&group).expect("ec key")).expect("pkey");
+
+        let mut name = X509NameBuilder::new().expect("name builder");
+        name.append_entry_by_nid(Nid::COMMONNAME, common_name)
+            .expect("common name");
+        let name = name.build();
+
+        let mut builder = X509Builder::new().expect("x509 builder");
+        builder.set_version(2).expect("version");
+        builder.set_subject_name(&name).expect("subject");
+        builder.set_issuer_name(&name).expect("issuer");
+        builder.set_pubkey(&key).expect("pubkey");
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).expect("now"))
+            .expect("not before");
+        builder
+            .set_not_after(&Asn1Time::days_from_now(1).expect("tomorrow"))
+            .expect("not after");
+        builder
+            .sign(&key, MessageDigest::sha256())
+            .expect("sign");
+        builder.build()
+    }
+
+    #[test]
+    fn an_android_style_cacerts_file_is_read() {
+        let cert = self_signed("aether test root");
+        let mut file = b"Certificate:\n    Data:\n        Version: 3 (0x2)\n        (text dump)\n".to_vec();
+        file.extend_from_slice(&cert.to_pem().expect("pem"));
+        file.extend_from_slice(b"SHA1 Fingerprint=00:11:22\n");
+
+        let parsed = parse_certificates(&file);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].to_der().expect("der"),
+            cert.to_der().expect("der")
+        );
+    }
+
+    #[test]
+    fn a_der_certificate_and_garbage_are_told_apart() {
+        let cert = self_signed("aether der root");
+        assert_eq!(parse_certificates(&cert.to_der().expect("der")).len(), 1);
+        assert!(parse_certificates(b"not a certificate").is_empty());
+    }
+
+    #[test]
+    fn roots_are_collected_from_a_directory_without_duplicates() {
+        let dir = std::env::temp_dir().join(format!("aether-cacerts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let first = self_signed("aether root one");
+        let second = self_signed("aether root two");
+        std::fs::write(dir.join("a.0"), first.to_pem().expect("pem")).expect("write");
+        std::fs::write(dir.join("b.0"), second.to_pem().expect("pem")).expect("write");
+        std::fs::write(dir.join("a.1"), first.to_pem().expect("pem")).expect("write");
+
+        let dirs = vec![dir.to_string_lossy().into_owned()];
+        let (roots, sources) = collect_roots(&dirs, &[]);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[test]
+    fn only_a_failed_tcp_connect_marks_an_address_dead() {
+        assert!(never_connected(&AetherError::Api(
+            "connect to 141.101.113.234:443 timed out".into()
+        )));
+        assert!(!never_connected(&AetherError::Api(
+            "tls handshake with 141.101.113.131:443 timed out".into()
+        )));
+        assert!(!never_connected(&AetherError::Ech("connect to x".into())));
+    }
 
     #[test]
     fn every_random_edge_address_stays_inside_the_cloudflare_range() {
