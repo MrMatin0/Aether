@@ -21,6 +21,11 @@ const MAX_BODY: usize = 512 * 1024;
 /// Base64 ECHConfigList override, for networks where the dns lookup is tampered with.
 const ECH_ENV: &str = "AETHER_API_ECH";
 
+/// The smallest ECHConfig contents worth considering: config id, kem, an x25519
+/// public key, one cipher suite, max name length, a public name and extensions
+/// come to well over this.
+const MIN_ECH_CONFIG: usize = 32;
+
 const LEGACY_CIPHERS: &str = "ECDHE-ECDSA-CHACHA20-POLY1305:\
 ECDHE-ECDSA-AES128-GCM-SHA256:\
 ECDHE-RSA-AES128-GCM-SHA256:\
@@ -205,14 +210,38 @@ async fn candidates(host: &str) -> Vec<SocketAddr> {
     list
 }
 
+/// An ECHConfigList is a 2 byte length followed by at least one ECHConfig
+/// (2 byte version, 2 byte length, then the contents). A list whose prefix does
+/// not match its size, or that is too short to hold a real config, is refused
+/// by boring anyway; caching it would poison every later attempt.
+fn plausible_ech_list(list: &[u8]) -> bool {
+    if list.len() < 2 + 4 + MIN_ECH_CONFIG {
+        return false;
+    }
+
+    let declared = u16::from_be_bytes([list[0], list[1]]) as usize;
+    if declared != list.len() - 2 {
+        return false;
+    }
+
+    let first_config = u16::from_be_bytes([list[4], list[5]]) as usize;
+    first_config >= MIN_ECH_CONFIG && 4 + first_config <= declared
+}
+
 fn cached_ech() -> Option<Vec<u8>> {
     ECH_CACHE.lock().ok().and_then(|guard| guard.clone())
 }
 
-fn remember_ech(list: Vec<u8>) {
+/// Caches a key set, but only one that looks like a real ECHConfigList.
+/// Returns whether it was kept.
+fn remember_ech(list: Vec<u8>) -> bool {
+    if !plausible_ech_list(&list) {
+        return false;
+    }
     if let Ok(mut guard) = ECH_CACHE.lock() {
         *guard = Some(list);
     }
+    true
 }
 
 /// Where the ECH keys come from, in order: what an edge last handed back,
@@ -228,21 +257,27 @@ async fn ech_config_list() -> Option<Vec<u8>> {
         let raw = raw.trim();
         if !raw.is_empty() {
             match crate::tls::decode_ech_config_list(raw) {
-                Ok(list) if !list.is_empty() => {
+                Ok(list) if remember_ech(list.clone()) => {
                     log::info!("[apifront] using the ECHConfigList from {ECH_ENV}");
-                    remember_ech(list.clone());
                     return Some(list);
                 }
-                Ok(_) => log::warn!("[apifront] {ECH_ENV} is empty; ignoring it"),
+                Ok(list) => log::warn!(
+                    "[apifront] {ECH_ENV} holds {} bytes that are not an ECHConfigList; ignoring it",
+                    list.len()
+                ),
                 Err(e) => log::warn!("[apifront] {ECH_ENV} is not valid base64 ({e}); ignoring it"),
             }
         }
     }
 
     match crate::dns::fetch_ech_config().await {
+        Ok(list) if remember_ech(list.clone()) => Some(list),
         Ok(list) => {
-            remember_ech(list.clone());
-            Some(list)
+            log::info!(
+                "[apifront] the dns answer held {} bytes that are not an ECHConfigList; skipping the ech route",
+                list.len()
+            );
+            None
         }
         Err(e) => {
             log::info!("[apifront] no ECHConfigList for the api ({e}); skipping the ech route");
@@ -373,10 +408,17 @@ async fn exchange(
         Err(error) => {
             if ech.is_some() {
                 if let Some(retry) = error.ssl().and_then(crate::tls::ech_retry_configs) {
-                    remember_ech(retry);
-                    return Err(AetherError::Ech(format!(
-                        "{address} rejected our ech keys and handed back fresh ones: {error}"
-                    )));
+                    let size = retry.len();
+                    if remember_ech(retry) {
+                        return Err(AetherError::Ech(format!(
+                            "{address} rejected our ech keys and handed back fresh ones \
+                             ({size} bytes): {error}"
+                        )));
+                    }
+                    log::info!(
+                        "[apifront] {address} handed back a {size} byte ech key set that is not \
+                         a usable ECHConfigList; keeping ours"
+                    );
                 }
             }
             return Err(AetherError::Api(format!(
@@ -449,6 +491,7 @@ async fn attempt_ech(
     match exchange(request, address, Fingerprint::Ech, Some(&list)).await {
         Err(first) => match cached_ech() {
             Some(fresh) if fresh != list => {
+                log::info!("[apifront] first ech attempt via {address} failed: {first}");
                 log::info!(
                     "[apifront] retrying {address} with the {} byte ech key set it handed back",
                     fresh.len()
@@ -491,32 +534,22 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
                     return Ok(response);
                 }
                 Ok(response) => {
-                    if fingerprint == Fingerprint::Ech {
-                        log::info!(
-                            "[apifront] {} answered {} via {}: {}",
-                            request.host,
-                            response.status,
-                            response.route,
-                            response.body.chars().take(160).collect::<String>()
-                        );
-                    } else {
-                        log::debug!(
-                            "[apifront] {} answered {} via {}",
-                            request.host,
-                            response.status,
-                            response.route
-                        );
-                    }
+                    log::info!(
+                        "[apifront] {} answered {} via {}: {}",
+                        request.host,
+                        response.status,
+                        response.route,
+                        response.body.chars().take(160).collect::<String>()
+                    );
                     if rejection.is_none() || response.status != 403 {
                         rejection = Some(response);
                     }
                 }
                 Err(error) => {
-                    if fingerprint == Fingerprint::Ech {
-                        log::info!("[apifront] ech attempt via {address} failed: {error}");
-                    } else {
-                        log::debug!("[apifront] {} attempt failed: {error}", fingerprint.label());
-                    }
+                    log::info!(
+                        "[apifront] {} attempt via {address} failed: {error}",
+                        fingerprint.label()
+                    );
                     failure = Some(error);
                 }
             }
@@ -649,6 +682,33 @@ mod tests {
     fn an_empty_ech_list_is_refused_before_it_reaches_boring() {
         let mut config = Fingerprint::Ech.configure().expect("ech configures");
         assert!(crate::tls::set_ech_config_list(&mut config, &[]).is_err());
+    }
+
+    fn sample_ech_list(config_len: usize) -> Vec<u8> {
+        let mut list = vec![0u8, 0, 0xfe, 0x0d];
+        list.extend_from_slice(&(config_len as u16).to_be_bytes());
+        list.extend(std::iter::repeat(0xab).take(config_len));
+        let declared = (list.len() - 2) as u16;
+        list[..2].copy_from_slice(&declared.to_be_bytes());
+        list
+    }
+
+    #[test]
+    fn a_truncated_ech_key_set_is_never_taken_for_a_real_one() {
+        assert!(!plausible_ech_list(&[]));
+        assert!(!plausible_ech_list(&[0, 3, 0xfe, 0x0d, 0]));
+        assert!(!plausible_ech_list(&sample_ech_list(8)));
+
+        let mut wrong_prefix = sample_ech_list(65);
+        wrong_prefix[1] ^= 0x01;
+        assert!(!plausible_ech_list(&wrong_prefix));
+    }
+
+    #[test]
+    fn a_cloudflare_sized_ech_key_set_is_accepted() {
+        let list = sample_ech_list(65);
+        assert_eq!(list.len(), 71);
+        assert!(plausible_ech_list(&list));
     }
 
     #[test]
