@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use boring::pkey::PKey;
 use boring::ssl::{SslConnector, SslMethod, SslVersion};
 use boring::x509::X509;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use http::Method;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -502,12 +502,24 @@ pub async fn run(
 
         if let Some(dl) = pong_deadline {
             if Instant::now() >= dl {
-                log::warn!(
-                    "[h2] no PING response from edge within {:?}; connection is stalled",
-                    keepalive_timeout
-                );
-                close_sender(&sender_tx, &mut sender_outcome).await;
-                return Err(AetherError::Masque("h2 keepalive timeout".into()));
+                // The loop can spend a while parked on a full inbound queue, and
+                // the pong may have arrived in the meantime. Look before
+                // declaring the connection stalled.
+                let late = futures::FutureExt::now_or_never(std::future::poll_fn(|cx| {
+                    ping_pong.poll_pong(cx)
+                }));
+                if matches!(late, Some(Ok(_))) {
+                    awaiting_pong = false;
+                    pong_deadline = None;
+                    log::debug!("[h2] keepalive pong received");
+                } else {
+                    log::warn!(
+                        "[h2] no PING response from edge within {:?}; connection is stalled",
+                        keepalive_timeout
+                    );
+                    close_sender(&sender_tx, &mut sender_outcome).await;
+                    return Err(AetherError::Masque("h2 keepalive timeout".into()));
+                }
             }
         }
 
@@ -577,9 +589,14 @@ pub async fn run(
             data = futures::future::poll_fn(|cx| recv_body.poll_data(cx)) => {
                 match data {
                     Some(Ok(chunk)) => {
-                        let _ = recv_body.flow_control().release_capacity(chunk.len());
+                        let chunk_len = chunk.len();
                         capsules.push(&chunk);
-                        let got_data = drain_capsules(&mut capsules, &inbound_tx, &addr_tx);
+                        let got_data = drain_capsules(&mut capsules, &inbound_tx, &addr_tx).await;
+                        // Capacity goes back to the edge only once the packets
+                        // are with the netstack, so a slow netstack slows the
+                        // edge through HTTP/2 flow control instead of losing
+                        // data the outer TCP already delivered.
+                        let _ = recv_body.flow_control().release_capacity(chunk_len);
                         if got_data && !ready_fired {
                             validate_successes += 1;
                             log::debug!(
@@ -636,7 +653,7 @@ async fn pump_outbound(
     mut outbound_rx: mpsc::Receiver<Vec<u8>>,
     mut control_rx: mpsc::Receiver<SenderMsg>,
 ) -> Result<()> {
-    let mut batch: Vec<u8> = Vec::with_capacity(H2_SEND_BATCH_BYTES);
+    let mut batch = BytesMut::with_capacity(H2_SEND_BATCH_BYTES);
 
     loop {
         tokio::select! {
@@ -658,22 +675,46 @@ async fn pump_outbound(
                     return Ok(());
                 };
 
-                masque::append_datagram_capsule(&mut batch, &packet);
+                // Once h2 has written out the previous batch, this takes the
+                // same allocation back instead of making a new one.
+                batch.reserve(H2_SEND_BATCH_BYTES);
+                append_datagram_capsule(&mut batch, &packet);
 
                 // Anything already queued behind this packet rides along, so a
                 // burst costs one frame rather than one frame per packet.
                 while batch.len() < H2_SEND_BATCH_BYTES {
                     match outbound_rx.try_recv() {
-                        Ok(next) => masque::append_datagram_capsule(&mut batch, &next),
+                        Ok(next) => append_datagram_capsule(&mut batch, &next),
                         Err(_) => break,
                     }
                 }
 
-                let framed = Bytes::copy_from_slice(&batch);
-                batch.clear();
+                // split() hands the filled bytes to h2 without copying them.
+                let framed = batch.split().freeze();
                 send_capsule(&mut send, framed).await?;
             }
         }
+    }
+}
+
+/// Lays a DATAGRAM capsule onto the end of `out`, byte for byte what
+/// `masque::append_datagram_capsule` writes into a `Vec`.
+fn append_datagram_capsule(out: &mut BytesMut, packet: &[u8]) {
+    put_varint(out, masque::CAPSULE_DATAGRAM);
+    put_varint(out, packet.len() as u64);
+    out.extend_from_slice(packet);
+}
+
+/// QUIC variable-length integer, as capsules use for their type and length.
+fn put_varint(out: &mut BytesMut, value: u64) {
+    if value < 1 << 6 {
+        out.put_u8(value as u8);
+    } else if value < 1 << 14 {
+        out.put_u16(0x4000 | value as u16);
+    } else if value < 1 << 30 {
+        out.put_u32(0x8000_0000 | value as u32);
+    } else {
+        out.put_u64(0xc000_0000_0000_0000 | value);
     }
 }
 
@@ -697,7 +738,11 @@ async fn send_capsule(send: &mut h2::SendStream<Bytes>, data: Bytes) -> Result<(
     Ok(())
 }
 
-fn drain_capsules(
+/// Hands every complete capsule to where it belongs. IP packets go to the
+/// netstack, and when its queue is full this waits for room rather than
+/// dropping the packet: the outer TCP already delivered these bytes, and
+/// throwing them away would make the inner TCP retransmit across it.
+async fn drain_capsules(
     capsules: &mut CapsuleParser,
     inbound_tx: &mpsc::Sender<Vec<u8>>,
     addr_tx: &Option<mpsc::Sender<AssignedAddr>>,
@@ -716,8 +761,11 @@ fn drain_capsules(
                 delivered = true;
                 match inbound_tx.try_send(pkt) {
                     Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        log::trace!("[h2] inbound queue full, dropping datagram");
+                    Err(mpsc::error::TrySendError::Full(pkt)) => {
+                        log::trace!("[h2] inbound queue full, waiting for the netstack");
+                        if inbound_tx.send(pkt).await.is_err() {
+                            return delivered;
+                        }
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => return delivered,
                 }
@@ -758,5 +806,75 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
             Some(IpAddr::V6(b.into()))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip_packet(marker: u8) -> Vec<u8> {
+        let mut pkt = vec![0u8; 24];
+        pkt[0] = 0x45;
+        pkt[19] = marker;
+        pkt
+    }
+
+    #[test]
+    fn batched_capsules_are_laid_down_exactly_like_the_shared_encoder() {
+        for len in [0usize, 20, 63, 64, 1280, 16_383, 16_384, 70_000] {
+            let packet = vec![0x45u8; len];
+            let mut batch = BytesMut::new();
+            append_datagram_capsule(&mut batch, &packet);
+            assert_eq!(
+                &batch[..],
+                masque::encode_datagram_capsule(&packet).as_slice(),
+                "a {len}-byte packet must be framed the same way"
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_batch_leaves_the_buffer_ready_for_the_next_one() {
+        let mut batch = BytesMut::with_capacity(H2_SEND_BATCH_BYTES);
+        append_datagram_capsule(&mut batch, &ip_packet(1));
+        let first = batch.split().freeze();
+        assert!(batch.is_empty());
+
+        append_datagram_capsule(&mut batch, &ip_packet(2));
+        let second = batch.split().freeze();
+        assert_eq!(&first[..], masque::encode_datagram_capsule(&ip_packet(1)).as_slice());
+        assert_eq!(&second[..], masque::encode_datagram_capsule(&ip_packet(2)).as_slice());
+    }
+
+    #[tokio::test]
+    async fn a_full_inbound_queue_waits_for_the_netstack_instead_of_dropping() {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
+        let mut parser = CapsuleParser::new();
+        for marker in 0..4u8 {
+            parser.push(&masque::encode_datagram_capsule(&ip_packet(marker)));
+        }
+
+        let reader = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                seen.push(rx.recv().await.expect("a packet")[19]);
+            }
+            seen
+        });
+
+        let delivered = tokio::time::timeout(
+            Duration::from_secs(5),
+            drain_capsules(&mut parser, &tx, &None),
+        )
+        .await
+        .expect("draining finishes once the reader makes room");
+        assert!(delivered);
+        assert_eq!(
+            reader.await.unwrap(),
+            vec![0, 1, 2, 3],
+            "every packet arrives, in order, even though the queue only holds one"
+        );
     }
 }
