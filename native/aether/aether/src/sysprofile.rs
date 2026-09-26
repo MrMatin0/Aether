@@ -157,29 +157,65 @@ fn buffer_override(key: &str, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
+/// The smallest receive window a netstack TCP socket is ever given.
+const MIN_TCP_RX_BUF: usize = 256 * 1024;
+/// How many connections we expect to be moving bulk data at the same time
+/// when we size receive windows against physical memory.
+const RX_BUDGET_CONNECTIONS: u64 = 64;
+/// Those busy connections may pin at most 1/RX_BUDGET_SHARE of RAM together.
+const RX_BUDGET_SHARE: u64 = 8;
+
+/// Caps a tier's receive window by what the device can actually afford.
+///
+/// The window is a CPU-independent quantity: a slow CPU already limits how
+/// fast data is drained, so the only reason to keep the window small is
+/// memory. We plan for `RX_BUDGET_CONNECTIONS` connections filling their
+/// windows at once and let them use `1 / RX_BUDGET_SHARE` of RAM, never go
+/// below `MIN_TCP_RX_BUF`, and round down to a power of two so smoltcp's
+/// window scale is used without waste.
+fn tcp_rx_within_memory(wanted: usize, mem_mb: Option<u64>) -> usize {
+    let capped = match mem_mb {
+        Some(mem_mb) => {
+            let budget =
+                mem_mb.saturating_mul(1024 * 1024) / RX_BUDGET_SHARE / RX_BUDGET_CONNECTIONS;
+            wanted.min(usize::try_from(budget).unwrap_or(usize::MAX))
+        }
+        None => wanted,
+    };
+    let capped = capped.max(MIN_TCP_RX_BUF);
+    1usize << (usize::BITS - 1 - capped.leading_zeros())
+}
+
 fn build_tuning() -> Tuning {
     let cpus = detected_cpus();
     let mem_mb = total_mem_mb();
     let tier = detect_tier(cpus, mem_mb);
 
+    // The UDP socket buffer is where QUIC packets wait while the tunnel task
+    // is not scheduled. 256 KiB is ~27 ms of traffic at 10 MB/s, which a busy
+    // low-end phone overruns easily, and every overrun is a loss that the
+    // congestion controller then answers by slowing down.
     let (scan_concurrency_cap, udp_socket_buf, netstack_udp_buf, channel_capacity) = match tier {
-        Tier::Low => (4usize, 256 * 1024, 32 * 1024, 128usize),
+        Tier::Low => (4usize, 1024 * 1024, 32 * 1024, 128usize),
         Tier::Medium => (10usize, 2 * 1024 * 1024, 64 * 1024, 512usize),
         Tier::High => (usize::MAX, 7 * 1024 * 1024, 128 * 1024, 1024usize),
     };
 
     // smoltcp advertises whatever room is left in a socket's receive buffer as
-    // that connection's TCP window, so this buffer is the second ceiling on a
-    // download, again at window / round-trip-time. 256 KiB over a 110 ms round
-    // trip is about 2.3 MB/s, which is what a tunnel settles at once the
-    // carrier underneath it stops being the narrow part. Both halves are paid
-    // for up front on every connection, so the receive side, which is where the
-    // traffic is, gets the room and the send side stays modest.
-    let (netstack_tcp_rx_buf, netstack_tcp_tx_buf) = match tier {
-        Tier::Low => (256 * 1024, 128 * 1024),
-        Tier::Medium => (1024 * 1024, 256 * 1024),
-        Tier::High => (2 * 1024 * 1024, 512 * 1024),
+    // that connection's TCP window, so this buffer is a hard ceiling on a
+    // download at window / round-trip-time. The old 256 KiB (Low) and 1 MiB
+    // (Medium) settled at ~2.3 MB/s and ~9 MB/s over a 110 ms round trip no
+    // matter how fast the tunnel underneath was. The receive side, which is
+    // where the traffic is, now gets room for tens of MB/s and is capped by
+    // memory rather than by CPU count; the send side stays modest. The buffers
+    // are allocated zeroed (calloc), so an idle connection does not commit
+    // the pages; only connections that actually fill their window pay.
+    let (tier_tcp_rx_buf, netstack_tcp_tx_buf) = match tier {
+        Tier::Low => (2 * 1024 * 1024, 128 * 1024),
+        Tier::Medium => (4 * 1024 * 1024, 256 * 1024),
+        Tier::High => (8 * 1024 * 1024, 512 * 1024),
     };
+    let netstack_tcp_rx_buf = tcp_rx_within_memory(tier_tcp_rx_buf, mem_mb);
 
     let netstack_tcp_rx_buf = buffer_override("AETHER_NETSTACK_TCP_RX", netstack_tcp_rx_buf);
     let netstack_tcp_tx_buf = buffer_override("AETHER_NETSTACK_TCP_TX", netstack_tcp_tx_buf);
@@ -352,4 +388,47 @@ pub fn h2_stream_window_bytes() -> u32 {
 
 pub fn h2_connection_window_bytes() -> u32 {
     tuning().h2_connection_window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * 1024;
+
+    /// Bytes per second a single connection can reach with this window.
+    fn ceiling(window: usize, rtt_ms: usize) -> usize {
+        window * 1000 / rtt_ms
+    }
+
+    #[test]
+    fn an_unknown_memory_size_keeps_the_tier_window() {
+        assert_eq!(tcp_rx_within_memory(8 * MIB, None), 8 * MIB);
+        assert_eq!(tcp_rx_within_memory(2 * MIB, None), 2 * MIB);
+    }
+
+    #[test]
+    fn a_tiny_device_is_capped_by_memory_but_not_starved() {
+        assert_eq!(tcp_rx_within_memory(8 * MIB, Some(384)), 512 * KIB);
+        assert_eq!(tcp_rx_within_memory(8 * MIB, Some(16)), MIN_TCP_RX_BUF);
+    }
+
+    #[test]
+    fn the_window_is_always_a_power_of_two() {
+        for mem in [200u64, 384, 1000, 1536, 3000, 6000] {
+            let w = tcp_rx_within_memory(8 * MIB, Some(mem));
+            assert!(w.is_power_of_two(), "{w} for {mem} MB");
+        }
+    }
+
+    #[test]
+    fn low_and_medium_windows_no_longer_cap_a_110ms_link_at_2_or_9_mb_per_second() {
+        // A 2-core phone with 3 GB of RAM lands in Low.
+        let low = tcp_rx_within_memory(2 * MIB, Some(3 * 1024));
+        assert!(ceiling(low, 110) > 15 * MIB, "low window {low}");
+        // A 4-core phone with 4 GB of RAM lands in Medium.
+        let medium = tcp_rx_within_memory(4 * MIB, Some(4 * 1024));
+        assert!(ceiling(medium, 110) > 30 * MIB, "medium window {medium}");
+    }
 }

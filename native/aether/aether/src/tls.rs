@@ -124,6 +124,25 @@ fn announce_once(message: String) {
     }
 }
 
+/// Congestion controller for the MASQUE QUIC connection.
+///
+/// quiche falls back to CUBIC when nothing is set. CUBIC reads every loss as
+/// congestion and cuts its window, which on filtered paths with random loss
+/// (the normal case in Iran) keeps the tunnel far below what the link can
+/// carry. BBR2 models bandwidth and RTT instead and is the default here;
+/// `AETHER_QUIC_CC=cubic` or `AETHER_QUIC_CC=reno` switch back.
+fn congestion_control() -> (quiche::CongestionControlAlgorithm, &'static str) {
+    parse_congestion_control(&std::env::var("AETHER_QUIC_CC").unwrap_or_default())
+}
+
+fn parse_congestion_control(value: &str) -> (quiche::CongestionControlAlgorithm, &'static str) {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cubic" => (quiche::CongestionControlAlgorithm::CUBIC, "cubic"),
+        "reno" => (quiche::CongestionControlAlgorithm::Reno, "reno"),
+        _ => (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2"),
+    }
+}
+
 pub fn build_config(params: &TlsParams) -> Result<quiche::Config> {
     let mut builder =
         SslContextBuilder::new(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
@@ -184,6 +203,10 @@ pub fn build_config(params: &TlsParams) -> Result<quiche::Config> {
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
     config.enable_dgram(true, 65536, 65536);
+
+    let (cc, cc_name) = congestion_control();
+    config.set_cc_algorithm(cc);
+    log::debug!("quic congestion control: {cc_name}");
 
     Ok(config)
 }
@@ -278,4 +301,33 @@ pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| AetherError::Ech(e.to_string()))
+}
+
+#[cfg(test)]
+mod cc_tests {
+    use super::*;
+
+    #[test]
+    fn bbr2_is_the_default_congestion_controller() {
+        assert!(matches!(
+            parse_congestion_control(""),
+            (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2")
+        ));
+        assert!(matches!(
+            parse_congestion_control("something-else"),
+            (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, _)
+        ));
+    }
+
+    #[test]
+    fn cubic_and_reno_can_be_chosen_explicitly() {
+        assert!(matches!(
+            parse_congestion_control(" CUBIC "),
+            (quiche::CongestionControlAlgorithm::CUBIC, "cubic")
+        ));
+        assert!(matches!(
+            parse_congestion_control("reno"),
+            (quiche::CongestionControlAlgorithm::Reno, "reno")
+        ));
+    }
 }

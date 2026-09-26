@@ -17,6 +17,12 @@ use crate::{consts, error::AetherError, error::Result};
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 pub const MIN_DATAGRAM_SIZE: usize = 1200;
 
+/// Most QUIC packets handed to the kernel in one `sendmmsg` call, and the
+/// size of the reusable send buffer in packets.
+const MAX_TX_BATCH: usize = 64;
+/// Most packets pulled from a channel in one loop pass before we flush.
+const MAX_CHANNEL_BATCH: usize = 64;
+
 fn net_queue() -> usize {
     crate::sysprofile::channel_capacity()
 }
@@ -275,6 +281,44 @@ fn spawn_reader(
     })
 }
 
+/// Logs the QUIC header of a packet. Parsing needs a mutable buffer, so this
+/// copies the packet; callers only reach it with trace logging enabled.
+fn trace_header(what: &str, data: &[u8], from: SocketAddr) {
+    let mut hdr_buf = data.to_vec();
+    if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
+        log::trace!(
+            "{what} {} bytes type={:?} version=0x{:x} from {}",
+            data.len(),
+            hdr.ty,
+            hdr.version,
+            from
+        );
+    }
+}
+
+fn recv_packet(conn: &mut quiche::Connection, (to_local, from, mut data): NetPacket) {
+    if log::log_enabled!(log::Level::Trace) {
+        trace_header("recv", &data, from);
+    }
+    let info = quiche::RecvInfo { from, to: to_local };
+    if let Err(e) = conn.recv(&mut data, info) {
+        log::trace!("recv error: {e}");
+    }
+}
+
+fn send_ip_packet(conn: &mut quiche::Connection, req_stream: Option<u64>, ip_packet: &[u8]) {
+    if let Some(sid) = req_stream {
+        match masque::encode_ip_datagram(sid, ip_packet) {
+            Ok(framed) => {
+                if let Err(e) = conn.dgram_send(&framed) {
+                    log::trace!("dgram_send: {e}");
+                }
+            }
+            Err(e) => log::trace!("encap: {e}"),
+        }
+    }
+}
+
 pub async fn run(
     cfg: TunnelConfig,
     mut internals: Internals,
@@ -318,6 +362,8 @@ pub async fn run(
     config.set_max_send_udp_payload_size(datagram);
     config.set_max_recv_udp_payload_size(datagram);
 
+    let mut tx = TxBatch::new(datagram);
+
     let mut current_ech = cfg.ech_config_list.clone();
 
     let scid_bytes = random_scid();
@@ -341,9 +387,14 @@ pub async fn run(
         noize::pre_handshake(sock.as_ref(), peer, &cfg.noize).await;
     }
 
-    flush(&mut conn, &sockets, datagram).await?;
+    flush(&mut conn, &sockets, &mut tx).await?;
 
     let mut out_buf = vec![0u8; 65535];
+    let mut h3_body = vec![0u8; 65535];
+    // An inbound IP packet the netstack had no room for yet. While it is set we
+    // stop pulling datagrams out of quiche (which keeps them in its own bounded
+    // queue) and wait for channel capacity instead of dropping them.
+    let mut pending_inbound: Option<Vec<u8>> = None;
     let mut keepalive_interval = tokio::time::interval(Duration::from_secs(20));
     keepalive_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -394,14 +445,28 @@ pub async fn run(
                 }
             }
 
-            Some((to_local, from, mut data)) = net_rx.recv() => {
-                let mut hdr_buf = data.clone();
-                if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                    log::trace!("recv {} bytes type={:?} version=0x{:x} from {}", data.len(), hdr.ty, hdr.version, from);
+            permit = internals.inbound_tx.reserve(), if pending_inbound.is_some() => {
+                match permit {
+                    Ok(permit) => {
+                        if let Some(ip_packet) = pending_inbound.take() {
+                            permit.send(ip_packet);
+                        }
+                    }
+                    Err(_) => pending_inbound = None,
                 }
-                let info = quiche::RecvInfo { from, to: to_local };
-                if let Err(e) = conn.recv(&mut data, info) {
-                    log::trace!("recv error: {e}");
+            }
+
+            Some(first) = net_rx.recv() => {
+                recv_packet(&mut conn, first);
+                let mut n = 1;
+                while n < MAX_CHANNEL_BATCH {
+                    match net_rx.try_recv() {
+                        Ok(pkt) => {
+                            recv_packet(&mut conn, pkt);
+                            n += 1;
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
 
@@ -426,14 +491,15 @@ pub async fn run(
             pkt = internals.outbound_rx.recv(), if outbound_open => {
                 match pkt {
                     Some(ip_packet) => {
-                        if let Some(sid) = req_stream {
-                            match masque::encode_ip_datagram(sid, &ip_packet) {
-                                Ok(framed) => {
-                                    if let Err(e) = conn.dgram_send(&framed) {
-                                        log::trace!("dgram_send: {e}");
-                                    }
+                        send_ip_packet(&mut conn, req_stream, &ip_packet);
+                        let mut n = 1;
+                        while n < MAX_CHANNEL_BATCH {
+                            match internals.outbound_rx.try_recv() {
+                                Ok(ip_packet) => {
+                                    send_ip_packet(&mut conn, req_stream, &ip_packet);
+                                    n += 1;
                                 }
-                                Err(e) => log::trace!("encap: {e}"),
+                                Err(_) => break,
                             }
                         }
                     }
@@ -480,10 +546,24 @@ pub async fn run(
         }
 
         if let (Some(h3c), Some(sid)) = (h3_conn.as_mut(), req_stream) {
-            poll_h3(&mut conn, h3c, sid, &mut capsules, &addr_tx, quiet)?;
+            poll_h3(
+                &mut conn,
+                h3c,
+                sid,
+                &mut capsules,
+                &addr_tx,
+                quiet,
+                &mut h3_body,
+            )?;
         }
 
-        let got_data = drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf);
+        let got_data = drain_datagrams(
+            &mut conn,
+            req_stream,
+            &internals.inbound_tx,
+            &mut out_buf,
+            &mut pending_inbound,
+        );
 
         if got_data && !ready_fired {
             validate_successes += 1;
@@ -506,7 +586,7 @@ pub async fn run(
             }
         }
 
-        flush(&mut conn, &sockets, datagram).await?;
+        flush(&mut conn, &sockets, &mut tx).await?;
 
         if conn.is_closed() {
             if !established_ever && !ech_retried && current_ech.is_some() {
@@ -528,7 +608,7 @@ pub async fn run(
                     h3_conn = None;
                     req_stream = None;
                     capsules = CapsuleParser::new();
-                    flush(&mut conn, &sockets, datagram).await?;
+                    flush(&mut conn, &sockets, &mut tx).await?;
                     continue;
                 }
             }
@@ -583,9 +663,8 @@ fn poll_h3(
     capsules: &mut CapsuleParser,
     addr_tx: &Option<mpsc::Sender<AssignedAddr>>,
     quiet: bool,
+    body: &mut [u8],
 ) -> Result<()> {
-    let mut body = vec![0u8; 65535];
-
     loop {
         match h3c.poll(conn) {
             Ok((stream_id, h3::Event::Headers { list, .. })) => {
@@ -606,7 +685,7 @@ fn poll_h3(
                 if stream_id != req_stream {
                     continue;
                 }
-                while let Ok(n) = h3c.recv_body(conn, stream_id, &mut body) {
+                while let Ok(n) = h3c.recv_body(conn, stream_id, body) {
                     if n == 0 {
                         break;
                     }
@@ -676,16 +755,24 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
     }
 }
 
+/// Moves decoded IP packets from quiche to the netstack. When the inbound
+/// channel is full the packet is parked in `pending` and draining stops: the
+/// rest stays in quiche's datagram queue and the run loop waits on
+/// `inbound_tx.reserve()`, so a burst is absorbed instead of dropped.
 fn drain_datagrams(
     conn: &mut quiche::Connection,
     req_stream: Option<u64>,
     inbound_tx: &mpsc::Sender<Vec<u8>>,
     buf: &mut [u8],
+    pending: &mut Option<Vec<u8>>,
 ) -> bool {
     let sid = match req_stream {
         Some(s) => s,
         None => return false,
     };
+    if pending.is_some() {
+        return false;
+    }
 
     let mut delivered = false;
     loop {
@@ -695,8 +782,10 @@ fn drain_datagrams(
                     delivered = true;
                     match inbound_tx.try_send(ip_packet) {
                         Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            log::trace!("inbound queue full, dropping datagram");
+                        Err(mpsc::error::TrySendError::Full(ip_packet)) => {
+                            log::trace!("inbound queue full, waiting for the netstack");
+                            *pending = Some(ip_packet);
+                            return delivered;
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => return delivered,
                     }
@@ -714,29 +803,190 @@ fn drain_datagrams(
     delivered
 }
 
-async fn flush(
-    conn: &mut quiche::Connection,
-    sockets: &HashMap<SocketAddr, Arc<UdpSocket>>,
-    datagram: usize,
-) -> Result<()> {
-    let mut out = vec![0u8; datagram];
+/// A reusable buffer of outgoing QUIC packets, sent to the kernel in batches.
+struct TxBatch {
+    buf: Vec<u8>,
+    seg: usize,
+    /// (local socket the packet leaves from, destination, length)
+    items: Vec<(SocketAddr, SocketAddr, usize)>,
+}
 
-    loop {
-        match conn.send(&mut out) {
-            Ok((write, send_info)) => {
-                if let Some(sock) = sockets.get(&send_info.from) {
-                    let to = crate::upstream::relay_target(send_info.from, send_info.to);
-                    sock.send_to(&out[..write], to).await?;
-                } else if let Some((local, sock)) = sockets.iter().next() {
-                    let to = crate::upstream::relay_target(*local, send_info.to);
-                    sock.send_to(&out[..write], to).await?;
-                }
-            }
-            Err(quiche::Error::Done) => break,
-            Err(e) => return Err(AetherError::Quic(e)),
+impl TxBatch {
+    fn new(seg: usize) -> Self {
+        Self {
+            buf: vec![0u8; seg * MAX_TX_BATCH],
+            seg,
+            items: Vec::with_capacity(MAX_TX_BATCH),
         }
     }
 
+    fn slot(&mut self) -> &mut [u8] {
+        let start = self.items.len() * self.seg;
+        &mut self.buf[start..start + self.seg]
+    }
+
+    async fn send(&mut self, sockets: &HashMap<SocketAddr, Arc<UdpSocket>>) -> Result<()> {
+        let result = self.send_queued(sockets).await;
+        self.items.clear();
+        result
+    }
+
+    async fn send_queued(&self, sockets: &HashMap<SocketAddr, Arc<UdpSocket>>) -> Result<()> {
+        let mut start = 0;
+        while start < self.items.len() {
+            let local = self.items[start].0;
+            let mut end = start + 1;
+            while end < self.items.len() && self.items[end].0 == local {
+                end += 1;
+            }
+            if let Some(sock) = sockets.get(&local) {
+                let pkts: Vec<(&[u8], SocketAddr)> = (start..end)
+                    .map(|i| {
+                        let (_, to, len) = self.items[i];
+                        let off = i * self.seg;
+                        (&self.buf[off..off + len], to)
+                    })
+                    .collect();
+                send_many(sock, &pkts).await?;
+            }
+            start = end;
+        }
+        Ok(())
+    }
+}
+
+async fn flush(
+    conn: &mut quiche::Connection,
+    sockets: &HashMap<SocketAddr, Arc<UdpSocket>>,
+    tx: &mut TxBatch,
+) -> Result<()> {
+    let fallback = sockets.keys().next().copied();
+
+    loop {
+        let slot = tx.slot();
+        match conn.send(slot) {
+            Ok((write, send_info)) => {
+                let local = if sockets.contains_key(&send_info.from) {
+                    Some(send_info.from)
+                } else {
+                    fallback
+                };
+                if let Some(local) = local {
+                    let to = crate::upstream::relay_target(local, send_info.to);
+                    tx.items.push((local, to, write));
+                    if tx.items.len() == MAX_TX_BATCH {
+                        tx.send(sockets).await?;
+                    }
+                }
+            }
+            Err(quiche::Error::Done) => break,
+            Err(e) => {
+                tx.items.clear();
+                return Err(AetherError::Quic(e));
+            }
+        }
+    }
+
+    tx.send(sockets).await
+}
+
+/// Sends a run of packets from one socket with as few syscalls as possible.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+async fn send_many(sock: &UdpSocket, pkts: &[(&[u8], SocketAddr)]) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let fd = sock.as_raw_fd();
+    let mut sent = 0;
+    while sent < pkts.len() {
+        sock.writable().await?;
+        match sock.try_io(tokio::io::Interest::WRITABLE, || {
+            sendmmsg_once(fd, &pkts[sent..])
+        }) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "sendmmsg sent nothing",
+                ))
+            }
+            Ok(n) => sent += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Everything that holds raw pointers lives only inside this synchronous call,
+/// so the async caller stays `Send`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sendmmsg_once(
+    fd: std::os::fd::RawFd,
+    pkts: &[(&[u8], SocketAddr)],
+) -> std::io::Result<usize> {
+    let n = pkts.len().min(MAX_TX_BATCH);
+    let mut addrs: Vec<(libc::sockaddr_storage, libc::socklen_t)> =
+        pkts[..n].iter().map(|(_, to)| sockaddr_of(to)).collect();
+    let mut iovs: Vec<libc::iovec> = pkts[..n]
+        .iter()
+        .map(|(data, _)| libc::iovec {
+            iov_base: data.as_ptr() as *mut libc::c_void,
+            iov_len: data.len(),
+        })
+        .collect();
+
+    let mut msgs: Vec<libc::mmsghdr> = Vec::with_capacity(n);
+    for (addr, iov) in addrs.iter_mut().zip(iovs.iter_mut()) {
+        let mut msg: libc::mmsghdr = unsafe { std::mem::zeroed() };
+        msg.msg_hdr.msg_name = &mut addr.0 as *mut libc::sockaddr_storage as *mut libc::c_void;
+        msg.msg_hdr.msg_namelen = addr.1;
+        msg.msg_hdr.msg_iov = iov as *mut libc::iovec;
+        msg.msg_hdr.msg_iovlen = 1;
+        msgs.push(msg);
+    }
+
+    let rc = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as _, 0) };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(rc as usize)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sockaddr_of(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let len = match addr {
+        SocketAddr::V4(a) => {
+            let sin = &mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in;
+            unsafe {
+                (*sin).sin_family = libc::AF_INET as libc::sa_family_t;
+                (*sin).sin_port = a.port().to_be();
+                (*sin).sin_addr = libc::in_addr {
+                    s_addr: u32::from_ne_bytes(a.ip().octets()),
+                };
+            }
+            std::mem::size_of::<libc::sockaddr_in>()
+        }
+        SocketAddr::V6(a) => {
+            let sin6 = &mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in6;
+            unsafe {
+                (*sin6).sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                (*sin6).sin6_port = a.port().to_be();
+                (*sin6).sin6_flowinfo = a.flowinfo();
+                (*sin6).sin6_addr.s6_addr = a.ip().octets();
+                (*sin6).sin6_scope_id = a.scope_id();
+            }
+            std::mem::size_of::<libc::sockaddr_in6>()
+        }
+    };
+    (storage, len as libc::socklen_t)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+async fn send_many(sock: &UdpSocket, pkts: &[(&[u8], SocketAddr)]) -> std::io::Result<()> {
+    for (data, to) in pkts {
+        sock.send_to(data, *to).await?;
+    }
     Ok(())
 }
 
@@ -864,9 +1114,8 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
             r = sock.recv(&mut buf) => {
                 match r {
                     Ok(n) => {
-                        let mut hdr_buf = buf[..n].to_vec();
-                        if let Ok(hdr) = quiche::Header::from_slice(&mut hdr_buf, quiche::MAX_CONN_ID_LEN) {
-                            log::trace!("verify recv {} bytes type={:?} version=0x{:x} from {}", n, hdr.ty, hdr.version, p.peer);
+                        if log::log_enabled!(log::Level::Trace) {
+                            trace_header("verify recv", &buf[..n], p.peer);
                         }
                         let info = quiche::RecvInfo { from: p.peer, to: local };
                         if let Err(e) = conn.recv(&mut buf[..n], info) {
@@ -1047,5 +1296,46 @@ mod v2_bait_tests {
         client.connect(server_addr).await.unwrap();
         send_version_bait(&client, server_addr, Duration::from_secs(2), 1).await;
         responder.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tx_batch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_batch_reaches_the_peer_intact_and_in_order() {
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_addr = peer.local_addr().unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let payloads: Vec<Vec<u8>> = (0..10u8).map(|i| vec![i; 100 + i as usize]).collect();
+        let pkts: Vec<(&[u8], SocketAddr)> =
+            payloads.iter().map(|p| (p.as_slice(), peer_addr)).collect();
+        send_many(&sender, &pkts).await.unwrap();
+
+        let mut buf = [0u8; 2048];
+        for expected in &payloads {
+            let n = tokio::time::timeout(Duration::from_secs(2), peer.recv(&mut buf))
+                .await
+                .expect("every batched packet arrives")
+                .unwrap();
+            assert_eq!(&buf[..n], expected.as_slice());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_inbound_queue_parks_the_packet_instead_of_dropping_it() {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
+        tx.try_send(vec![1]).unwrap();
+
+        let mut pending = Some(vec![2]);
+        // With a packet parked nothing more is pulled from quiche.
+        assert!(pending.is_some());
+
+        assert_eq!(rx.recv().await, Some(vec![1]));
+        let permit = tx.reserve().await.unwrap();
+        permit.send(pending.take().unwrap());
+        assert_eq!(rx.recv().await, Some(vec![2]), "the parked packet is delivered");
     }
 }
