@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -37,7 +38,20 @@ fn app_queue() -> usize {
 
 const MAX_INGEST_PER_TICK: usize = 512;
 const MAX_RECV_CHUNKS: usize = 128;
-const BACKPRESSURE_RETRY: std::time::Duration = std::time::Duration::from_millis(2);
+/// Upper bound for a single TCP chunk handed to the app.
+const MAX_RECV_CHUNK_BYTES: usize = 64 * 1024;
+/// Once this many packets are waiting for the outbound channel the device stops
+/// handing out transmit tokens, so smoltcp holds data in its socket buffers
+/// instead of the stack dropping packets it already produced.
+const TX_BACKLOG: usize = 256;
+/// Safety net for packets generated on the receive path (RST / ICMP replies),
+/// which cannot be refused. Only hit if the outbound side is stuck for good.
+const TX_HARD_LIMIT: usize = 4096;
+/// Recycled packet buffers kept around to avoid one allocation per tx packet.
+const POOL_MAX_BUFS: usize = 128;
+const POOL_MIN_BUF_BYTES: usize = 1280;
+const POOL_MAX_BUF_BYTES: usize = 4096;
+const PENDING_SHRINK_ABOVE: usize = 256 * 1024;
 const DROP_REPORT_STEP: usize = 512;
 const MAX_IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -67,6 +81,20 @@ fn tcp_connect_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Congestion controller for netstack TCP sockets. Cubic by default;
+/// `AETHER_TCP_CC=reno` or `AETHER_TCP_CC=none` override it.
+fn tcp_congestion_control() -> tcp::CongestionControl {
+    let value = std::env::var("AETHER_TCP_CC")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "reno" => tcp::CongestionControl::Reno,
+        "none" | "off" => tcp::CongestionControl::None,
+        _ => tcp::CongestionControl::Cubic,
+    }
+}
+
 fn smol_duration(duration: std::time::Duration) -> smoltcp::time::Duration {
     smoltcp::time::Duration::from_millis(duration.as_millis().min(u64::MAX as u128) as u64)
 }
@@ -76,6 +104,7 @@ struct TcpLimits {
     connect: std::time::Duration,
     keepalive: std::time::Duration,
     orphan_linger: std::time::Duration,
+    congestion: tcp::CongestionControl,
 }
 
 impl TcpLimits {
@@ -84,6 +113,7 @@ impl TcpLimits {
             connect: tcp_connect_timeout(),
             keepalive: tcp_keepalive(),
             orphan_linger: ORPHAN_LINGER,
+            congestion: tcp_congestion_control(),
         }
     }
 }
@@ -91,10 +121,25 @@ impl TcpLimits {
 type OpenTcpResp = oneshot::Sender<std::result::Result<TcpConn, String>>;
 type OpenUdpResp = oneshot::Sender<std::result::Result<UdpConn, String>>;
 
+type BufPool = RefCell<Vec<Vec<u8>>>;
+
+fn recycle(pool: &BufPool, buf: Vec<u8>) {
+    let cap = buf.capacity();
+    if !(POOL_MIN_BUF_BYTES..=POOL_MAX_BUF_BYTES).contains(&cap) {
+        return;
+    }
+    let mut pool = pool.borrow_mut();
+    if pool.len() < POOL_MAX_BUFS {
+        pool.push(buf);
+    }
+}
+
 pub struct StackDevice {
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
+    pool: BufPool,
     mtu: usize,
+    tx_overflow: usize,
 }
 
 impl StackDevice {
@@ -102,40 +147,94 @@ impl StackDevice {
         Self {
             rx: VecDeque::new(),
             tx: VecDeque::new(),
+            pool: RefCell::new(Vec::new()),
             mtu,
+            tx_overflow: 0,
         }
     }
-}
 
-pub struct StackRxToken(Vec<u8>);
-pub struct StackTxToken<'a>(&'a mut VecDeque<Vec<u8>>);
+    fn tx_backlogged(&self) -> bool {
+        self.tx.len() >= TX_BACKLOG
+    }
 
-impl RxToken for StackRxToken {
-    fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
-        f(&self.0)
+    fn recycle(&self, buf: Vec<u8>) {
+        recycle(&self.pool, buf);
     }
 }
 
-impl<'a> TxToken for StackTxToken<'a> {
+pub struct StackRxToken<'a> {
+    buf: Vec<u8>,
+    pool: &'a BufPool,
+}
+
+pub struct StackTxToken<'a> {
+    queue: &'a mut VecDeque<Vec<u8>>,
+    pool: &'a BufPool,
+    overflow: &'a mut usize,
+}
+
+impl RxToken for StackRxToken<'_> {
+    fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
+        let StackRxToken { buf, pool } = self;
+        let r = f(&buf);
+        // The inbound buffer is MTU sized: reuse it for the next tx packet.
+        recycle(pool, buf);
+        r
+    }
+}
+
+impl TxToken for StackTxToken<'_> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
-        let mut buf = vec![0u8; len];
+        let mut buf = self.pool.borrow_mut().pop().unwrap_or_default();
+        buf.clear();
+        buf.resize(len, 0);
         let r = f(&mut buf);
-        self.0.push_back(buf);
+        if self.queue.len() < TX_HARD_LIMIT {
+            self.queue.push_back(buf);
+        } else {
+            *self.overflow += 1;
+            recycle(self.pool, buf);
+        }
         r
     }
 }
 
 impl Device for StackDevice {
-    type RxToken<'a> = StackRxToken;
-    type TxToken<'a> = StackTxToken<'a>;
+    type RxToken<'a>
+        = StackRxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = StackTxToken<'a>
+    where
+        Self: 'a;
 
     fn receive(&mut self, _t: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let pkt = self.rx.pop_front()?;
-        Some((StackRxToken(pkt), StackTxToken(&mut self.tx)))
+        let buf = self.rx.pop_front()?;
+        Some((
+            StackRxToken {
+                buf,
+                pool: &self.pool,
+            },
+            StackTxToken {
+                queue: &mut self.tx,
+                pool: &self.pool,
+                overflow: &mut self.tx_overflow,
+            },
+        ))
     }
 
     fn transmit(&mut self, _t: Instant) -> Option<Self::TxToken<'_>> {
-        Some(StackTxToken(&mut self.tx))
+        // Backpressure instead of loss: while the outbound side is behind,
+        // smoltcp keeps the data in its socket buffers and retries later.
+        if self.tx_backlogged() {
+            return None;
+        }
+        Some(StackTxToken {
+            queue: &mut self.tx,
+            pool: &self.pool,
+            overflow: &mut self.tx_overflow,
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -168,6 +267,13 @@ pub enum DataIn {
     TcpClose(usize),
     Udp(usize, SocketAddr, Vec<u8>),
     UdpClose(usize),
+}
+
+/// Sent back to the stack task when an app channel that was full has room again.
+#[derive(Debug, Clone, Copy)]
+enum Wake {
+    Tcp(usize),
+    Udp(usize),
 }
 
 pub struct TcpConn {
@@ -350,16 +456,19 @@ struct TcpState {
     from_stack_rx: Option<mpsc::Receiver<Vec<u8>>>,
     connect_resp: Option<OpenTcpResp>,
     connect_deadline: std::time::Instant,
-    pending: Vec<u8>,
+    pending: VecDeque<u8>,
     established: bool,
     half_closed: bool,
     orphaned_at: Option<std::time::Instant>,
     aborted: bool,
+    /// A waiter task is parked on `to_app` capacity.
+    app_wait: bool,
 }
 
 struct UdpState {
     handle: SocketHandle,
     to_app: mpsc::Sender<(SocketAddr, Vec<u8>)>,
+    app_wait: bool,
 }
 
 pub struct NetStack {
@@ -371,7 +480,32 @@ pub struct NetStack {
     next_id: usize,
     next_port: u16,
     data_in_tx: mpsc::Sender<DataIn>,
+    wake_tx: mpsc::UnboundedSender<Wake>,
     tcp_limits: TcpLimits,
+}
+
+impl NetStack {
+    fn new(
+        iface: Interface,
+        device: StackDevice,
+        data_in_tx: mpsc::Sender<DataIn>,
+        tcp_limits: TcpLimits,
+    ) -> (Self, mpsc::UnboundedReceiver<Wake>) {
+        let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+        let stack = Self {
+            iface,
+            device,
+            sockets: SocketSet::new(Vec::new()),
+            tcp_conns: HashMap::new(),
+            udp_conns: HashMap::new(),
+            next_id: 1,
+            next_port: 49152,
+            data_in_tx,
+            wake_tx,
+            tcp_limits,
+        };
+        (stack, wake_rx)
+    }
 }
 
 fn strip_cidr(s: &str) -> &str {
@@ -523,19 +657,16 @@ fn spawn_with_limits(
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
     let (data_in_tx, data_in_rx) = mpsc::channel(app_queue());
 
-    let stack = NetStack {
-        iface,
-        device,
-        sockets: SocketSet::new(Vec::new()),
-        tcp_conns: HashMap::new(),
-        udp_conns: HashMap::new(),
-        next_id: 1,
-        next_port: 49152,
-        data_in_tx: data_in_tx.clone(),
-        tcp_limits,
-    };
+    let (stack, wake_rx) = NetStack::new(iface, device, data_in_tx, tcp_limits);
 
-    tokio::spawn(run(stack, cmd_rx, data_in_rx, inbound_rx, outbound_tx));
+    tokio::spawn(run(
+        stack,
+        cmd_rx,
+        data_in_rx,
+        inbound_rx,
+        wake_rx,
+        outbound_tx,
+    ));
 
     Ok(StackHandle { cmd_tx })
 }
@@ -551,11 +682,11 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<Cmd>,
     mut data_in_rx: mpsc::Receiver<DataIn>,
     mut inbound_rx: mpsc::Receiver<Vec<u8>>,
+    mut wake_rx: mpsc::UnboundedReceiver<Wake>,
     outbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
     let mut deferred: VecDeque<DataIn> = VecDeque::new();
-    let mut tx_dropped: usize = 0;
-    let mut next_drop_report: usize = DROP_REPORT_STEP;
+    let mut next_overflow_report: usize = DROP_REPORT_STEP;
 
     loop {
         let now = Instant::now();
@@ -566,16 +697,16 @@ async fn run(
             s.device.rx.clear();
             s.device.tx.clear();
         }
-        let tcp_busy = service_tcp(&mut s);
-        let udp_busy = service_udp(&mut s);
-        let dropped = flush_tx(&mut s, &outbound_tx);
+        let tcp_more = service_tcp(&mut s);
+        let udp_more = service_udp(&mut s);
+        flush_tx(&mut s, &outbound_tx);
 
-        if dropped > 0 {
-            tx_dropped = tx_dropped.saturating_add(dropped);
-            if tx_dropped >= next_drop_report {
-                next_drop_report = tx_dropped + DROP_REPORT_STEP;
-                log::debug!("[netstack] dropped {tx_dropped} outbound packets under pressure");
-            }
+        if s.device.tx_overflow >= next_overflow_report {
+            next_overflow_report = s.device.tx_overflow + DROP_REPORT_STEP;
+            log::debug!(
+                "[netstack] outbound stalled, dropped {} reply packets past the hard limit",
+                s.device.tx_overflow
+            );
         }
 
         while let Some(d) = deferred.pop_front() {
@@ -585,20 +716,27 @@ async fn run(
             }
         }
 
-        let delay = if tcp_busy || udp_busy || !deferred.is_empty() {
-            Some(BACKPRESSURE_RETRY)
+        // A connection hit its per-tick budget: yield and come straight back.
+        let run_again = tcp_more || udp_more;
+
+        let delay = if s.device.tx_backlogged() {
+            // Egress is parked until the outbound channel drains; the `reserve`
+            // branch below wakes us. This is only a timer fallback.
+            Some(MAX_IDLE_TICK)
         } else {
             let polled = s
                 .iface
                 .poll_delay(Instant::now(), &s.sockets)
                 .map(|d| std::time::Duration::from_micros(d.total_micros()));
 
-            if s.tcp_conns.is_empty() && s.udp_conns.is_empty() {
+            if s.tcp_conns.is_empty() && s.udp_conns.is_empty() && deferred.is_empty() {
                 polled
             } else {
                 Some(polled.map_or(MAX_IDLE_TICK, |d| d.min(MAX_IDLE_TICK)))
             }
         };
+
+        let tx_waiting = !s.device.tx.is_empty() && !outbound_tx.is_closed();
 
         tokio::select! {
             biased;
@@ -619,10 +757,28 @@ async fn run(
                 }
             }
 
+            permit = outbound_tx.reserve(), if tx_waiting => {
+                if let Ok(permit) = permit {
+                    if let Some(pkt) = s.device.tx.pop_front() {
+                        permit.send(pkt);
+                    }
+                    flush_tx(&mut s, &outbound_tx);
+                }
+            }
+
             maybe = cmd_rx.recv() => {
                 match maybe {
                     Some(cmd) => handle_cmd(&mut s, cmd),
                     None => return Ok(()),
+                }
+            }
+
+            maybe = wake_rx.recv() => {
+                if let Some(w) = maybe {
+                    clear_app_wait(&mut s, w);
+                    while let Ok(w) = wake_rx.try_recv() {
+                        clear_app_wait(&mut s, w);
+                    }
                 }
             }
 
@@ -645,7 +801,9 @@ async fn run(
                 }
             }
 
-            _ = sleep_opt(delay) => {}
+            _ = tokio::task::yield_now(), if run_again => {}
+
+            _ = sleep_opt(delay), if !run_again => {}
         }
     }
 }
@@ -657,16 +815,54 @@ async fn sleep_opt(delay: Option<std::time::Duration>) {
     }
 }
 
+fn clear_app_wait(s: &mut NetStack, wake: Wake) {
+    match wake {
+        Wake::Tcp(id) => {
+            if let Some(st) = s.tcp_conns.get_mut(&id) {
+                st.app_wait = false;
+            }
+        }
+        Wake::Udp(id) => {
+            if let Some(st) = s.udp_conns.get_mut(&id) {
+                st.app_wait = false;
+            }
+        }
+    }
+}
+
+/// Replaces the old fixed 2ms retry: parks a tiny task on the app channel and
+/// wakes the stack exactly when the app has consumed something (or went away).
+/// The permit is released immediately; only the stack sends on this channel,
+/// so the freed slot is still there when the stack comes back to it.
+fn spawn_app_waiter<T: Send + 'static>(
+    to_app: &mpsc::Sender<T>,
+    wake_tx: &mpsc::UnboundedSender<Wake>,
+    wake: Wake,
+) {
+    let to_app = to_app.clone();
+    let wake_tx = wake_tx.clone();
+    tokio::spawn(async move {
+        drop(to_app.reserve_owned().await);
+        let _ = wake_tx.send(wake);
+    });
+}
+
+fn new_tcp_socket(limits: &TcpLimits) -> tcp::Socket<'static> {
+    let rx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_rx_buf()]);
+    let tx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_tx_buf()]);
+    let mut socket = tcp::Socket::new(rx_buf, tx_buf);
+    socket.set_nagle_enabled(false);
+    socket.set_congestion_control(limits.congestion);
+    socket.set_keep_alive(Some(smol_duration(limits.keepalive)));
+    socket.set_timeout(Some(smol_duration(limits.keepalive.saturating_mul(3))));
+    socket
+}
+
 fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     match cmd {
         Cmd::OpenTcp { dst, resp } => {
-            let rx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_rx_buf()]);
-            let tx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_tx_buf()]);
-            let mut socket = tcp::Socket::new(rx_buf, tx_buf);
-            socket.set_nagle_enabled(false);
-            let keepalive = s.tcp_limits.keepalive;
-            socket.set_keep_alive(Some(smol_duration(keepalive)));
-            socket.set_timeout(Some(smol_duration(keepalive.saturating_mul(3))));
+            let limits = s.tcp_limits;
+            let mut socket = new_tcp_socket(&limits);
 
             let local_port = alloc_port(&mut s.next_port);
             let remote = to_ip_endpoint(dst);
@@ -689,12 +885,13 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
                     to_app: to_app_tx,
                     from_stack_rx: Some(to_app_rx),
                     connect_resp: Some(resp),
-                    connect_deadline: std::time::Instant::now() + s.tcp_limits.connect,
-                    pending: Vec::new(),
+                    connect_deadline: std::time::Instant::now() + limits.connect,
+                    pending: VecDeque::new(),
                     established: false,
                     half_closed: false,
                     orphaned_at: None,
                     aborted: false,
+                    app_wait: false,
                 },
             );
         }
@@ -721,6 +918,7 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
                 UdpState {
                     handle,
                     to_app: to_app_tx,
+                    app_wait: false,
                 },
             );
 
@@ -743,21 +941,40 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
 /// Returns `Some(d)` when the datagram must be deferred (TCP pending full).
 fn try_handle_data(s: &mut NetStack, d: DataIn) -> Option<DataIn> {
     match d {
-        DataIn::Tcp(id, data) => {
-            if let Some(st) = s.tcp_conns.get_mut(&id) {
-                let max = max_tcp_pending();
-                if st.pending.len() >= max {
-                    return Some(DataIn::Tcp(id, data));
-                }
-                let space = max - st.pending.len();
-                if data.len() <= space {
-                    st.pending.extend_from_slice(&data);
-                } else {
-                    st.pending.extend_from_slice(&data[..space]);
-                    return Some(DataIn::Tcp(id, data[space..].to_vec()));
+        DataIn::Tcp(id, mut data) => {
+            let Some(st) = s.tcp_conns.get_mut(&id) else {
+                s.device.recycle(data);
+                return None;
+            };
+
+            // Fast path: nothing queued ahead of this write and the socket has
+            // room, so copy straight into smoltcp instead of through `pending`.
+            if st.established && st.pending.is_empty() {
+                let socket = s.sockets.get_mut::<tcp::Socket>(st.handle);
+                if socket.can_send() {
+                    let sent = socket.send_slice(&data).unwrap_or(0);
+                    if sent == data.len() {
+                        s.device.recycle(data);
+                        return None;
+                    }
+                    data.drain(..sent);
                 }
             }
-            None
+
+            let space = max_tcp_pending().saturating_sub(st.pending.len());
+            if space == 0 {
+                return Some(DataIn::Tcp(id, data));
+            }
+            if data.len() <= space {
+                st.pending.extend(&data[..]);
+                s.device.recycle(data);
+                None
+            } else {
+                st.pending.extend(&data[..space]);
+                // Keep the remainder in the same allocation.
+                data.drain(..space);
+                Some(DataIn::Tcp(id, data))
+            }
         }
         DataIn::TcpClose(id) => {
             if let Some(st) = s.tcp_conns.get_mut(&id) {
@@ -770,6 +987,7 @@ fn try_handle_data(s: &mut NetStack, d: DataIn) -> Option<DataIn> {
                 let sock = s.sockets.get_mut::<udp::Socket>(st.handle);
                 let _ = sock.send_slice(&data, to_ip_endpoint(dst));
             }
+            s.device.recycle(data);
             None
         }
         DataIn::UdpClose(id) => {
@@ -781,29 +999,49 @@ fn try_handle_data(s: &mut NetStack, d: DataIn) -> Option<DataIn> {
     }
 }
 
+fn send_pending(socket: &mut tcp::Socket<'_>, pending: &mut VecDeque<u8>) {
+    let (head, tail) = pending.as_slices();
+    let mut sent = socket.send_slice(head).unwrap_or(0);
+    if sent == head.len() && !tail.is_empty() {
+        sent += socket.send_slice(tail).unwrap_or(0);
+    }
+    if sent > 0 {
+        pending.drain(..sent);
+    }
+}
+
+fn shrink_pending(pending: &mut VecDeque<u8>) {
+    if pending.capacity() > PENDING_SHRINK_ABOVE && pending.len() * 4 < pending.capacity() {
+        pending.shrink_to(pending.len().saturating_mul(2).max(64 * 1024));
+    }
+}
+
+/// Services every TCP connection once. Returns `true` when some connection hit
+/// its per-tick budget and the loop should run again right away.
 fn service_tcp(s: &mut NetStack) -> bool {
-    let mut backpressured = false;
-    let ids: Vec<usize> = s.tcp_conns.keys().copied().collect();
+    let NetStack {
+        sockets,
+        tcp_conns,
+        data_in_tx,
+        wake_tx,
+        tcp_limits,
+        ..
+    } = s;
     let now = std::time::Instant::now();
+    let orphan_linger = tcp_limits.orphan_linger;
+    let mut more = false;
 
-    for id in ids {
-        let handle = match s.tcp_conns.get(&id) {
-            Some(st) => st.handle,
-            None => continue,
-        };
+    tcp_conns.retain(|&id, st| {
+        let handle = st.handle;
 
-        if s.tcp_conns[&id].aborted {
-            s.sockets.remove(handle);
-            s.tcp_conns.remove(&id);
-            continue;
+        if st.aborted {
+            sockets.remove(handle);
+            return false;
         }
 
-        let state = s.sockets.get_mut::<tcp::Socket>(handle).state();
-        let data_in_tx = s.data_in_tx.clone();
-
-        let connected = matches!(state, tcp::State::Established | tcp::State::CloseWait);
-        if !s.tcp_conns[&id].established && connected {
-            if let Some(st) = s.tcp_conns.get_mut(&id) {
+        if !st.established {
+            let state = sockets.get::<tcp::Socket>(handle).state();
+            if matches!(state, tcp::State::Established | tcp::State::CloseWait) {
                 st.established = true;
                 if let (Some(resp), Some(rx)) = (st.connect_resp.take(), st.from_stack_rx.take()) {
                     let conn = TcpConn {
@@ -814,187 +1052,161 @@ fn service_tcp(s: &mut NetStack) -> bool {
                     };
                     let _ = resp.send(Ok(conn));
                 }
-            }
-        }
-
-        if !s.tcp_conns[&id].established
-            && matches!(state, tcp::State::Closed | tcp::State::TimeWait)
-        {
-            if let Some(st) = s.tcp_conns.get_mut(&id) {
+            } else if matches!(state, tcp::State::Closed | tcp::State::TimeWait) {
                 if let Some(resp) = st.connect_resp.take() {
                     let _ = resp.send(Err("connection refused".into()));
                 }
-            }
-            s.sockets.remove(handle);
-            s.tcp_conns.remove(&id);
-            continue;
-        }
-
-        if !s.tcp_conns[&id].established {
-            let st = s.tcp_conns.get_mut(&id).unwrap();
-            let abandoned = st.connect_resp.as_ref().is_none_or(|resp| resp.is_closed());
-            if abandoned || now >= st.connect_deadline {
-                if let Some(resp) = st.connect_resp.take() {
-                    let _ = resp.send(Err("connection timed out".into()));
-                }
-                s.sockets.remove(handle);
-                s.tcp_conns.remove(&id);
-            }
-            continue;
-        }
-
-        {
-            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
-            if socket.can_send() {
-                let st = s.tcp_conns.get_mut(&id).unwrap();
-                if !st.pending.is_empty() {
-                    let sent = socket.send_slice(&st.pending).unwrap_or(0);
-                    if sent > 0 {
-                        st.pending.drain(0..sent);
-                        if st.pending.len() * 4 < st.pending.capacity() {
-                            st.pending
-                                .shrink_to(max_tcp_pending().min(st.pending.capacity()));
-                        }
+                sockets.remove(handle);
+                return false;
+            } else {
+                let abandoned = st.connect_resp.as_ref().is_none_or(|resp| resp.is_closed());
+                if abandoned || now >= st.connect_deadline {
+                    if let Some(resp) = st.connect_resp.take() {
+                        let _ = resp.send(Err("connection timed out".into()));
                     }
+                    sockets.remove(handle);
+                    return false;
                 }
+                return true;
             }
         }
 
-        {
-            let pending_empty = s.tcp_conns[&id].pending.is_empty();
-            let half = s.tcp_conns[&id].half_closed;
-            if half && pending_empty {
-                s.sockets.get_mut::<tcp::Socket>(handle).close();
-            }
+        let socket = sockets.get_mut::<tcp::Socket>(handle);
+
+        if !st.pending.is_empty() && socket.can_send() {
+            send_pending(socket, &mut st.pending);
+            shrink_pending(&mut st.pending);
         }
 
-        let to_app = s.tcp_conns[&id].to_app.clone();
-        let mut app_gone = false;
+        if st.half_closed && st.pending.is_empty() {
+            socket.close();
+        }
+
+        let mut app_gone = st.to_app.is_closed();
         let mut delivered = 0;
-
-        while delivered < MAX_RECV_CHUNKS {
-            let permit = match to_app.try_reserve() {
-                Ok(permit) => permit,
-                Err(mpsc::error::TrySendError::Full(())) => {
-                    backpressured = true;
-                    break;
-                }
-                Err(mpsc::error::TrySendError::Closed(())) => {
-                    app_gone = true;
-                    break;
-                }
-            };
-
-            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
-            if !socket.can_recv() {
+        while !app_gone && socket.can_recv() {
+            if delivered >= MAX_RECV_CHUNKS {
+                more = true;
                 break;
             }
-            let chunk = match socket.recv(|buf| {
-                let v = buf.to_vec();
-                (v.len(), v)
-            }) {
-                Ok(v) if !v.is_empty() => v,
-                _ => break,
-            };
-            permit.send(chunk);
-            delivered += 1;
+            match st.to_app.try_reserve() {
+                Ok(permit) => {
+                    // One allocation per drained chunk (handles ring wrap-around).
+                    let want = socket.recv_queue().min(MAX_RECV_CHUNK_BYTES);
+                    let mut chunk = vec![0u8; want];
+                    match socket.recv_slice(&mut chunk) {
+                        Ok(n) if n > 0 => {
+                            chunk.truncate(n);
+                            permit.send(chunk);
+                            delivered += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                Err(mpsc::error::TrySendError::Full(())) => {
+                    if !st.app_wait {
+                        st.app_wait = true;
+                        spawn_app_waiter(&st.to_app, wake_tx, Wake::Tcp(id));
+                    }
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(())) => app_gone = true,
+            }
         }
 
         if app_gone {
-            let st = s.tcp_conns.get_mut(&id).unwrap();
-            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
             let orphaned_at = *st.orphaned_at.get_or_insert(now);
-            if socket.can_recv() || now.duration_since(orphaned_at) >= s.tcp_limits.orphan_linger {
+            if socket.can_recv() || now.duration_since(orphaned_at) >= orphan_linger {
                 if socket.state() != tcp::State::Closed {
                     socket.abort();
                 }
+                // Removed on the next pass, after the RST has been flushed.
                 st.aborted = true;
-                continue;
+                return true;
             }
             socket.close();
         }
 
-        let st_state = s.sockets.get_mut::<tcp::Socket>(handle).state();
-        if matches!(st_state, tcp::State::CloseWait) {
-            s.sockets.get_mut::<tcp::Socket>(handle).close();
+        let state = socket.state();
+        if state == tcp::State::CloseWait {
+            socket.close();
         }
-        if matches!(st_state, tcp::State::TimeWait) {
-            if let Some(st) = s.tcp_conns.get_mut(&id) {
-                st.pending.clear();
-                st.pending.shrink_to_fit();
-            }
+        if matches!(state, tcp::State::Closed | tcp::State::TimeWait) {
+            sockets.remove(handle);
+            return false;
         }
-        if matches!(st_state, tcp::State::Closed | tcp::State::TimeWait)
-            && s.tcp_conns[&id].established
-        {
-            s.sockets.remove(handle);
-            s.tcp_conns.remove(&id);
-        }
-    }
+        true
+    });
 
-    backpressured
+    more
 }
 
 fn service_udp(s: &mut NetStack) -> bool {
-    let mut backpressured = false;
-    let ids: Vec<usize> = s.udp_conns.keys().copied().collect();
+    let NetStack {
+        sockets,
+        udp_conns,
+        wake_tx,
+        ..
+    } = s;
+    let mut more = false;
 
-    for id in ids {
-        let handle = match s.udp_conns.get(&id) {
-            Some(st) => st.handle,
-            None => continue,
-        };
-
-        let to_app = s.udp_conns[&id].to_app.clone();
+    udp_conns.retain(|&id, st| {
+        let mut app_gone = st.to_app.is_closed();
+        let socket = sockets.get_mut::<udp::Socket>(st.handle);
         let mut delivered = 0;
-        let mut app_gone = false;
 
-        while delivered < MAX_RECV_CHUNKS {
-            let permit = match to_app.try_reserve() {
-                Ok(permit) => permit,
-                Err(mpsc::error::TrySendError::Full(())) => {
-                    backpressured = true;
-                    break;
-                }
-                Err(mpsc::error::TrySendError::Closed(())) => {
-                    app_gone = true;
-                    break;
-                }
-            };
-
-            let socket = s.sockets.get_mut::<udp::Socket>(handle);
-            if !socket.can_recv() {
+        while !app_gone && socket.can_recv() {
+            if delivered >= MAX_RECV_CHUNKS {
+                more = true;
                 break;
             }
-            match socket.recv() {
-                Ok((data, meta)) => {
-                    permit.send((endpoint_to_socketaddr(meta.endpoint), data.to_vec()));
-                    delivered += 1;
+            match st.to_app.try_reserve() {
+                Ok(permit) => match socket.recv() {
+                    Ok((data, meta)) => {
+                        permit.send((endpoint_to_socketaddr(meta.endpoint), data.to_vec()));
+                        delivered += 1;
+                    }
+                    Err(_) => break,
+                },
+                Err(mpsc::error::TrySendError::Full(())) => {
+                    if !st.app_wait {
+                        st.app_wait = true;
+                        spawn_app_waiter(&st.to_app, wake_tx, Wake::Udp(id));
+                    }
+                    break;
                 }
-                Err(_) => break,
+                Err(mpsc::error::TrySendError::Closed(())) => app_gone = true,
             }
         }
 
         if app_gone {
-            if let Some(st) = s.udp_conns.remove(&id) {
-                s.sockets.remove(st.handle);
-            }
+            sockets.remove(st.handle);
+            return false;
         }
-    }
+        true
+    });
 
-    backpressured
+    more
 }
 
-fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) -> usize {
-    let mut dropped = 0;
+/// Moves as many packets as the outbound channel accepts right now. Packets
+/// that do not fit stay queued, in order, instead of being dropped: the device
+/// then stops handing out tx tokens (see `TX_BACKLOG`) and the run loop waits
+/// on `outbound_tx.reserve()`, so TCP sees backpressure rather than loss.
+fn flush_tx(s: &mut NetStack, outbound_tx: &mpsc::Sender<Vec<u8>>) {
     while let Some(pkt) = s.device.tx.pop_front() {
         match outbound_tx.try_send(pkt) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
-            Err(mpsc::error::TrySendError::Closed(_)) => break,
+            Err(mpsc::error::TrySendError::Full(pkt)) => {
+                s.device.tx.push_front(pkt);
+                break;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                s.device.tx.clear();
+                break;
+            }
         }
     }
-    dropped
 }
 
 #[cfg(test)]
@@ -1017,6 +1229,16 @@ mod tests {
         let udp_len = (8 + payload_len) as u16;
         pkt[24..26].copy_from_slice(&udp_len.to_be_bytes());
         pkt
+    }
+
+    fn test_stack() -> NetStack {
+        let mut device = StackDevice::new(1400);
+        let iface = Interface::new(
+            Config::new(HardwareAddress::Ip),
+            &mut device,
+            Instant::now(),
+        );
+        NetStack::new(iface, device, mpsc::channel(1).0, TcpLimits::from_env()).0
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1203,6 +1425,7 @@ mod tests {
             connect: StdDuration::from_millis(300),
             keepalive: StdDuration::from_secs(60),
             orphan_linger: StdDuration::from_millis(300),
+            congestion: tcp::CongestionControl::Cubic,
         }
     }
 
@@ -1335,17 +1558,8 @@ mod tests {
             Some(("172.16.0.2".parse().unwrap(), 32)),
             Some(("2606:4700:110:8a36::1".parse().unwrap(), 128)),
         );
-        let mut stack = NetStack {
-            iface,
-            device,
-            sockets: SocketSet::new(Vec::new()),
-            tcp_conns: HashMap::new(),
-            udp_conns: HashMap::new(),
-            next_id: 0,
-            next_port: 40000,
-            data_in_tx: mpsc::channel(1).0,
-            tcp_limits: TcpLimits::from_env(),
-        };
+        let (mut stack, _wake_rx) =
+            NetStack::new(iface, device, mpsc::channel(1).0, TcpLimits::from_env());
 
         handle_cmd(
             &mut stack,
@@ -1371,35 +1585,69 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn flush_tx_drops_instead_of_blocking_when_outbound_is_full() {
-        let (outbound_tx, outbound_rx) = mpsc::channel::<Vec<u8>>(2);
-        let mut stack = NetStack {
-            iface: {
-                let mut device = StackDevice::new(1400);
-                let config = Config::new(HardwareAddress::Ip);
-                Interface::new(config, &mut device, Instant::now())
-            },
-            device: StackDevice::new(1400),
-            sockets: SocketSet::new(Vec::new()),
-            tcp_conns: HashMap::new(),
-            udp_conns: HashMap::new(),
-            next_id: 0,
-            next_port: 40000,
-            data_in_tx: mpsc::channel(1).0,
-            tcp_limits: TcpLimits::from_env(),
-        };
+    async fn flush_tx_keeps_packets_queued_when_outbound_is_full() {
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(2);
+        let mut stack = test_stack();
 
-        for _ in 0..10 {
-            stack.device.tx.push_back(vec![1, 2, 3]);
+        for i in 0..10u8 {
+            stack.device.tx.push_back(vec![i]);
         }
 
-        let dropped = flush_tx(&mut stack, &outbound_tx);
-
-        assert!(stack.device.tx.is_empty(), "the tx queue must be drained");
+        flush_tx(&mut stack, &outbound_tx);
+        assert_eq!(outbound_rx.len(), 2, "the channel takes what fits");
         assert_eq!(
-            dropped, 8,
-            "everything past the channel capacity is dropped"
+            stack.device.tx.len(),
+            8,
+            "packets that do not fit must stay queued, not be dropped"
         );
-        assert_eq!(outbound_rx.len(), 2, "the channel keeps what fits");
+
+        assert_eq!(outbound_rx.recv().await.unwrap(), vec![0]);
+        assert_eq!(outbound_rx.recv().await.unwrap(), vec![1]);
+
+        flush_tx(&mut stack, &outbound_tx);
+        assert_eq!(stack.device.tx.len(), 6);
+        assert_eq!(
+            outbound_rx.recv().await.unwrap(),
+            vec![2],
+            "ordering is preserved across flushes"
+        );
+    }
+
+    #[test]
+    fn a_backlogged_device_pushes_back_instead_of_accepting_more() {
+        let mut device = StackDevice::new(1400);
+        for _ in 0..TX_BACKLOG {
+            device.tx.push_back(vec![0]);
+        }
+        assert!(
+            device.transmit(Instant::now()).is_none(),
+            "a full backlog must stop smoltcp from emitting more"
+        );
+        device.tx.pop_front();
+        assert!(device.transmit(Instant::now()).is_some());
+    }
+
+    #[test]
+    fn tx_buffers_are_recycled_from_consumed_rx_packets() {
+        let mut device = StackDevice::new(1400);
+        device.rx.push_back(vec![0u8; 1400]);
+        let (rx, _tx) = device.receive(Instant::now()).expect("a queued packet");
+        rx.consume(|_| ());
+        assert_eq!(device.pool.borrow().len(), 1);
+
+        let tx = device.transmit(Instant::now()).expect("room to transmit");
+        tx.consume(60, |buf| buf.fill(7));
+        assert_eq!(device.pool.borrow().len(), 0, "the pooled buffer was reused");
+        assert_eq!(device.tx.back().map(Vec::len), Some(60));
+    }
+
+    #[test]
+    fn tcp_sockets_run_with_congestion_control() {
+        let socket = new_tcp_socket(&quick_limits());
+        assert_eq!(
+            socket.congestion_control(),
+            tcp::CongestionControl::Cubic,
+            "without a controller smoltcp bursts the whole window"
+        );
     }
 }
