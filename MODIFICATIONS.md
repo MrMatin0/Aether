@@ -98,6 +98,17 @@ of overwriting it:
   reaching the target; and the DNS-over-HTTPS ranges are probed after every
   other candidate instead of in every round of the sweep. See
   `docs/MASQUE_SCAN.md`.
+- `native/aether/aether/src/prober.rs` (2026-09-26,
+  `fix/masque-scan-congestion`): failed scan candidates are tallied by reason
+  and a scan that ends without a gateway logs the most common reasons at
+  warn, instead of every failure going to trace only.
+- `native/aether/aether/src/tls.rs` (2026-09-26,
+  `fix/masque-scan-congestion`): the MASQUE QUIC congestion controller is
+  CUBIC (quiche's default, as upstream) unless `AETHER_QUIC_CC=bbr2` or
+  `reno` asks otherwise. PR #106 had made BBR2 (gcongestion) the default for
+  the scan and the tunnel without a field test, and MASQUE scans stopped
+  finding gateways after it. Add `tls.rs` to `PATCHED_FILES` if the
+  `AETHER_QUIC_CC` switch should survive the next core sync.
 
 ## What this repository inherits unchanged
 
