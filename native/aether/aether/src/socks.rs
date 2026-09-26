@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -418,12 +419,96 @@ async fn resolve(stack: &StackHandle, target: Target) -> Result<IpAddr> {
     }
 }
 
+/// How long one lookup may take in total. Every resolver is asked at once, so
+/// this is the whole budget rather than a per-server one.
+const DNS_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Queries still unanswered by then are sent once more, so a single datagram
+/// lost inside the tunnel costs about a second instead of the whole budget.
+const DNS_RESEND_AFTER: Duration = Duration::from_millis(1200);
+/// Most names remembered at once.
+const DNS_CACHE_LIMIT: usize = 1024;
+/// Bounds on how long an answer is reused, whatever TTL the resolver gave.
+const DNS_TTL_FLOOR: u32 = 10;
+const DNS_TTL_CEILING: u32 = 300;
+
+struct CachedAddress {
+    ip: IpAddr,
+    expires: std::time::Instant,
+}
+
+static DNS_CACHE: std::sync::OnceLock<parking_lot::Mutex<HashMap<String, CachedAddress>>> =
+    std::sync::OnceLock::new();
+
+fn dns_cache() -> &'static parking_lot::Mutex<HashMap<String, CachedAddress>> {
+    DNS_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+fn cache_key(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn cache_lifetime(ttl: u32) -> Duration {
+    Duration::from_secs(u64::from(ttl.clamp(DNS_TTL_FLOOR, DNS_TTL_CEILING)))
+}
+
+fn cached_address(name: &str) -> Option<IpAddr> {
+    let key = cache_key(name);
+    let now = std::time::Instant::now();
+    let mut cache = dns_cache().lock();
+    match cache.get(&key) {
+        Some(entry) if entry.expires > now => Some(entry.ip),
+        Some(_) => {
+            cache.remove(&key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn remember_address(name: &str, ip: IpAddr, ttl: u32) {
+    let key = cache_key(name);
+    let now = std::time::Instant::now();
+    let mut cache = dns_cache().lock();
+
+    if cache.len() >= DNS_CACHE_LIMIT && !cache.contains_key(&key) {
+        cache.retain(|_, entry| entry.expires > now);
+        if cache.len() >= DNS_CACHE_LIMIT {
+            let soonest = cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires)
+                .map(|(name, _)| name.clone());
+            if let Some(soonest) = soonest {
+                cache.remove(&soonest);
+            }
+        }
+    }
+
+    cache.insert(
+        key,
+        CachedAddress {
+            ip,
+            expires: now + cache_lifetime(ttl),
+        },
+    );
+}
+
 pub(crate) async fn dns_resolve(stack: &StackHandle, name: &str) -> Result<IpAddr> {
+    let name = name.trim_end_matches('.');
+    if name.is_empty() {
+        return Err(AetherError::Other("cannot resolve an empty name".into()));
+    }
+    if let Some(ip) = cached_address(name) {
+        return Ok(ip);
+    }
+
     let udp = stack.open_udp().await?;
     let (sender, mut from_stack) = udp.into_split();
     let outcome = dns_exchange(&sender, &mut from_stack, name).await;
     sender.close().await;
-    outcome
+
+    let (ip, ttl) = outcome?;
+    remember_address(name, ip, ttl);
+    Ok(ip)
 }
 
 pub(crate) fn resolver_addresses() -> Vec<SocketAddr> {
@@ -455,40 +540,57 @@ pub(crate) fn resolver_addresses() -> Vec<SocketAddr> {
     servers
 }
 
+/// Asks every resolver at once and takes the first usable answer, so a dead
+/// resolver costs nothing as long as another one is alive. Returns the address
+/// together with its TTL.
 async fn dns_exchange(
     sender: &UdpSender,
     from_stack: &mut mpsc::Receiver<(SocketAddr, Vec<u8>)>,
     name: &str,
-) -> Result<IpAddr> {
-    let mut last = AetherError::Other("dns timeout".into());
+) -> Result<(IpAddr, u32)> {
+    let mut last = AetherError::Other(format!("dns timeout for {name}"));
+    let mut pending: Vec<(SocketAddr, u16, Vec<u8>)> = Vec::new();
 
     for server in resolver_addresses() {
         let (query, id) = build_dns_query(name, QTYPE_A);
-        if let Err(error) = sender.send_to(server, query).await {
-            last = error;
-            continue;
+        match sender.send_to(server, query.clone()).await {
+            Ok(_) => pending.push((server, id, query)),
+            Err(error) => last = error,
         }
+    }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let started = tokio::time::Instant::now();
+    let deadline = started + DNS_QUERY_TIMEOUT;
+    let mut resend_at = Some(started + DNS_RESEND_AFTER);
 
-        loop {
-            let resp = match tokio::time::timeout_at(deadline, from_stack.recv()).await {
-                Ok(Some(resp)) => resp,
-                Ok(None) => return Err(AetherError::Other("dns channel closed".into())),
-                Err(_) => {
-                    last = AetherError::Other(format!("dns timeout from {server}"));
-                    break;
+    while !pending.is_empty() {
+        let wake = resend_at.map_or(deadline, |at| at.min(deadline));
+        let (_, resp) = match tokio::time::timeout_at(wake, from_stack.recv()).await {
+            Ok(Some(resp)) => resp,
+            Ok(None) => return Err(AetherError::Other("dns channel closed".into())),
+            Err(_) => {
+                if resend_at.take().is_some() && tokio::time::Instant::now() < deadline {
+                    for (server, _, query) in &pending {
+                        let _ = sender.send_to(*server, query.clone()).await;
+                    }
+                    continue;
                 }
-            };
+                return Err(AetherError::Other(format!("dns timeout for {name}")));
+            }
+        };
 
-            if !dns_response_matches(&resp.1, id, name, QTYPE_A) {
-                continue;
-            }
-            if let Some(ip) = parse_dns_a(&resp.1) {
-                return Ok(ip);
-            }
-            return Err(AetherError::Other(format!("no A record for {name}")));
+        let Some(at) = pending
+            .iter()
+            .position(|(_, id, _)| dns_response_matches(&resp, *id, name, QTYPE_A))
+        else {
+            continue;
+        };
+        pending.swap_remove(at);
+
+        if let Some(answer) = parse_dns_a(&resp) {
+            return Ok(answer);
         }
+        last = AetherError::Other(format!("no A record for {name}"));
     }
 
     Err(last)
@@ -503,7 +605,7 @@ fn build_dns_query(name: &str, qtype: u16) -> (Vec<u8>, u16) {
     q.extend_from_slice(&[0x01, 0x00]);
     q.extend_from_slice(&[0x00, 0x01]);
     q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    for label in name.split('.') {
+    for label in name.split('.').filter(|label| !label.is_empty()) {
         q.push(label.len() as u8);
         q.extend_from_slice(label.as_bytes());
     }
@@ -566,7 +668,8 @@ pub(crate) fn dns_response_matches(
     u16::from_be_bytes([resp[pos], resp[pos + 1]]) == expected_qtype
 }
 
-fn parse_dns_a(resp: &[u8]) -> Option<IpAddr> {
+/// The first A record in an answer, with its TTL in seconds.
+fn parse_dns_a(resp: &[u8]) -> Option<(IpAddr, u32)> {
     if resp.len() < 12 {
         return None;
     }
@@ -585,18 +688,20 @@ fn parse_dns_a(resp: &[u8]) -> Option<IpAddr> {
             return None;
         }
         let rtype = u16::from_be_bytes([resp[pos], resp[pos + 1]]);
+        let ttl = u32::from_be_bytes([resp[pos + 4], resp[pos + 5], resp[pos + 6], resp[pos + 7]]);
         let rdlen = u16::from_be_bytes([resp[pos + 8], resp[pos + 9]]) as usize;
         pos += 10;
         if pos + rdlen > resp.len() {
             return None;
         }
         if rtype == 1 && rdlen == 4 {
-            return Some(IpAddr::V4(Ipv4Addr::new(
+            let ip = IpAddr::V4(Ipv4Addr::new(
                 resp[pos],
                 resp[pos + 1],
                 resp[pos + 2],
                 resp[pos + 3],
-            )));
+            ));
+            return Some((ip, ttl));
         }
         pos += rdlen;
     }
@@ -633,12 +738,22 @@ fn sniff_enabled() -> bool {
     )
 }
 
+/// Ports whose protocols wait for the server to speak first. The client sends
+/// nothing a name could be read from, so sniffing them only burns the whole
+/// window before the connection even starts.
+fn server_speaks_first(port: u16) -> bool {
+    matches!(
+        port,
+        21 | 22 | 23 | 25 | 110 | 143 | 587 | 2525 | 3306 | 5900
+    )
+}
+
 fn sniff_window() -> Duration {
     let ms = std::env::var("AETHER_ROUTE_SNIFF_MS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|&value| value > 0)
-        .unwrap_or(400);
+        .unwrap_or(150);
     Duration::from_millis(ms)
 }
 
@@ -665,7 +780,11 @@ async fn handle_connect(
     let mut replied = false;
     let mut named: Option<String> = None;
 
-    if matches!(target, Target::Ip(_)) && sniff_enabled() && routes().has_domain_rules() {
+    if matches!(target, Target::Ip(_))
+        && !server_speaks_first(port)
+        && sniff_enabled()
+        && routes().has_domain_rules()
+    {
         reply_bound(&mut sock, "0.0.0.0:0".parse().unwrap()).await?;
         replied = true;
 
@@ -1002,7 +1121,19 @@ where
     relay_halves(upload, download, &activity, linger).await;
 }
 
-const RELAY_CHUNK: usize = 16384;
+/// Read size on the path into the netstack. Each read becomes one message to
+/// the stack, so this stays at the size the stack has always been fed.
+const TUNNEL_CHUNK: usize = 16384;
+
+/// Read size for relays between two ordinary streams. Bigger reads mean fewer
+/// wakeups and, on TLS carriers, fewer and fuller records. The low tier keeps
+/// 16KB because every connection holds two of these buffers.
+fn relay_chunk() -> usize {
+    match crate::sysprofile::tuning().tier {
+        crate::sysprofile::Tier::Low => 16 * 1024,
+        crate::sysprofile::Tier::Medium | crate::sysprofile::Tier::High => 64 * 1024,
+    }
+}
 
 pub(crate) fn half_close_linger() -> Duration {
     let secs = std::env::var("AETHER_HALF_CLOSE_SECS")
@@ -1073,7 +1204,7 @@ pub(crate) async fn relay_tunneled(
     let activity = Activity::new();
 
     let upload = async {
-        let mut buf = vec![0u8; RELAY_CHUNK];
+        let mut buf = vec![0u8; TUNNEL_CHUNK];
         loop {
             match rd.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
@@ -1136,14 +1267,32 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0u8; RELAY_CHUNK];
+    let mut buf = vec![0u8; relay_chunk()];
+    let mut unflushed = false;
     loop {
-        let n = from.read(&mut buf).await?;
+        // Flushing after every write turns each read into its own TLS record
+        // on buffered carriers. Flush only once the source has nothing more
+        // ready, so a burst goes out together and nothing is ever held back
+        // while we wait for the next bytes.
+        let ready = futures::FutureExt::now_or_never(from.read(&mut buf));
+        let n = match ready {
+            Some(result) => result?,
+            None => {
+                if unflushed {
+                    to.flush().await?;
+                    unflushed = false;
+                }
+                from.read(&mut buf).await?
+            }
+        };
         if n == 0 {
+            if unflushed {
+                to.flush().await?;
+            }
             return Ok(());
         }
         to.write_all(&buf[..n]).await?;
-        to.flush().await?;
+        unflushed = true;
         match way {
             Way::Up => crate::stats::add_up(n),
             Way::Down => crate::stats::add_down(n),
@@ -1332,6 +1481,25 @@ async fn open_through_gateway(
     }
 }
 
+/// A datagram whose destination name was looked up off the relay loop.
+enum ResolvedDatagram {
+    /// Goes into the tunnel.
+    Tunnel(SocketAddr, Vec<u8>),
+    /// Goes straight out of this machine.
+    Direct(SocketAddr, Vec<u8>),
+}
+
+async fn send_direct_udp(relay: &UdpSocket, client: IpAddr, addr: SocketAddr, data: &[u8]) {
+    if !direct_target_allowed(client, addr.ip()) {
+        log::debug!(
+            "[route] direct udp to {addr} refused: only local clients may reach this machine's loopback"
+        );
+        return;
+    }
+    log::trace!("[route] direct udp {addr}");
+    let _ = relay.send_to(data, addr).await;
+}
+
 async fn handle_udp_associate(
     mut sock: TcpStream,
     stack: StackHandle,
@@ -1350,6 +1518,10 @@ async fn handle_udp_associate(
     let (sender, mut from_stack) = udp.into_split();
 
     let direct_relay = crate::egress::udp_bind("0.0.0.0:0".parse().expect("a wildcard address"))?;
+
+    // Names are looked up here, off the loop. Awaited inline, one slow lookup
+    // held up every datagram in both directions for as long as it took.
+    let mut lookups: tokio::task::JoinSet<Option<ResolvedDatagram>> = tokio::task::JoinSet::new();
 
     let mut client: Option<SocketAddr> = None;
     let mut refused: u64 = 0;
@@ -1375,51 +1547,79 @@ async fn handle_udp_associate(
                     log::debug!("udp relay {relay_addr} latched to client {from}");
                     client = Some(from);
                 }
-                if let Some((dst, payload)) = parse_udp_request(&cbuf[..n]) {
-                    let dst_port = payload.0;
+                let Some((dst, (dst_port, data))) = parse_udp_request(&cbuf[..n]) else {
+                    continue;
+                };
 
-                    match routes().decide(host_of(&dst), dst_port) {
-                        Action::Block => {
-                            log::debug!("[route] block udp {dst}:{dst_port}");
-                            continue;
-                        }
-                        Action::Direct => {
-                            let outside = match &dst {
-                                Target::Ip(ip) => Some(SocketAddr::new(*ip, dst_port)),
-                                Target::Domain(name) => {
-                                    tokio::net::lookup_host((name.as_str(), dst_port))
+                match routes().decide(host_of(&dst), dst_port) {
+                    Action::Block => {
+                        log::debug!("[route] block udp {dst}:{dst_port}");
+                        continue;
+                    }
+                    Action::Direct => {
+                        match dst {
+                            Target::Ip(ip) => {
+                                let addr = SocketAddr::new(ip, dst_port);
+                                send_direct_udp(&direct_relay, control_peer.ip(), addr, &data).await;
+                            }
+                            Target::Domain(name) => {
+                                if lookups.len() >= DNS_MAX_IN_FLIGHT {
+                                    log::debug!("[-] too many udp name lookups in flight; dropping a datagram for {name}");
+                                    continue;
+                                }
+                                lookups.spawn(async move {
+                                    let found = tokio::net::lookup_host((name.as_str(), dst_port))
                                         .await
                                         .ok()
-                                        .and_then(|mut found| found.next())
-                                }
-                            };
-                            match outside {
-                                Some(addr) if !direct_target_allowed(control_peer.ip(), addr.ip()) => {
-                                    log::debug!(
-                                        "[route] direct udp to {addr} refused: only local clients may reach this machine's loopback"
-                                    );
-                                }
-                                Some(addr) => {
-                                    log::trace!("[route] direct udp {dst}:{dst_port}");
-                                    let _ = direct_relay.send_to(&payload.1, addr).await;
-                                }
-                                None => log::debug!("[route] direct udp {dst} did not resolve"),
+                                        .and_then(|mut found| found.next());
+                                    if found.is_none() {
+                                        log::debug!("[route] direct udp {name} did not resolve");
+                                    }
+                                    found.map(|addr| ResolvedDatagram::Direct(addr, data))
+                                });
                             }
+                        }
+                        continue;
+                    }
+                    Action::Proxy => {}
+                }
+
+                match dst {
+                    Target::Ip(ip) => {
+                        let _ = sender.send_to(SocketAddr::new(ip, dst_port), data).await;
+                    }
+                    Target::Domain(name) => {
+                        if let Some(ip) = cached_address(&name) {
+                            let _ = sender.send_to(SocketAddr::new(ip, dst_port), data).await;
                             continue;
                         }
-                        Action::Proxy => {}
-                    }
-
-                    let dst = match dst {
-                        Target::Ip(ip) => SocketAddr::new(ip, dst_port),
-                        Target::Domain(name) => {
-                            match dns_resolve(&stack, &name).await {
-                                Ok(ip) => SocketAddr::new(ip, dst_port),
-                                Err(_) => continue,
-                            }
+                        if lookups.len() >= DNS_MAX_IN_FLIGHT {
+                            log::debug!("[-] too many udp name lookups in flight; dropping a datagram for {name}");
+                            continue;
                         }
-                    };
-                    let _ = sender.send_to(dst, payload.1).await;
+                        let stack = stack.clone();
+                        lookups.spawn(async move {
+                            match dns_resolve(&stack, &name).await {
+                                Ok(ip) => Some(ResolvedDatagram::Tunnel(SocketAddr::new(ip, dst_port), data)),
+                                Err(e) => {
+                                    log::debug!("udp to {name} did not resolve: {e}");
+                                    None
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
+            Some(done) = lookups.join_next(), if !lookups.is_empty() => {
+                match done {
+                    Ok(Some(ResolvedDatagram::Tunnel(dst, data))) => {
+                        let _ = sender.send_to(dst, data).await;
+                    }
+                    Ok(Some(ResolvedDatagram::Direct(addr, data))) => {
+                        send_direct_udp(&direct_relay, control_peer.ip(), addr, &data).await;
+                    }
+                    Ok(None) | Err(_) => {}
                 }
             }
 
@@ -1445,6 +1645,7 @@ async fn handle_udp_associate(
         }
     }
 
+    lookups.abort_all();
     sender.close().await;
     Ok(())
 }
@@ -1591,6 +1792,33 @@ mod relay_tests {
         client.read_to_end(&mut answer).await.unwrap();
         assert_eq!(answer, (0..20u8).collect::<Vec<_>>());
         relay.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_buffered_writer_still_gets_every_byte_without_a_flush_per_write() {
+        let (mut source, mut source_far) = pair().await;
+        let (sink_near, mut sink) = pair().await;
+        let activity = Activity::new();
+
+        let relay = async {
+            let mut writer = tokio::io::BufWriter::with_capacity(1 << 20, sink_near);
+            pump(&mut source, &mut writer, &activity, Way::Down).await.unwrap();
+        };
+        let feed = async {
+            source_far.write_all(b"first").await.unwrap();
+            let mut got = [0u8; 5];
+            tokio::time::timeout(Duration::from_secs(2), sink.read_exact(&mut got))
+                .await
+                .expect("a lone write must be flushed once the source goes quiet")
+                .unwrap();
+            assert_eq!(&got, b"first");
+            source_far.write_all(b"second").await.unwrap();
+            drop(source_far);
+            let mut rest = Vec::new();
+            sink.read_to_end(&mut rest).await.unwrap();
+            assert_eq!(rest, b"second");
+        };
+        tokio::join!(relay, feed);
     }
 
     #[test]
@@ -1938,6 +2166,13 @@ mod tests {
     }
 
     #[test]
+    fn a_trailing_dot_does_not_become_an_empty_label() {
+        let (dotted, _) = build_dns_query("example.com.", QTYPE_A);
+        let (plain, _) = build_dns_query("example.com", QTYPE_A);
+        assert_eq!(dotted[2..], plain[2..]);
+    }
+
+    #[test]
     fn accepts_the_matching_answer() {
         let msg = reply(0x4242, "example.com", QTYPE_A, true);
         assert!(dns_response_matches(&msg, 0x4242, "example.com", QTYPE_A));
@@ -1972,6 +2207,40 @@ mod tests {
                 QTYPE_A
             ));
         }
+    }
+
+    #[test]
+    fn the_answer_ttl_is_read_alongside_the_address() {
+        let mut msg = reply(0x4242, "example.com", QTYPE_A, true);
+        msg.extend_from_slice(&[0xc0, 0x0c]);
+        msg.extend_from_slice(&QTYPE_A.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&120u32.to_be_bytes());
+        msg.extend_from_slice(&4u16.to_be_bytes());
+        msg.extend_from_slice(&[93, 184, 216, 34]);
+        assert_eq!(
+            parse_dns_a(&msg),
+            Some(("93.184.216.34".parse().unwrap(), 120))
+        );
+    }
+
+    #[test]
+    fn cached_answers_live_between_the_floor_and_the_ceiling() {
+        assert_eq!(cache_lifetime(0), Duration::from_secs(DNS_TTL_FLOOR as u64));
+        assert_eq!(cache_lifetime(60), Duration::from_secs(60));
+        assert_eq!(
+            cache_lifetime(u32::MAX),
+            Duration::from_secs(DNS_TTL_CEILING as u64)
+        );
+    }
+
+    #[test]
+    fn a_resolved_name_is_served_from_the_cache() {
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        remember_address("Cache-Test.Example.", ip, 60);
+        assert_eq!(cached_address("cache-test.example"), Some(ip));
+        assert_eq!(cached_address("cache-test.example."), Some(ip));
+        assert_eq!(cached_address("not-cached.example"), None);
     }
 }
 
@@ -2536,6 +2805,16 @@ mod sniff_route_tests {
         let set = RuleSet::parse("ads.example", "");
         let target = Target::Domain("ads.example".to_string());
         assert_eq!(decide_route(&set, &target, None, 443), Action::Block);
+    }
+
+    #[test]
+    fn server_first_ports_skip_the_sniff_wait() {
+        for port in [21, 22, 25, 110, 143, 587, 3306] {
+            assert!(server_speaks_first(port), "port {port}");
+        }
+        for port in [80, 443, 853, 8443] {
+            assert!(!server_speaks_first(port), "port {port}");
+        }
     }
 
     #[tokio::test]
