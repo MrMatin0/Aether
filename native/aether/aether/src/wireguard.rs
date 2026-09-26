@@ -1,4 +1,4 @@
-use parking_lot::Mutex as StdMutex;
+use parking_lot::Mutex as SyncMutex;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +22,21 @@ const WG_MSG_TYPE_MAX: u8 = 4;
 
 const MAX_TRANSIENT_RECV_ERRORS: u32 = 64;
 const TRANSIENT_RECV_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Upper bound on how many queued packets one inbound datagram may release.
+/// boringtun's own queue is far smaller; this only guards against a spin.
+const MAX_QUEUED_DRAIN: usize = 1024;
+
+/// The boringtun state shared by the tunnel tasks.
+///
+/// This is a synchronous lock on purpose: every critical section is a single
+/// encapsulate / decapsulate / update_timers call, and the guard is `!Send`,
+/// so the compiler refuses any attempt to hold it across an `.await`.
+type SharedTunn = Arc<SyncMutex<Box<Tunn>>>;
+
+fn share(tunn: Tunn) -> SharedTunn {
+    Arc::new(SyncMutex::new(Box::new(tunn)))
+}
 
 pub fn is_transient_socket_error(error: &std::io::Error) -> bool {
     use std::io::ErrorKind;
@@ -69,6 +84,26 @@ fn strip_client_id(pkt: &mut [u8]) {
     pkt[1..4].copy_from_slice(&[0u8; 3]);
 }
 
+/// Gives the long-lived tunnel socket the same kernel buffers QUIC gets from
+/// `bind_udp_fast`. `bind_via_upstream` goes through `egress::udp_bind`, which
+/// leaves them at the OS default (often ~200 KiB), so a burst that arrives
+/// while the recv task is not scheduled is dropped by the kernel.
+fn tune_socket_buffers(sock: &UdpSocket) {
+    let wanted = crate::sysprofile::udp_socket_buf_bytes();
+    let sock_ref = socket2::SockRef::from(sock);
+    if let Err(e) = sock_ref.set_recv_buffer_size(wanted) {
+        log::debug!("[wg] could not set SO_RCVBUF to {wanted}: {e}");
+    }
+    if let Err(e) = sock_ref.set_send_buffer_size(wanted) {
+        log::debug!("[wg] could not set SO_SNDBUF to {wanted}: {e}");
+    }
+    log::debug!(
+        "[wg] socket buffers rcv={:?} snd={:?} (asked for {wanted})",
+        sock_ref.recv_buffer_size().ok(),
+        sock_ref.send_buffer_size().ok()
+    );
+}
+
 #[derive(Clone)]
 pub struct WgConfig {
     pub local_private_key: [u8; 32],
@@ -83,7 +118,7 @@ pub struct WgConfig {
 }
 
 pub struct WgTunnel {
-    tunn: Arc<Mutex<Box<Tunn>>>,
+    tunn: SharedTunn,
     sock: Arc<UdpSocket>,
     detour: crate::upstream::DetourGuard,
     peer: SocketAddr,
@@ -95,7 +130,7 @@ pub struct WgTunnel {
 }
 
 pub struct EstablishedSession {
-    tunn: Arc<Mutex<Box<Tunn>>>,
+    tunn: SharedTunn,
     sock: Arc<UdpSocket>,
     detour: crate::upstream::DetourGuard,
     peer: SocketAddr,
@@ -105,6 +140,7 @@ pub struct EstablishedSession {
 impl WgTunnel {
     pub async fn new(cfg: WgConfig, inbound_tx: mpsc::Sender<Vec<u8>>) -> Result<Self> {
         let (sock, _, detour) = crate::upstream::bind_via_upstream(cfg.peer_endpoint).await?;
+        tune_socket_buffers(&sock);
 
         let local_secret = StaticSecret::from(cfg.local_private_key);
         let peer_public = PublicKey::from(cfg.peer_public_key);
@@ -120,7 +156,7 @@ impl WgTunnel {
         );
 
         Ok(Self {
-            tunn: Arc::new(Mutex::new(Box::new(tunn))),
+            tunn: share(tunn),
             sock: Arc::new(sock),
             detour,
             peer: cfg.peer_endpoint,
@@ -138,6 +174,9 @@ impl WgTunnel {
         inbound_tx: mpsc::Sender<Vec<u8>>,
         local_ipv4: Ipv4Addr,
     ) -> Self {
+        // Verification sockets stay small (a scan opens many); only the one
+        // promoted to a real tunnel gets the large buffers.
+        tune_socket_buffers(&session.sock);
         Self {
             tunn: session.tunn,
             sock: session.sock,
@@ -169,7 +208,7 @@ impl WgTunnel {
         let peer = self.peer;
         let local_ipv4 = self.local_ipv4;
 
-        let last_valid_rx: Arc<StdMutex<Instant>> = Arc::new(StdMutex::new(Instant::now()));
+        let last_valid_rx: Arc<SyncMutex<Instant>> = Arc::new(SyncMutex::new(Instant::now()));
         let last_valid_rx_r = last_valid_rx.clone();
         let last_valid_rx_h = last_valid_rx.clone();
 
@@ -183,27 +222,42 @@ impl WgTunnel {
                     Ok(n) => {
                         transient_errors = 0;
                         strip_client_id(&mut buf[..n]);
-                        let mut tunn = tunn_r.lock().await;
-                        match tunn.decapsulate(None, &buf[..n], &mut tmp) {
-                            TunnResult::Done => {
-                                *last_valid_rx_r.lock() = Instant::now();
-                            }
-                            TunnResult::Err(e) => {
-                                log::trace!("decapsulate error: {e:?}");
-                            }
-                            TunnResult::WriteToNetwork(pkt) => {
-                                *last_valid_rx_r.lock() = Instant::now();
-                                let mut pkt_vec = pkt.to_vec();
-                                inject_client_id(&mut pkt_vec, &client_id);
-                                drop(tunn);
-                                let _ = sock_r.send(&pkt_vec).await;
-                            }
-                            TunnResult::WriteToTunnelV4(pkt, _)
-                            | TunnResult::WriteToTunnelV6(pkt, _) => {
-                                *last_valid_rx_r.lock() = Instant::now();
-                                let pkt_vec = pkt.to_vec();
-                                drop(tunn);
-                                let _ = inbound_tx.send(pkt_vec).await;
+
+                        // boringtun contract: after WriteToNetwork, call
+                        // decapsulate again with an empty datagram until it
+                        // returns Done. That is the only way packets queued
+                        // during a (re)handshake are released.
+                        let mut datagram: &[u8] = &buf[..n];
+                        for _ in 0..MAX_QUEUED_DRAIN {
+                            let fresh = !datagram.is_empty();
+                            let result = {
+                                let mut tunn = tunn_r.lock();
+                                tunn.decapsulate(None, datagram, &mut tmp)
+                            };
+                            datagram = &[];
+
+                            match result {
+                                TunnResult::Done => {
+                                    if fresh {
+                                        *last_valid_rx_r.lock() = Instant::now();
+                                    }
+                                    break;
+                                }
+                                TunnResult::Err(e) => {
+                                    log::trace!("decapsulate error: {e:?}");
+                                    break;
+                                }
+                                TunnResult::WriteToNetwork(pkt) => {
+                                    *last_valid_rx_r.lock() = Instant::now();
+                                    inject_client_id(pkt, &client_id);
+                                    let _ = sock_r.send(pkt).await;
+                                }
+                                TunnResult::WriteToTunnelV4(pkt, _)
+                                | TunnResult::WriteToTunnelV6(pkt, _) => {
+                                    *last_valid_rx_r.lock() = Instant::now();
+                                    let _ = inbound_tx.send(pkt.to_vec()).await;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -233,17 +287,18 @@ impl WgTunnel {
             let mut out_buf = vec![0u8; MAX_PACKET];
             let mut post_hs_junk_sent = false;
             while let Some(ip_packet) = outbound_rx.recv().await {
-                let mut tunn = tunn_w.lock().await;
+                let result = {
+                    let mut tunn = tunn_w.lock();
+                    tunn.encapsulate(&ip_packet, &mut out_buf)
+                };
 
-                match tunn.encapsulate(&ip_packet, &mut out_buf) {
+                match result {
                     TunnResult::Done => {}
                     TunnResult::Err(e) => {
                         log::trace!("encapsulate error: {e:?}");
                     }
                     TunnResult::WriteToNetwork(pkt) => {
-                        let mut pkt_vec = pkt.to_vec();
-                        inject_client_id(&mut pkt_vec, &client_id);
-                        drop(tunn);
+                        inject_client_id(pkt, &client_id);
 
                         {
                             let mut sent = obf_sent.lock().await;
@@ -254,7 +309,7 @@ impl WgTunnel {
                             }
                         }
 
-                        let _ = sock_w.send(&pkt_vec).await;
+                        let _ = sock_w.send(pkt).await;
 
                         // Post-handshake junk once only — not on every data packet.
                         if aethernoize.jc_after_hs > 0 && !post_hs_junk_sent {
@@ -273,16 +328,17 @@ impl WgTunnel {
             let mut tmp = vec![0u8; MAX_PACKET];
             loop {
                 interval.tick().await;
-                let mut tunn = tunn_t.lock().await;
-                if let TunnResult::WriteToNetwork(pkt) = tunn.update_timers(&mut tmp) {
-                    let mut pkt_vec = pkt.to_vec();
-                    inject_client_id(&mut pkt_vec, &client_id);
-                    drop(tunn);
+                let result = {
+                    let mut tunn = tunn_t.lock();
+                    tunn.update_timers(&mut tmp)
+                };
+                if let TunnResult::WriteToNetwork(pkt) = result {
+                    inject_client_id(pkt, &client_id);
 
                     if aethernoize_t.is_enabled() {
                         aethernoize::send_keepalive_junk(&sock_t, &aethernoize_t).await;
                     }
-                    let _ = sock_t.send(&pkt_vec).await;
+                    let _ = sock_t.send(pkt).await;
                 }
             }
         });
@@ -306,12 +362,22 @@ impl WgTunnel {
                 }
 
                 let probe = build_dataplane_probe(local_ipv4);
-                let mut tunn = tunn_h.lock().await;
-                if let Err(e) =
-                    send_dataplane_probe(&sock_h, &mut tunn, &client_id_h, &probe, &mut out_buf)
-                        .await
-                {
-                    log::trace!("[wg] health probe send failed: {e}");
+                // Encapsulate under the lock, send after releasing it.
+                let result = {
+                    let mut tunn = tunn_h.lock();
+                    tunn.encapsulate(&probe, &mut out_buf)
+                };
+                match result {
+                    TunnResult::WriteToNetwork(pkt) => {
+                        inject_client_id(pkt, &client_id_h);
+                        if let Err(e) = sock_h.send(pkt).await {
+                            log::trace!("[wg] health probe send failed: {e}");
+                        }
+                    }
+                    TunnResult::Err(e) => {
+                        log::trace!("[wg] health probe encap failed: {e:?}");
+                    }
+                    _ => {}
                 }
             }
         });
@@ -437,9 +503,8 @@ async fn send_dataplane_probe(
 ) -> Result<()> {
     match tunn.encapsulate(probe, out_buf) {
         TunnResult::WriteToNetwork(pkt) => {
-            let mut v = pkt.to_vec();
-            inject_client_id(&mut v, client_id);
-            sock.send(&v).await?;
+            inject_client_id(pkt, client_id);
+            sock.send(pkt).await?;
         }
         TunnResult::Err(e) => {
             return Err(AetherError::Other(format!("dataplane encap: {e:?}")));
@@ -511,9 +576,8 @@ async fn verify_dataplane(
                         resend_at = next_at + Duration::from_millis(700);
                     }
                     TunnResult::WriteToNetwork(pkt) => {
-                        let mut v = pkt.to_vec();
-                        inject_client_id(&mut v, client_id);
-                        let _ = sock.send(&v).await;
+                        inject_client_id(pkt, client_id);
+                        let _ = sock.send(pkt).await;
                     }
                     _ => {}
                 }
@@ -636,7 +700,7 @@ pub async fn verify_endpoint_keep_session(
                         if data_check {
                             let dp_elapsed = verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await?;
                             return Ok((dp_elapsed, EstablishedSession {
-                                tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                                tunn: share(tunn),
                                 sock: Arc::new(sock),
                                 detour,
                                 peer,
@@ -644,7 +708,7 @@ pub async fn verify_endpoint_keep_session(
                             }));
                         }
                         return Ok((elapsed, EstablishedSession {
-                            tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                            tunn: share(tunn),
                             sock: Arc::new(sock),
                             detour,
                             peer,
@@ -652,16 +716,15 @@ pub async fn verify_endpoint_keep_session(
                         }));
                     }
                     TunnResult::WriteToNetwork(pkt) => {
-                        let mut pkt_vec = pkt.to_vec();
-                        inject_client_id(&mut pkt_vec, &client_id);
-                        log::trace!("[wg] sending response {} bytes", pkt_vec.len());
-                        sock.send(&pkt_vec).await?;
+                        inject_client_id(pkt, &client_id);
+                        log::trace!("[wg] sending response {} bytes", pkt.len());
+                        sock.send(pkt).await?;
                         let elapsed = start.elapsed();
                         log::trace!("[wg] handshake success in {:?}", elapsed);
                         if data_check {
                             let dp_elapsed = verify_dataplane(&sock, &mut tunn, &client_id, local_ipv4, start, deadline).await?;
                             return Ok((dp_elapsed, EstablishedSession {
-                                tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                                tunn: share(tunn),
                                 sock: Arc::new(sock),
                                 detour,
                                 peer,
@@ -669,7 +732,7 @@ pub async fn verify_endpoint_keep_session(
                             }));
                         }
                         return Ok((elapsed, EstablishedSession {
-                            tunn: Arc::new(Mutex::new(Box::new(tunn))),
+                            tunn: share(tunn),
                             sock: Arc::new(sock),
                             detour,
                             peer,
@@ -701,10 +764,9 @@ pub async fn verify_endpoint_keep_session(
 
                 match tunn.update_timers(&mut out_buf) {
                     TunnResult::WriteToNetwork(pkt) => {
-                        let mut pkt_vec = pkt.to_vec();
-                        inject_client_id(&mut pkt_vec, &client_id);
-                        log::trace!("[wg] timer generated {} byte handshake packet", pkt_vec.len());
-                        sock.send(&pkt_vec).await?;
+                        inject_client_id(pkt, &client_id);
+                        log::trace!("[wg] timer generated {} byte handshake packet", pkt.len());
+                        sock.send(pkt).await?;
                     }
                     TunnResult::Err(e) => {
                         return Err(AetherError::Other(format!("wireguard timer failed: {e:?}")));
@@ -894,6 +956,54 @@ mod tests {
                 "{kind:?} should be fatal"
             );
         }
+    }
+
+    /// Pins the boringtun contract the recv task relies on: packets queued
+    /// while a handshake is in flight only come out through repeated
+    /// `decapsulate(None, &[], ..)` calls after the handshake completes.
+    #[test]
+    fn packets_queued_during_a_handshake_are_released_by_draining_decapsulate() {
+        let a_secret = StaticSecret::from([1u8; 32]);
+        let b_secret = StaticSecret::from([2u8; 32]);
+        let a_public = PublicKey::from(&a_secret);
+        let b_public = PublicKey::from(&b_secret);
+        let mut a = Tunn::new(a_secret, b_public, None, None, 0, None);
+        let mut b = Tunn::new(b_secret, a_public, None, None, 1, None);
+
+        let probe = build_dataplane_probe(Ipv4Addr::new(172, 16, 0, 2));
+        let mut a_buf = vec![0u8; MAX_PACKET];
+        let mut b_buf = vec![0u8; MAX_PACKET];
+
+        let init = match a.encapsulate(&probe, &mut a_buf) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected a handshake initiation, got {other:?}"),
+        };
+        for _ in 0..2 {
+            assert!(
+                matches!(a.encapsulate(&probe, &mut a_buf), TunnResult::Done),
+                "further packets must be queued while the handshake is pending"
+            );
+        }
+
+        let response = match b.decapsulate(None, &init, &mut b_buf) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected a handshake response, got {other:?}"),
+        };
+
+        assert!(matches!(
+            a.decapsulate(None, &response, &mut a_buf),
+            TunnResult::WriteToNetwork(_)
+        ));
+
+        let mut released = 0;
+        for _ in 0..MAX_QUEUED_DRAIN {
+            match a.decapsulate(None, &[], &mut a_buf) {
+                TunnResult::WriteToNetwork(_) => released += 1,
+                TunnResult::Done => break,
+                other => panic!("unexpected drain result {other:?}"),
+            }
+        }
+        assert_eq!(released, 3, "every queued packet has to be released");
     }
 
     #[tokio::test]
