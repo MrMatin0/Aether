@@ -1631,12 +1631,17 @@ mod tests {
     fn tx_buffers_are_recycled_from_consumed_rx_packets() {
         let mut device = StackDevice::new(1400);
         device.rx.push_back(vec![0u8; 1400]);
-        let (rx, _tx) = device.receive(Instant::now()).expect("a queued packet");
-        rx.consume(|_| ());
+        {
+            let (rx, tx) = device.receive(Instant::now()).expect("a queued packet");
+            drop(tx);
+            rx.consume(|_| ());
+        }
         assert_eq!(device.pool.borrow().len(), 1);
 
-        let tx = device.transmit(Instant::now()).expect("room to transmit");
-        tx.consume(60, |buf| buf.fill(7));
+        {
+            let tx = device.transmit(Instant::now()).expect("room to transmit");
+            tx.consume(60, |buf| buf.fill(7));
+        }
         assert_eq!(device.pool.borrow().len(), 0, "the pooled buffer was reused");
         assert_eq!(device.tx.back().map(Vec::len), Some(60));
     }
