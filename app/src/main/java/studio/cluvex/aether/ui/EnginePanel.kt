@@ -18,16 +18,6 @@ private enum class AppPicker { SPLIT, BLOCKED }
 /**
  * Renders ONE engine category, because each of them is now its own
  * destination.
- *
- * This replaces AdvancedPanel, which owned a row of seven filter chips and
- * therefore owned navigation as well as editing. Two consequences of that are
- * gone with it: the chip row wrapped onto three lines at normal font scale, and
- * every category shared one scroll position, so returning to "Connection"
- * landed you wherever "Tuning" had been left.
- *
- * The [ProfileEdit] closure still rebases each change on the LATEST profile
- * rather than the one captured at composition, and still refuses to write while
- * the tunnel is up.
  */
 @Composable
 internal fun EngineDestination(
@@ -52,9 +42,6 @@ internal fun EngineDestination(
     }
     Column(modifier.fillMaxWidth()) {
         when (page) {
-            // MASQUE-in-MASQUE is a protocol, so its two optional endpoints
-            // travel with the protocol picker. MASQUE over HTTP/2 only applies
-            // to the MASQUE transports, so it travels with the picker too.
             SettingsPage.CONNECTION -> ConnectionSection(
                 protocol = profile.protocol, scanMode = profile.scanMode,
                 endpointMode = profile.endpointMode, manualPeer = profile.manualPeer,
@@ -63,9 +50,6 @@ internal fun EngineDestination(
                 masqueHttp2 = profile.masqueHttp2,
                 enabled = enabled, edit = edit,
             )
-            // psiphonConfig is deliberately NOT passed: the Psiphon core ships
-            // its own client config, so there is no field to fill. Neither are
-            // the Tor exit options: the Chain page no longer offers them.
             SettingsPage.CHAIN -> ChainSection(
                 chain = profile.chain, psiphonRegion = profile.psiphonRegion,
                 psiphonProtocol = profile.psiphonProtocol,
@@ -73,8 +57,6 @@ internal fun EngineDestination(
                 psiphonCdnSni = profile.psiphonCdnSni,
                 enabled = enabled, edit = edit,
             )
-            // The chain is passed so the page can say when bridges are
-            // configured but nothing in the current chain will use them.
             SettingsPage.BRIDGES -> BridgeSection(
                 bridgeMode = profile.torBridgeMode, transport = profile.torBridgeTransport,
                 bridgeLines = profile.torBridgeLines, chain = profile.chain,
@@ -87,6 +69,8 @@ internal fun EngineDestination(
                     fragmentDelay = profile.fragmentDelay, ech = profile.ech,
                     quicV2Opener = profile.quicV2Opener,
                     dnsServers = profile.dnsServers, socketMark = profile.socketMark,
+                    protocol = profile.protocol, masqueHttp2 = profile.masqueHttp2,
+                    spoofMode = profile.spoofMode, spoofSni = profile.spoofSni,
                     enabled = enabled, edit = edit,
                 )
                 Hint(stringResource(R.string.settings_expert_note))
@@ -130,8 +114,6 @@ internal fun EngineDestination(
                     enabled = enabled, edit = edit,
                 )
                 Spacer(Modifier.height(32.dp))
-                // Resource limits. Next to the other last-resort dials, because
-                // that is what they are.
                 CoreResourceSection(
                     maxClients = profile.maxClients, halfCloseSecs = profile.halfCloseSecs,
                     tcpKeepaliveSecs = profile.tcpKeepaliveSecs,
@@ -141,7 +123,6 @@ internal fun EngineDestination(
                 Hint(stringResource(R.string.settings_expert_note))
             }
             SettingsPage.RESET -> ResetSection(enabled = enabled, edit = edit)
-            // Destinations that do not touch the engine render their own panel.
             SettingsPage.SHARING, SettingsPage.APPEARANCE, SettingsPage.AUTOMATION,
             SettingsPage.HISTORY, SettingsPage.SETUPS, SettingsPage.ABOUT -> Unit
         }

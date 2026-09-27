@@ -24,15 +24,12 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 
 /*
  * Enum -> localized label, in one place.
- *
- * These used to be private helpers inside AdvancedPanel, which meant the home
- * screen could not name the scan mode it was waiting on without duplicating the
- * mapping. Shared now, so a label is defined exactly once.
  */
 
 @Composable
@@ -88,6 +85,14 @@ internal fun noizeLabel(n: Noize): String = when (n) {
 }
 
 @Composable
+internal fun spoofModeLabel(m: SpoofMode): String = when (m) {
+    SpoofMode.OFF -> stringResource(R.string.spoof_mode_off)
+    SpoofMode.SNI_SPLIT -> stringResource(R.string.spoof_mode_sni_split)
+    SpoofMode.STREAM_SPLIT -> stringResource(R.string.spoof_mode_stream_split)
+    SpoofMode.DECOY -> stringResource(R.string.spoof_mode_decoy)
+}
+
+@Composable
 internal fun endpointLabel(m: EndpointMode): String = when (m) {
     EndpointMode.AUTO -> stringResource(R.string.endpoint_auto)
     EndpointMode.MANUAL_PEER -> stringResource(R.string.endpoint_peer)
@@ -122,11 +127,6 @@ internal fun chainLabel(mode: ChainMode): String = when (mode) {
 
 /**
  * WHAT the combination is for, in one line.
- *
- * Not decoration: these seven options are not a preference, they are answers to
- * seven different failures, and "Tor over Psiphon" tells a user nothing about
- * when to reach for it. Without this the fastest thing to do is pick the biggest
- * chain, which is also the slowest thing to run.
  */
 @Composable
 internal fun chainDescription(mode: ChainMode): String = when (mode) {
@@ -138,16 +138,6 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
 }
-
-/*
- * Bridges.
- *
- * Same rule as the chain modes: the NAME of a bridge source says nothing about
- * when to reach for it, and the difference between the three is the whole point.
- * A built-in bridge is public and therefore the first thing a censor blocks; a
- * requested one is handed to you alone but needs a working path to the bridge
- * server; a pasted one is only as good as wherever it came from.
- */
 
 @Composable
 internal fun bridgeModeLabel(mode: TorBridgeMode): String = when (mode) {
@@ -167,11 +157,6 @@ internal fun bridgeModeDescription(mode: TorBridgeMode): String = when (mode) {
 
 /**
  * The one-line form of [bridgeModeDescription].
- *
- * Both exist because the picker shows the full description only for the source
- * that is actually selected. Four two-line descriptions stacked is most of a
- * phone screen spent on three options the user has already rejected, and the
- * detail only decides anything at the moment of choosing.
  */
 @Composable
 internal fun bridgeModeTag(mode: TorBridgeMode): String = when (mode) {
@@ -214,13 +199,6 @@ internal fun bridgeTransportIcon(transport: BridgeTransport): ImageVector = when
     BridgeTransport.MEEK -> Icons.Rounded.Cloud
     BridgeTransport.VANILLA -> Icons.Rounded.Link
 }
-
-/*
- * Theme and language live here too, because the settings index paints the
- * CURRENT theme and language on the Appearance row. They were private inside
- * AppearancePanel, which is the same mistake as the scan labels: one screen
- * owning a name every other screen also needs.
- */
 
 @Composable
 internal fun themeModeLabel(mode: ThemeMode): String = when (mode) {

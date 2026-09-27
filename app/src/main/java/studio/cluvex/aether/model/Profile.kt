@@ -190,6 +190,67 @@ enum class TeamAuth { OFF, SERVICE_TOKEN, EMAIL, TOKEN }
 enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("warn"), INFO("info"), DEBUG("debug") }
 
 /**
+ * The MASQUE "spoofing" strategy: how the TLS ClientHello toward the edge is
+ * shaped for DPI, on top of the SNI it genuinely carries.
+ *
+ * WHY THE NAMES DO NOT MATCH THE REFERENCE REPO. The reference (SPOOOOOOOFING)
+ * advertises `wrong_seq` and `custom_decoy`, but its code does neither: its
+ * "wrong_seq" writes the stream in several pieces (it never touches a TCP
+ * sequence number - userspace cannot), and its "custom_decoy" sends the real
+ * ClientHello straight away (no decoy is ever generated). Shipping those names
+ * here would document behaviour the code does not have, so each mode is named
+ * for what the engine actually does:
+ *
+ *  - [OFF]        : nothing extra; the plain handshake.
+ *  - [SNI_SPLIT]  : the write that carries the ClientHello is cut in the middle
+ *                   of the server name, so a stateless DPI keyword match on the
+ *                   SNI never sees it whole. (The reference's "sni_split" cut
+ *                   at a fixed byte 14, which lands wherever it lands; the
+ *                   engine finds the actual hostname.)
+ *  - [STREAM_SPLIT]: the ClientHello is written in several small pieces. This
+ *                   is what the reference's `wrong_seq` option really does.
+ *  - [DECOY]      : EXPERIMENTAL. A valid but empty-hello-shaped prefix record
+ *                   is sent before the real ClientHello on the same TCP stream.
+ *                   Phase 1 established the reference proves nothing about
+ *                   this working (its builder emits a malformed record), so it
+ *                   is off by default and the UI says what it is.
+ *
+ * All of these only ever apply to the MASQUE HTTP/2 carrier (the one TCP
+ * stream the app controls end to end). WireGuard and gool have no TLS
+ * ClientHello at all; HTTP/3's is inside QUIC crypto frames the engine does
+ * not fragment. The engine env var is `AETHER_MASQUE_H2_SPOOF`; a value it
+ * does not know is ignored rather than fatal, so an older core silently runs
+ * without spoofing instead of refusing to start.
+ */
+enum class SpoofMode(val engineValue: String) {
+    OFF("off"),
+    SNI_SPLIT("sni_split"),
+    STREAM_SPLIT("stream_split"),
+    DECOY("decoy"),
+    ;
+
+    companion object {
+        /**
+         * Reads a stored/transported name, or null for anything unrecognised.
+         * The reference repo's option names are accepted as aliases where the
+         * behaviour matches what its code ACTUALLY does ("wrong_seq" splits
+         * the stream), so a config imported from a write-up about it does not
+         * fall back to OFF without a word.
+         */
+        fun fromStored(raw: String?): SpoofMode? {
+            val name = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+            entries.firstOrNull { it.engineValue == name || it.name.lowercase() == name }
+                ?.let { return it }
+            return when (name) {
+                "wrong_seq", "wrongseq", "split" -> STREAM_SPLIT
+                "fake_client_hello", "fake", "custom_decoy", "client_hello" -> DECOY
+                else -> null
+            }
+        }
+    }
+}
+
+/**
  * User-tunable connection profile. Knows how to turn itself into the engine's
  * CLI arguments and environment variables.
  *
@@ -526,6 +587,33 @@ data class ConnectionProfile(
      */
     val psiphonCdnSni: String = "",
 
+    // ---- Added in 2.2.0: MASQUE spoofing (SPOOOOOOOFING feature parity) ----
+
+    /**
+     * How the ClientHello toward the MASQUE edge is shaped; see [SpoofMode].
+     * [SpoofMode.OFF] by default: every one of these changes the bytes on the
+     * wire, and an untested default that changes the handshake is how a
+     * feature ships as an outage.
+     */
+    val spoofMode: SpoofMode = SpoofMode.OFF,
+
+    /**
+     * A custom SNI to put in the ClientHello toward the MASQUE edge, INSTEAD
+     * of the default `consumer-masque.cloudflareclient.com`. Blank = default.
+     *
+     * SECURITY: this works because the engine pins the edge certificate's
+     * public key instead of verifying a hostname, so a name the cert does not
+     * cover still cannot open the connection to a man in the middle. It is
+     * validated with the same rules as a hostname on the wire (see
+     * [sanitizedSpoofSni]) and only ever reaches the MASQUE transports
+     * ([effectiveSpoofMode]); WireGuard and gool have no ClientHello to carry it.
+     *
+     * Whether a given edge ACCEPTS a different SNI is a network question, not
+     * a code one - the connection either validates end to end or it does not,
+     * and the engine already refuses to expose the proxy until it does.
+     */
+    val spoofSni: String = "",
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -567,6 +655,28 @@ data class ConnectionProfile(
      */
     val sendsEch: Boolean
         get() = ech && !protocol.isMasque
+
+    /**
+     * The spoofing mode that actually reaches the engine for this profile.
+     *
+     * Spoofing shapes a TLS ClientHello, which only the MASQUE HTTP/2 carrier
+     * sends on a plain TCP stream the app controls. On WireGuard / gool there
+     * is no ClientHello at all, and on HTTP/3 it lives inside QUIC crypto
+     * frames, so a stored non-OFF mode on any of those is answered with OFF
+     * here rather than sent to an engine that would ignore it silently. The UI
+     * says the same thing, so the stored value is kept for when the user comes
+     * back to a MASQUE transport - this is about what is EMITTED, not what is
+     * remembered.
+     */
+    val effectiveSpoofMode: SpoofMode
+        get() = if (protocol.isMasque && masqueHttp2) spoofMode else SpoofMode.OFF
+
+    /**
+     * The SNI the MASQUE ClientHello will carry: the user's [spoofSni] when it
+     * is set and the transport is MASQUE, otherwise the engine default.
+     */
+    val effectiveSpoofSni: String
+        get() = if (protocol.isMasque) sanitizedSpoofSni().orEmpty() else ""
 
     /**
      * The bridge lines to configure tor with, unvalidated.
@@ -702,6 +812,11 @@ data class ConnectionProfile(
 
         sanitizedMark()?.let { args += "--mark"; args += it }
 
+        // Spoofing deliberately reaches the engine through the ENVIRONMENT
+        // (see toEnv), never as an argument: an unknown option is fatal to an
+        // older core, an unknown variable is ignored, and a spoofed handshake
+        // must never be the reason a tunnel refuses to start.
+
         // Deliberately NO --tor / --tor-reverse / --tor-only and NO --psiphon /
         // --psiphon-reverse / --psiphon-only here. Tor is the app's TorCore and
         // Psiphon its PsiphonCore, both reached through the chain modes; see
@@ -713,6 +828,15 @@ data class ConnectionProfile(
     /** Environment variables for the engine process. */
     fun toEnv(): Map<String, String> = buildMap {
         put("AETHER_MASQUE_HTTP2", if (masqueHttp2) "1" else "0")
+
+        // Spoofing: the mode only when it can take effect (see
+        // effectiveSpoofMode), the SNI whenever the transport is MASQUE. Both
+        // are ignored by a core that does not know them, which is exactly the
+        // failure mode wanted for a handshake experiment.
+        if (effectiveSpoofMode != SpoofMode.OFF) {
+            put("AETHER_MASQUE_H2_SPOOF", effectiveSpoofMode.engineValue)
+        }
+        effectiveSpoofSni.takeIf { it.isNotEmpty() }?.let { put("AETHER_MASQUE_SNI", it) }
 
         // Which addresses the engine's scanner may consider.
         //
@@ -811,6 +935,22 @@ data class ConnectionProfile(
         .filter { it.isNotEmpty() && RULE_ENTRY.matches(it) }
         .distinct()
         .take(MAX_ROUTE_RULES)
+
+    /**
+     * The custom SNI, normalised and validated, or null when unusable.
+     *
+     * Trimmed, lower-cased, one trailing root dot allowed, and then the same
+     * grammar a hostname field on the wire must satisfy: LDH labels of at most
+     * 63 bytes, at least one dot (a bare "localhost" tells DPI nothing useful
+     * and is never a real edge name), 253 chars overall. Anything else - a
+     * pasted URL, a name with a scheme, an emoji - is dropped so it can never
+     * land inside a TLS record the engine builds.
+     */
+    fun sanitizedSpoofSni(): String? {
+        val text = spoofSni.trim().trimEnd('.').lowercase()
+        if (text.isEmpty() || text.length > 253 || !text.contains('.')) return null
+        return text.takeIf { SNI_ENTRY.matches(it) }
+    }
 
     /**
      * How long to wait for the engine to open the local SOCKS5 port before
@@ -936,5 +1076,14 @@ data class ConnectionProfile(
 
         /** Decimal or `0x` hex; range checked in [sanitizedMark]. */
         private val MARK_ENTRY = Regex("^(?:0[xX][0-9A-Fa-f]{1,8}|\\d{1,10})$")
+
+        /**
+         * One hostname label per dot-separated part, LDH only (letters, digits,
+         * hyphen; no leading/trailing hyphen per label), at least two labels.
+         * The SNI field is a hostname by definition, and this is the same
+         * grammar [studio.cluvex.aether.core.Hostname] enforces on the wire.
+         */
+        private val SNI_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+        private val SNI_ENTRY = Regex("^$SNI_LABEL(?:\\.$SNI_LABEL)+$")
     }
 }

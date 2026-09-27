@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MASQUE spoofing (2.2.0): shaping the TLS ClientHello for DPI.
+         The mode names say what the engine ACTUALLY does, not what the
+         reference repo called the option - see SpoofMode in Profile.kt. -->
+    <string name="spoof_mode_title">ClientHello spoofing (MASQUE)</string>
+    <string name="spoof_mode_desc">Shapes the TLS handshake toward the edge so DPI has a harder time matching it. Off by default; each mode changes the bytes on the wire.</string>
+    <string name="spoof_mode_off">Off</string>
+    <string name="spoof_mode_sni_split">SNI split</string>
+    <string name="spoof_mode_stream_split">Stream split</string>
+    <string name="spoof_mode_decoy">Decoy (experimental)</string>
+    <string name="spoof_mode_needs_h2">Split and decoy modes only apply to the HTTP/2 carrier. Turn on "MASQUE over HTTP/2" on the Connection page to use them; on HTTP/3 the ClientHello sits inside QUIC frames the engine does not split.</string>
+    <string name="spoof_mode_unsupported">Spoofing shapes a TLS ClientHello, which WireGuard and WARP×2 do not send. Pick a MASQUE transport on the Connection page to use it.</string>
+    <string name="spoof_decoy_warning">Experimental: sends a harmless prefix record before the real ClientHello. Whether it helps depends on the network, and it can also break a strict middlebox. Certificate pinning stays on, so a fake answer still cannot open the tunnel - the connection either validates end to end or fails.</string>
+    <string name="spoof_sni_label">Custom SNI</string>
+    <string name="spoof_sni_hint">e.g. speed.cloudflare.com</string>
+    <string name="spoof_sni_help">Presented to the MASQUE edge instead of the default name. The edge certificate is pinned, so a wrong name cannot open you to interception - but the edge may also refuse it. Leave empty for the default. Applies from the next connect.</string>
+    <string name="hub_state_spoof_sni">SNI %1$s</string>
+</resources>

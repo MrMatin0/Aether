@@ -20,6 +20,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 
@@ -119,6 +120,11 @@ class ProfileStore(private val context: Context) {
         val psiphonProtocol = stringPreferencesKey("psiphonProtocol")
         val psiphonCdnIps = stringPreferencesKey("psiphonCdnIps")
         val psiphonCdnSni = stringPreferencesKey("psiphonCdnSni")
+        // Added in 2.2.0 (MASQUE spoofing). Both keys read with the profile's
+        // own defaults, so a profile saved before they existed means OFF/blank
+        // exactly as a fresh one does.
+        val spoofMode = stringPreferencesKey("spoofMode")
+        val spoofSni = stringPreferencesKey("spoofSni")
 
         // ---- RETIRED keys: read once for migration, removed on save ----
 
@@ -299,6 +305,12 @@ class ProfileStore(private val context: Context) {
             psiphonProtocol = PsiphonProtocol.fromStored(prefs[Keys.psiphonProtocol]) ?: d.psiphonProtocol,
             psiphonCdnEdgeIps = prefs[Keys.psiphonCdnIps] ?: "",
             psiphonCdnSni = prefs[Keys.psiphonCdnSni] ?: "",
+            // ---- MASQUE spoofing (2.2.0). Not valueOf(): fromStored also
+            // understands the reference repo's option names ("wrong_seq" and
+            // friends), and anything unrecognised keeps the OFF default
+            // instead of throwing the whole profile away.
+            spoofMode = SpoofMode.fromStored(prefs[Keys.spoofMode]) ?: d.spoofMode,
+            spoofSni = prefs[Keys.spoofSni] ?: "",
         )
     }
 
@@ -370,6 +382,11 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.psiphonProtocol] = profile.psiphonProtocol.name
             prefs[Keys.psiphonCdnIps] = profile.psiphonCdnEdgeIps
             prefs[Keys.psiphonCdnSni] = profile.psiphonCdnSni
+            // ---- MASQUE spoofing (2.2.0). Stored verbatim, even on a
+            // transport where it cannot take effect: the user set it, and
+            // effectiveSpoofMode decides what is EMITTED per connect.
+            prefs[Keys.spoofMode] = profile.spoofMode.name
+            prefs[Keys.spoofSni] = profile.spoofSni
             // Retired keys. The protocol written above already carries the
             // MIM choice, so the old switch has nothing left to say, and the
             // engine-Tor keys describe a Tor this app no longer runs.

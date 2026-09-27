@@ -10,34 +10,27 @@ import androidx.compose.ui.res.stringResource
 import studio.cluvex.aether.R
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Noize
+import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.noizeLabel
+import studio.cluvex.aether.ui.spoofModeLabel
 
 /**
  * How the traffic is shaped on the wire: obfuscation, packet sizes, TLS/QUIC
  * tricks, resolvers. Expert depth only.
  *
- * ROOT CAUSE THIS FIXES (usability): the fragment switch lived here, but the two
- * inputs that only mean anything WHEN it is on - chunk size and inter-fragment
- * delay - lived in the Engine tuning card, two cards and roughly a screen and a
- * half further down. Turning fragmentation on made two fields appear somewhere
- * the user was not looking, and reading the tuning card top to bottom showed two
- * inputs whose owning switch was nowhere on screen. They are one setting, so
- * they are now one group, and the switch sits last in the stack so its extra
- * inputs do not split the row rhythm above it.
- *
- * The QUIC v2 opener and the socket mark live here too. They used to sit on a
- * separate card named after the engine version that introduced them, which
- * told the user when a setting arrived rather than what it does; both are
- * on-the-wire behaviour, so this is their page.
- *
- * "MASQUE over HTTP/2" used to live here as well. It only means anything for
- * the MASQUE transports, so it now sits under the protocol picker on the
- * Connection page and only appears while MASQUE or MASQUE-in-MASQUE is chosen
- * (see ConnectionSection).
+ * SPOOFING lives here rather than on its own page because it is one more way
+ * the ClientHello is shaped, next to fragmentation and ECH - the settings it
+ * combines with, not a feature to hunt for. The whole group is only shown
+ * while the protocol CAN shape a ClientHello at all: the MASQUE transports for
+ * the SNI, and the HTTP/2 carrier specifically for the split/decoy modes
+ * (which is where the reference repo's techniques apply). On WireGuard and
+ * gool there is no TLS ClientHello on the wire, so the card says so instead
+ * of offering switches that would do nothing.
  */
 @Composable
 internal fun TransportSection(
@@ -51,6 +44,10 @@ internal fun TransportSection(
     quicV2Opener: Boolean,
     dnsServers: String,
     socketMark: String,
+    protocol: Protocol,
+    masqueHttp2: Boolean,
+    spoofMode: SpoofMode,
+    spoofSni: String,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -134,6 +131,46 @@ internal fun TransportSection(
                 placeholder = stringResource(R.string.fragment_delay_hint),
                 enabled = enabled,
             )
+        }
+
+        // ----------------------------------------------------- spoofing --
+        // The SNI applies to every MASQUE carrier (H2 and H3 both put it in
+        // their ClientHello); the split/decoy modes only the HTTP/2 one,
+        // whose TCP stream the engine writes itself. A WireGuard session has
+        // no ClientHello for any of this, so it gets the explanation rather
+        // than dead switches.
+        if (protocol.isMasque) {
+            Spacer(Modifier.height(EngineSpacing.Divider))
+            EngineDivider()
+            FieldLabel(stringResource(R.string.spoof_mode_title))
+            if (masqueHttp2) {
+                DropdownSelector(
+                    options = SpoofMode.entries,
+                    selected = spoofMode,
+                    onSelect = { value -> edit { copy(spoofMode = value) } },
+                    label = { spoofModeLabel(it) },
+                    enabled = enabled,
+                )
+                Hint(stringResource(R.string.spoof_mode_desc))
+                DependentBlock(visible = spoofMode == SpoofMode.DECOY) {
+                    Hint(stringResource(R.string.spoof_decoy_warning))
+                }
+            } else {
+                Hint(stringResource(R.string.spoof_mode_needs_h2))
+            }
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            ProfileTextField(
+                value = spoofSni,
+                onValueChange = { value -> edit { copy(spoofSni = value) } },
+                label = stringResource(R.string.spoof_sni_label),
+                placeholder = stringResource(R.string.spoof_sni_hint),
+                helpText = stringResource(R.string.spoof_sni_help),
+                enabled = enabled,
+            )
+        } else {
+            Spacer(Modifier.height(EngineSpacing.Divider))
+            EngineDivider()
+            Hint(stringResource(R.string.spoof_mode_unsupported))
         }
 
         Spacer(Modifier.height(EngineSpacing.Field))

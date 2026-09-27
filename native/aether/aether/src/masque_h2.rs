@@ -1,6 +1,9 @@
+use std::io;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use boring::pkey::PKey;
@@ -8,6 +11,7 @@ use boring::ssl::{SslConnector, SslMethod, SslVersion};
 use boring::x509::X509;
 use bytes::{BufMut, Bytes, BytesMut};
 use http::Method;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 
@@ -16,6 +20,7 @@ use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
+use self::spoof::{self, SpoofMode};
 use crate::tls;
 
 const H2_ALPN: &[u8] = b"\x02h2";
@@ -145,6 +150,97 @@ pub fn h2_peer(quic_peer: SocketAddr) -> SocketAddr {
     quic_peer
 }
 
+/// Wraps the TCP stream with the ClientHello shaping the profile asked for.
+///
+/// Spoofing runs UNDER fragmentation, so the two compose rather than replace
+/// each other: with `sni_split` the first write is cut in the middle of the
+/// server name and the fragmenter then chops those pieces further; with
+/// `decoy` the prefix record goes out before the fragmenter ever sees the
+/// real hello, so the decoy itself is always sent whole. Off means this type
+/// is a pass-through, so a profile that never opts in pays nothing.
+pub struct SpoofingStream<S> {
+    inner: S,
+    mode: SpoofMode,
+    decoy_pending: Option<std::io::Cursor<Vec<u8>>>,
+}
+
+impl<S> SpoofingStream<S> {
+    pub fn new(inner: S, mode: SpoofMode) -> Self {
+        let decoy_pending =
+            (mode == SpoofMode::Decoy).then(|| std::io::Cursor::new(spoof::decoy_record()));
+        Self {
+            inner,
+            mode,
+            decoy_pending,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for SpoofingStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for SpoofingStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+
+        // The decoy record has to be ON THE WIRE before the first byte of the
+        // real ClientHello, which is the whole point of the mode. It is small
+        // (9 bytes), so it is written whole before `buf` is even looked at.
+        if let Some(cursor) = this.decoy_pending.as_mut() {
+            let pos = cursor.position() as usize;
+            let data = &cursor.get_ref()[pos..];
+            if !data.is_empty() {
+                match Pin::new(&mut this.inner).poll_write(cx, data) {
+                    Poll::Ready(Ok(0)) => {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "decoy record could not be written",
+                        )))
+                    }
+                    Poll::Ready(Ok(n)) => {
+                        cursor.set_position((pos + n) as u64);
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            this.decoy_pending = None;
+        }
+
+        let cut = match this.mode {
+            SpoofMode::SniSplit => spoof::sni_split_point(buf),
+            SpoofMode::StreamSplit => spoof::stream_split_points(buf.len()).first().copied(),
+            SpoofMode::Off | SpoofMode::Decoy => None,
+        };
+        match cut {
+            Some(at) if at > 0 && at < buf.len() => {
+                Pin::new(&mut this.inner).poll_write(cx, &buf[..at])
+            }
+            _ => Pin::new(&mut this.inner).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> {
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
@@ -234,7 +330,8 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
         let tcp = dial(cfg.peer).await?;
         let _ = tcp.set_nodelay(true);
         let fragment = FragmentingStream::new(tcp, FragmentConfig::from_env());
-        let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
+        let spoofed = SpoofingStream::new(fragment, SpoofMode::from_env());
+        let tls = tokio_boring::connect(tls_config, &cfg.sni, spoofed)
             .await
             .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
         let (h2, connection) = h2_builder()
@@ -370,7 +467,16 @@ pub async fn run(
     }
     let fragment = FragmentingStream::new(tcp, frag_cfg);
 
-    let tls = tokio_boring::connect(tls_config, &cfg.sni, fragment)
+    let spoof_mode = SpoofMode::from_env();
+    if spoof_mode != SpoofMode::Off {
+        log_or_debug(
+            quiet,
+            format!("[h2] client hello spoofing: {}", spoof_mode.label()),
+        );
+    }
+    let spoofed = SpoofingStream::new(fragment, spoof_mode);
+
+    let tls = tokio_boring::connect(tls_config, &cfg.sni, spoofed)
         .await
         .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
     log_or_debug(
@@ -386,9 +492,6 @@ pub async fn run(
         .await
         .map_err(|e| AetherError::Masque(format!("h2 handshake: {e}")))?;
 
-    // Worth saying out loud: this is the ceiling on a download, at
-    // window / round-trip-time, and it is the first thing to look at when the
-    // HTTP/2 carrier is slower than the line underneath it.
     log_or_debug(
         quiet,
         format!(
@@ -502,9 +605,6 @@ pub async fn run(
 
         if let Some(dl) = pong_deadline {
             if Instant::now() >= dl {
-                // The loop can spend a while parked on a full inbound queue, and
-                // the pong may have arrived in the meantime. Look before
-                // declaring the connection stalled.
                 let late = futures::FutureExt::now_or_never(std::future::poll_fn(|cx| {
                     ping_pong.poll_pong(cx)
                 }));
@@ -592,10 +692,6 @@ pub async fn run(
                         let chunk_len = chunk.len();
                         capsules.push(&chunk);
                         let got_data = drain_capsules(&mut capsules, &inbound_tx, &addr_tx).await;
-                        // Capacity goes back to the edge only once the packets
-                        // are with the netstack, so a slow netstack slows the
-                        // edge through HTTP/2 flow control instead of losing
-                        // data the outer TCP already delivered.
                         let _ = recv_body.flow_control().release_capacity(chunk_len);
                         if got_data && !ready_fired {
                             validate_successes += 1;
@@ -675,13 +771,9 @@ async fn pump_outbound(
                     return Ok(());
                 };
 
-                // Once h2 has written out the previous batch, this takes the
-                // same allocation back instead of making a new one.
                 batch.reserve(H2_SEND_BATCH_BYTES);
                 append_datagram_capsule(&mut batch, &packet);
 
-                // Anything already queued behind this packet rides along, so a
-                // burst costs one frame rather than one frame per packet.
                 while batch.len() < H2_SEND_BATCH_BYTES {
                     match outbound_rx.try_recv() {
                         Ok(next) => append_datagram_capsule(&mut batch, &next),
@@ -689,7 +781,6 @@ async fn pump_outbound(
                     }
                 }
 
-                // split() hands the filled bytes to h2 without copying them.
                 let framed = batch.split().freeze();
                 send_capsule(&mut send, framed).await?;
             }
@@ -740,8 +831,7 @@ async fn send_capsule(send: &mut h2::SendStream<Bytes>, data: Bytes) -> Result<(
 
 /// Hands every complete capsule to where it belongs. IP packets go to the
 /// netstack, and when its queue is full this waits for room rather than
-/// dropping the packet: the outer TCP already delivered these bytes, and
-/// throwing them away would make the inner TCP retransmit across it.
+/// dropping the packet.
 async fn drain_capsules(
     capsules: &mut CapsuleParser,
     inbound_tx: &mpsc::Sender<Vec<u8>>,
@@ -809,9 +899,229 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
     }
 }
 
+/// MASQUE ClientHello "spoofing" for the HTTP/2 carrier.
+///
+/// Lives here and not in its own file because the only consumer is this
+/// transport: `lib.rs` and every other module stay untouched, which keeps
+/// the patch one sync can drop cleanly.
+///
+/// WHAT THIS IS NOT: the reference repo (MrMatin0/SPOOOOOOOFING) ships options
+/// named `wrong_seq` and `custom_decoy` whose code does neither - its
+/// "wrong_seq" writes the stream in several pieces (userspace cannot touch a
+/// TCP sequence number; the kernel owns those) and its "custom_decoy" sends
+/// the real ClientHello immediately (no decoy is ever generated). Its
+/// `fake_client_hello` builder emits a record whose declared length does not
+/// match its body, which a strict peer would reject on sight.
+///
+/// So every mode here is named for what the code ACTUALLY does:
+///
+///  - `sni_split`    - the first write is cut in the middle of the server
+///                     name, found by parsing the ClientHello (fragment.rs
+///                     already does exactly this when asked).
+///  - `stream_split` - the first write is cut into a few small pieces. This
+///                    is what the reference's `wrong_seq` really performs.
+///  - `decoy`        - a well-formed, deliberately empty TLS prefix record
+///                    (content type handshake, a HelloRequest - which a TLS
+///                    1.3 server MUST ignore per RFC 8446 §4.1.1) is sent
+///                    before the real ClientHello. EXPERIMENTAL: whether a
+///                    DPI box keys on the first record while the server
+///                    ignores it is a property of the network, not something
+///                    a unit test can prove. Off unless the user asks for it.
+///
+/// SECURITY BOUNDARY: none of this touches verification. The edge certificate
+/// is pinned by SPKI hash in tls.rs whether or not a mode is on, so a mode
+/// that made the handshake easier to fake could never let a middlebox in -
+/// the connection validates end to end or it does not open.
+pub mod spoof {
+    use std::env;
+
+    use crate::fragment::sni_host_range;
+
+    /// One spoofing strategy. Parsed from `AETHER_MASQUE_H2_SPOOF`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SpoofMode {
+        /// Nothing extra; the plain handshake.
+        Off,
+        /// Cut the first write in the middle of the server name.
+        SniSplit,
+        /// Cut the first write into a few small pieces.
+        StreamSplit,
+        /// Send a HelloRequest record before the real ClientHello. Experimental.
+        Decoy,
+    }
+
+    impl SpoofMode {
+        /// Parses a mode name. Unknown values are `Off` rather than an error: a
+        /// setting that changes the handshake must never be the reason a tunnel
+        /// refuses to start, and the env var travels on every launch.
+        pub fn parse(raw: &str) -> SpoofMode {
+            match raw.trim().to_lowercase().as_str() {
+                "sni_split" | "snisplit" => SpoofMode::SniSplit,
+                // "wrong_seq" is what the reference called stream splitting.
+                "stream_split" | "streamsplit" | "wrong_seq" | "split" => SpoofMode::StreamSplit,
+                "decoy" | "fake_client_hello" | "custom_decoy" => SpoofMode::Decoy,
+                _ => SpoofMode::Off,
+            }
+        }
+
+        pub fn from_env() -> SpoofMode {
+            match env::var("AETHER_MASQUE_H2_SPOOF") {
+                Ok(value) => SpoofMode::parse(&value),
+                Err(_) => SpoofMode::Off,
+            }
+        }
+
+        pub fn label(&self) -> &'static str {
+            match self {
+                SpoofMode::Off => "off",
+                SpoofMode::SniSplit => "sni_split",
+                SpoofMode::StreamSplit => "stream_split",
+                SpoofMode::Decoy => "decoy",
+            }
+        }
+    }
+
+    /// The SNI the MASQUE transports should present, honouring
+    /// `AETHER_MASQUE_SNI`. Falls back to the built-in default when the variable
+    /// is unset or holds something that could never be a hostname on the wire.
+    pub fn configured_sni() -> String {
+        match env::var("AETHER_MASQUE_SNI") {
+            Ok(raw) => match sanitize_sni(&raw) {
+                Some(host) => host,
+                None => {
+                    if !raw.trim().is_empty() {
+                        log::warn!(
+                            "[-] AETHER_MASQUE_SNI {:?} is not a usable hostname; using the default",
+                            raw.trim()
+                        );
+                    }
+                    crate::consts::CONNECT_SNI.to_string()
+                }
+            },
+            Err(_) => crate::consts::CONNECT_SNI.to_string(),
+        }
+    }
+
+    /// Hostname grammar for a name that is about to go into a TLS record:
+    /// LDH labels of at most 63 bytes, at least two labels, 253 bytes overall,
+    /// one trailing root dot allowed.
+    fn sanitize_sni(raw: &str) -> Option<String> {
+        let text = raw.trim().trim_end_matches('.').to_lowercase();
+        if text.is_empty() || text.len() > 253 || !text.contains('.') {
+            return None;
+        }
+        let valid = text.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        });
+        if valid { Some(text) } else { None }
+    }
+
+    /// A HelloRequest handshake message in its own TLS record.
+    ///
+    /// Four zero bytes of handshake body after the 0x01 type byte, wrapped in a
+    /// plain TLS record. RFC 8446 §4.1.1: a server that receives a HelloRequest
+    /// at any time MUST ignore it, so the real ClientHello right behind it is
+    /// processed exactly as if this record were never sent.
+    pub fn decoy_record() -> Vec<u8> {
+        vec![
+            0x16, 0x03, 0x01, // handshake record, TLS 1.0 record version
+            0x00, 0x04, // 4 bytes of handshake message
+            0x01, 0x00, 0x00, 0x00, // HelloRequest, length 0
+        ]
+    }
+
+    /// How the first write should be split for [SpoofMode::StreamSplit].
+    pub fn stream_split_points(total: usize) -> Vec<usize> {
+        const PIECES: [usize; 3] = [64, 32, 24];
+        let mut points = Vec::new();
+        let mut at = 0usize;
+        for piece in PIECES {
+            at += piece;
+            if at < total {
+                points.push(at);
+            }
+        }
+        points
+    }
+
+    /// Where [SpoofMode::SniSplit] should cut `buf`, if it holds a ClientHello
+    /// with a server name. Delegates to the parser fragmentation already trusts.
+    pub fn sni_split_point(buf: &[u8]) -> Option<usize> {
+        sni_host_range(buf).map(|(start, end)| start + (end - start) / 2)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn mode_names_parse_and_unknown_values_fall_back_to_off() {
+            assert_eq!(SpoofMode::parse("sni_split"), SpoofMode::SniSplit);
+            assert_eq!(SpoofMode::parse("stream_split"), SpoofMode::StreamSplit);
+            assert_eq!(SpoofMode::parse("decoy"), SpoofMode::Decoy);
+            assert_eq!(SpoofMode::parse("wrong_seq"), SpoofMode::StreamSplit);
+            assert_eq!(SpoofMode::parse("fake_client_hello"), SpoofMode::Decoy);
+            assert_eq!(SpoofMode::parse("custom_decoy"), SpoofMode::Decoy);
+            assert_eq!(SpoofMode::parse(""), SpoofMode::Off);
+            assert_eq!(SpoofMode::parse("off"), SpoofMode::Off);
+            assert_eq!(SpoofMode::parse("nonsense"), SpoofMode::Off);
+        }
+
+        #[test]
+        fn the_decoy_is_a_well_formed_hello_request_record() {
+            let record = decoy_record();
+            assert_eq!(record[0], 0x16, "handshake record");
+            let declared = u16::from_be_bytes([record[3], record[4]]) as usize;
+            assert_eq!(declared, record.len() - 5, "length header matches the body");
+            assert_eq!(record[5], 0x01, "HelloRequest handshake type");
+            assert_eq!(&record[6..9], &[0x00, 0x00, 0x00], "HelloRequest has no body");
+        }
+
+        #[test]
+        fn stream_split_points_are_inside_the_buffer_and_increasing() {
+            let points = stream_split_points(517);
+            assert!(!points.is_empty());
+            assert!(points.iter().all(|p| *p < 517));
+            assert!(points.windows(2).all(|w| w[0] < w[1]));
+            assert!(stream_split_points(10).is_empty());
+            assert!(stream_split_points(100).iter().all(|p| *p < 100));
+        }
+
+        #[test]
+        fn sni_validation_accepts_real_names_and_rejects_garbage() {
+            assert_eq!(sanitize_sni(" speed.cloudflare.com "), Some("speed.cloudflare.com".into()));
+            assert_eq!(sanitize_sni("Example.COM."), Some("example.com".into()));
+            assert_eq!(sanitize_sni("localhost"), None, "one label hides nothing");
+            assert_eq!(sanitize_sni("https://example.com"), None);
+            assert_eq!(sanitize_sni("exa mple.com"), None);
+            assert_eq!(sanitize_sni("-bad.com"), None);
+            assert_eq!(sanitize_sni(&"a".repeat(254)), None);
+            assert_eq!(sanitize_sni(""), None);
+        }
+
+        #[test]
+        fn configured_sni_falls_back_to_the_default() {
+            env::remove_var("AETHER_MASQUE_SNI");
+            assert_eq!(configured_sni(), crate::consts::CONNECT_SNI);
+            env::set_var("AETHER_MASQUE_SNI", "speed.cloudflare.com");
+            assert_eq!(configured_sni(), "speed.cloudflare.com");
+            env::set_var("AETHER_MASQUE_SNI", "not a hostname");
+            assert_eq!(configured_sni(), crate::consts::CONNECT_SNI);
+            env::remove_var("AETHER_MASQUE_SNI");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     fn ip_packet(marker: u8) -> Vec<u8> {
         let mut pkt = vec![0u8; 24];
@@ -876,5 +1186,64 @@ mod tests {
             vec![0, 1, 2, 3],
             "every packet arrives, in order, even though the queue only holds one"
         );
+    }
+
+    // ---- SpoofingStream ----
+
+    /// Writes whatever it is given into a shared buffer so the test can look
+    /// at exactly what went on the wire, and in how many writes.
+    #[derive(Clone, Default)]
+    struct Sink(std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>);
+
+    impl AsyncWrite for Sink {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut guard = self.0.lock().unwrap();
+            guard.0.extend_from_slice(buf);
+            guard.1 += 1;
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn decoy_sends_the_prefix_record_before_the_real_bytes() {
+        let sink = Sink::default();
+        let seen = sink.clone();
+        let mut stream = SpoofingStream::new(sink, SpoofMode::Decoy);
+        stream.write_all(b"REALHELLO").await.unwrap();
+        let (bytes, _) = &*seen.0.lock().unwrap();
+        assert_eq!(&bytes[..9], spoof::decoy_record().as_slice());
+        assert_eq!(&bytes[9..], b"REALHELLO");
+    }
+
+    #[tokio::test]
+    async fn off_is_a_plain_passthrough() {
+        let sink = Sink::default();
+        let seen = sink.clone();
+        let mut stream = SpoofingStream::new(sink, SpoofMode::Off);
+        stream.write_all(&vec![7u8; 517]).await.unwrap();
+        let (bytes, writes) = &*seen.0.lock().unwrap();
+        assert_eq!(bytes.len(), 517);
+        assert_eq!(*writes, 1, "off changes nothing, not even the write count");
+    }
+
+    #[tokio::test]
+    async fn stream_split_breaks_a_large_first_write() {
+        let sink = Sink::default();
+        let seen = sink.clone();
+        let mut stream = SpoofingStream::new(sink, SpoofMode::StreamSplit);
+        stream.write_all(&vec![3u8; 517]).await.unwrap();
+        let (bytes, writes) = &*seen.0.lock().unwrap();
+        assert_eq!(bytes.len(), 517, "no byte is added or lost");
+        assert!(*writes > 1, "the write was split");
     }
 }
