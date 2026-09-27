@@ -14,7 +14,7 @@ distributed builds and to modified versions run as a network service.
 |---|---|---|
 | [Aether engine](https://github.com/CluvexStudio/Aether) | AGPL-3.0 | Vendored at `native/aether`, pinned by `native/aether/CORE_VERSION`. License vendored alongside it. |
 | [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) | MIT, with an Apache-2.0 build script | TUN-to-SOCKS forwarding. The `LICENSE` is MIT; `Android.mk` / `Application.mk` are derived from the Android Open Source Project and carry Apache-2.0. |
-| [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core) | **GPL-3.0** | **Built from source** by `scripts/build-overlay-cores.sh`, not taken as a prebuilt AAR. See the provenance note below. |
+| [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core), via [shirokhorshid's fork](https://github.com/shirokhorshid/psiphon-tunnel-core) | **GPL-3.0** | **Built from source** by `scripts/build-overlay-cores.sh`, not taken as a prebuilt AAR. By default from shirokhorshid's fork (CDN fronting), pinned at commit `df55f0a`. See the provenance note below. |
 | [Tor](https://www.torproject.org/) / [tor-android](https://github.com/guardianproject/tor-android) | BSD-3-Clause | Consumed from the Tor Project / Guardian Project published build, or built from source with `TOR_FROM_SOURCE=1`. The Guardian Project's `LICENSE` carries the 3-clause BSD text for Orbot and for Tor. |
 | [Vazirmatn](https://github.com/rastikerdar/vazirmatn) | SIL OFL 1.1 | Persian and Latin typography. Fetched by `scripts/fetch-fonts.sh`. |
 | [quiche](https://github.com/cloudflare/quiche) | BSD-2-Clause | Vendored under `native/aether/quiche`, used by the engine. License vendored with it. |
@@ -22,6 +22,11 @@ distributed builds and to modified versions run as a network service.
 Psiphon's bootstrap server list is signed and verified at fetch time; see
 `scripts/fetch-psiphon-serverlist.sh` and the release gate in
 `.github/workflows/build.yml`.
+
+The CDN fronting edge list, verify names and protocol lists in
+`core/PsiphonCdnFronting.kt` are ported from
+[shirokhorshid-android](https://github.com/shirokhorshid/shirokhorshid-android)
+(GPL-3.0). See `docs/CDN_FRONTING.md`.
 
 ### License compatibility
 
@@ -46,6 +51,11 @@ This repository does that. `scripts/build-overlay-cores.sh` cross-compiles the
 Psiphon ConsoleClient from source with the Android NDK toolchain, so the AAR is
 not a committed binary here. Recipients can inspect the build path rather than
 trust a hash of an unknown origin.
+
+The source is shirokhorshid's GPL-3.0 fork of psiphon-tunnel-core, which adds
+the FRONTED-MEEK-CDN-* protocols, fetched by full commit SHA
+(`df55f0ac0eed3d6846501744b7f086a42fcadfaf`) rather than by a moving branch.
+`PSIPHON_REPO` / `PSIPHON_REF` switch the build back to upstream.
 
 ## Names and endorsement
 
