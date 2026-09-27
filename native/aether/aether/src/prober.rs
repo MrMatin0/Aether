@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -285,6 +285,50 @@ fn after_success(st: &Strategy, found: usize) -> AfterSuccess {
     AfterSuccess::QuietFor(st.quiet_after_first)
 }
 
+/// Why candidates failed, counted by reason.
+///
+/// Aether Mobile patch (fix/masque-scan-congestion). Every failed probe used to
+/// be logged at trace only, so a scan that found nothing left a single "scan
+/// deadline reached with no gateway" line and no way to tell a filtered range
+/// from a refused CONNECT-IP, a TLS problem or a broken socket. The scan now
+/// reports the most common reasons when it ends.
+#[derive(Debug, Default)]
+struct FailureTally {
+    total: usize,
+    reasons: HashMap<String, usize>,
+}
+
+/// Longest reason text kept per failure, so one odd error cannot flood the log.
+const FAILURE_REASON_MAX_CHARS: usize = 120;
+
+impl FailureTally {
+    fn record(&mut self, reason: String) {
+        self.total += 1;
+        *self.reasons.entry(reason).or_insert(0) += 1;
+    }
+
+    /// The `top` most frequent reasons, most frequent first, as `"Nx reason"`.
+    fn summary(&self, top: usize) -> String {
+        let mut ranked: Vec<(&String, &usize)> = self.reasons.iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        ranked
+            .into_iter()
+            .take(top)
+            .map(|(reason, count)| format!("{count}x {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+fn failure_reason(path: &str, error: &dyn std::fmt::Display) -> String {
+    let text: String = error
+        .to_string()
+        .chars()
+        .take(FAILURE_REASON_MAX_CHARS)
+        .collect();
+    format!("{path}: {text}")
+}
+
 #[derive(Clone)]
 pub struct MasqueProbe {
     pub sni: String,
@@ -347,6 +391,7 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
     let mut best: Option<ProbeResult> = None;
     let mut found = 0usize;
     let mut quiet_until: Option<Instant> = None;
+    let mut failures = FailureTally::default();
 
     loop {
         let effective = match quiet_until {
@@ -371,8 +416,11 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
             item = stream.next() => {
                 match item {
                     None => break,
-                    Some(None) => continue,
-                    Some(Some(pr)) => {
+                    Some(Err(reason)) => {
+                        failures.record(reason);
+                        continue;
+                    }
+                    Some(Ok(pr)) => {
                         log::info!("[+] candidate ok {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
                         if st.early_exit_first {
                             return Ok(pr);
@@ -428,10 +476,28 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
 
     match best {
         Some(pr) => {
+            if failures.total > 0 {
+                log::debug!(
+                    "[*] {} candidate(s) failed along the way: {}",
+                    failures.total,
+                    failures.summary(3)
+                );
+            }
             log::info!("[+] best gateway {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
             Ok(pr)
         }
-        None => Err(AetherError::NoCleanEndpoint),
+        None => {
+            if failures.total > 0 {
+                log::warn!(
+                    "[-] {} candidate(s) failed; most common reasons: {}",
+                    failures.total,
+                    failures.summary(3)
+                );
+            } else {
+                log::warn!("[-] no candidate finished inside the scan budget");
+            }
+            Err(AetherError::NoCleanEndpoint)
+        }
     }
 }
 
@@ -441,7 +507,7 @@ async fn verify_one(
     port: u16,
     timeout: Duration,
     ironclad: bool,
-) -> Option<ProbeResult> {
+) -> std::result::Result<ProbeResult, String> {
     if ironclad {
         let params = crate::tunnelping::MasquePingParams {
             peer: SocketAddr::new(ip, port),
@@ -461,11 +527,11 @@ async fn verify_one(
                     "[+] ironclad verified {ip}:{port} real http round trip rtt={:?}",
                     rtt
                 );
-                Some(ProbeResult { ip, port, rtt })
+                Ok(ProbeResult { ip, port, rtt })
             }
             Err(e) => {
                 log::trace!("[-] ironclad {ip}:{port} failed real http check: {e}");
-                None
+                Err(failure_reason("ironclad", &e))
             }
         };
     }
@@ -487,10 +553,10 @@ async fn verify_one(
                 .collect(),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
-            Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
+            Ok(rtt) => Ok(ProbeResult { ip, port, rtt }),
             Err(e) => {
                 log::trace!("h2 probe {ip}:{port} -> {e}");
-                None
+                Err(failure_reason("h2", &e))
             }
         };
     }
@@ -509,10 +575,10 @@ async fn verify_one(
     };
 
     match quic::verify_masque(&vp).await {
-        Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
+        Ok(rtt) => Ok(ProbeResult { ip, port, rtt }),
         Err(e) => {
             log::trace!("probe {ip}:{port} -> {e}");
-            None
+            Err(failure_reason("quic", &e))
         }
     }
 }
@@ -827,6 +893,32 @@ mod tests {
             let st = mode.strategy();
             assert!(st.quiet_after_first < st.overall_deadline, "{}", mode.label());
         }
+    }
+
+    #[test]
+    fn failed_candidates_are_summarised_most_common_first() {
+        let mut tally = FailureTally::default();
+        for _ in 0..3 {
+            tally.record("quic: verify timeout".to_string());
+        }
+        tally.record("quic: status 403".to_string());
+        for _ in 0..2 {
+            tally.record("quic: closed before data-plane confirmation".to_string());
+        }
+        assert_eq!(tally.total, 6);
+        assert_eq!(
+            tally.summary(2),
+            "3x quic: verify timeout; 2x quic: closed before data-plane confirmation"
+        );
+        assert!(FailureTally::default().summary(3).is_empty());
+    }
+
+    #[test]
+    fn a_failure_reason_is_labelled_and_bounded() {
+        let long = "x".repeat(FAILURE_REASON_MAX_CHARS * 3);
+        let reason = failure_reason("h2", &long);
+        assert!(reason.starts_with("h2: "));
+        assert_eq!(reason.chars().count(), "h2: ".len() + FAILURE_REASON_MAX_CHARS);
     }
 
     #[test]

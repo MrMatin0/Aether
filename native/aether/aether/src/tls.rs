@@ -126,20 +126,27 @@ fn announce_once(message: String) {
 
 /// Congestion controller for the MASQUE QUIC connection.
 ///
-/// quiche falls back to CUBIC when nothing is set. CUBIC reads every loss as
-/// congestion and cuts its window, which on filtered paths with random loss
-/// (the normal case in Iran) keeps the tunnel far below what the link can
-/// carry. BBR2 models bandwidth and RTT instead and is the default here;
-/// `AETHER_QUIC_CC=cubic` or `AETHER_QUIC_CC=reno` switch back.
+/// Aether Mobile patch (fix/masque-scan-congestion). CUBIC, quiche's own
+/// default and what every engine release before PR #106 ran, is the default
+/// again. #106 made BBR2 (gcongestion) the default for the gateway scan and
+/// the tunnel alike without a field test, and MASQUE scans stopped finding
+/// gateways right after it landed: it was the only change on the scan path.
+/// quiche marks gcongestion as experimental, and it turns on packet pacing
+/// while none of this engine's send loops honour `SendInfo::at`.
+///
+/// BBR2 is still one variable away for anyone who wants to measure it:
+/// `AETHER_QUIC_CC=bbr2` (or `bbr`, `bbr2_gcongestion`); `reno` works too.
 fn congestion_control() -> (quiche::CongestionControlAlgorithm, &'static str) {
     parse_congestion_control(&std::env::var("AETHER_QUIC_CC").unwrap_or_default())
 }
 
 fn parse_congestion_control(value: &str) -> (quiche::CongestionControlAlgorithm, &'static str) {
     match value.trim().to_ascii_lowercase().as_str() {
-        "cubic" => (quiche::CongestionControlAlgorithm::CUBIC, "cubic"),
+        "bbr" | "bbr2" | "bbr2_gcongestion" => {
+            (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2")
+        }
         "reno" => (quiche::CongestionControlAlgorithm::Reno, "reno"),
-        _ => (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2"),
+        _ => (quiche::CongestionControlAlgorithm::CUBIC, "cubic"),
     }
 }
 
@@ -308,23 +315,32 @@ mod cc_tests {
     use super::*;
 
     #[test]
-    fn bbr2_is_the_default_congestion_controller() {
+    fn cubic_is_the_default_congestion_controller() {
         assert!(matches!(
             parse_congestion_control(""),
-            (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2")
+            (quiche::CongestionControlAlgorithm::CUBIC, "cubic")
         ));
         assert!(matches!(
             parse_congestion_control("something-else"),
-            (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, _)
+            (quiche::CongestionControlAlgorithm::CUBIC, _)
         ));
-    }
-
-    #[test]
-    fn cubic_and_reno_can_be_chosen_explicitly() {
         assert!(matches!(
             parse_congestion_control(" CUBIC "),
             (quiche::CongestionControlAlgorithm::CUBIC, "cubic")
         ));
+    }
+
+    #[test]
+    fn bbr2_and_reno_are_opt_in() {
+        for name in ["bbr2", " BBR2 ", "bbr", "bbr2_gcongestion"] {
+            assert!(
+                matches!(
+                    parse_congestion_control(name),
+                    (quiche::CongestionControlAlgorithm::Bbr2Gcongestion, "bbr2")
+                ),
+                "{name:?} should select bbr2"
+            );
+        }
         assert!(matches!(
             parse_congestion_control("reno"),
             (quiche::CongestionControlAlgorithm::Reno, "reno")
