@@ -16,6 +16,7 @@ import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.ScanModeSelector
 import studio.cluvex.aether.ui.components.SegmentedSelector
+import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.endpointLabel
 import studio.cluvex.aether.ui.ipLabel
 import studio.cluvex.aether.ui.protocolLabel
@@ -33,6 +34,11 @@ import studio.cluvex.aether.ui.protocolLabel
  * switch that only worked while MASQUE happened to be selected was a setting
  * that could be on and silently doing nothing. Its two optional endpoints sit
  * directly under the picker and only exist while it is selected.
+ *
+ * "MASQUE over HTTP/2" follows the same rule: it only applies to the MASQUE
+ * transports, so it lives under the picker and only appears while MASQUE or
+ * MASQUE-in-MASQUE is selected, instead of sitting on the Transport page where
+ * it could be switched on with WireGuard and do nothing.
  */
 @Composable
 internal fun ConnectionSection(
@@ -44,6 +50,7 @@ internal fun ConnectionSection(
     ipVersion: IpVersion,
     mimOuterPeer: String,
     mimInnerPeer: String,
+    masqueHttp2: Boolean,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -81,6 +88,16 @@ internal fun ConnectionSection(
                 placeholder = stringResource(R.string.mim_peer_hint),
                 helpText = stringResource(R.string.mim_inner_help),
                 enabled = enabled,
+            )
+        }
+        DependentBlock(visible = protocol.isMasque) {
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            SwitchRow(
+                title = stringResource(R.string.masque_http2),
+                description = stringResource(R.string.masque_http2_desc),
+                checked = masqueHttp2,
+                enabled = enabled,
+                onChange = { value -> edit { copy(masqueHttp2 = value) } },
             )
         }
 

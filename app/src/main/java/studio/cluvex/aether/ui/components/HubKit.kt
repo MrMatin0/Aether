@@ -5,15 +5,12 @@ package studio.cluvex.aether.ui.components
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -24,7 +21,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -51,25 +47,7 @@ import studio.cluvex.aether.ui.theme.*
 
 internal object HubShapes {
     val Card = RoundedCornerShape(24.dp)
-    val Tile = RoundedCornerShape(20.dp)
     val ListRow = RoundedCornerShape(16.dp)
-}
-
-enum class TunnelTone { PROTECTED, WORKING, FAILED, IDLE }
-
-@Immutable
-data class ToneColors(val ink: Color, val wash: Color)
-
-@Composable
-@ReadOnlyComposable
-fun TunnelTone.colors(): ToneColors {
-    val a = LocalAetherAccents.current
-    return when (this) {
-        TunnelTone.PROTECTED -> ToneColors(a.protected, a.protectedWash)
-        TunnelTone.WORKING -> ToneColors(a.working, a.workingWash)
-        TunnelTone.FAILED -> ToneColors(a.failed, a.failedWash)
-        TunnelTone.IDLE -> ToneColors(a.neutral, MaterialTheme.colorScheme.surfaceContainerLow)
-    }
 }
 
 /** Every hub animation goes through here: exponential ease-out, zero under reduced motion. */
@@ -78,81 +56,12 @@ fun TunnelTone.colors(): ToneColors {
 internal fun <T> hubTween(millis: Int = AetherDur.Quick, easing: Easing = AetherEaseOut): TweenSpec<T> =
     tween(aetherDuration(millis), easing = easing)
 
-// ------------------------------------------------------------ status strip --
+// -------------------------------------------------------------------- lock --
 
 /**
- * The single place the tunnel lock is explained. Rows only carry a 14dp glyph,
- * so a connected user sees one badge instead of a banner on every screen.
+ * The tunnel lock, explained once. Rows only carry a 14dp glyph, so a
+ * connected user sees one badge instead of a banner on every screen.
  */
-@Composable
-fun TunnelStatusStrip(
-    tone: TunnelTone,
-    label: String,
-    detail: String?,
-    locked: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val colors = tone.colors()
-    val wash by animateColorAsState(colors.wash, hubTween(AetherDur.Base), label = "strip-wash")
-    val ink by animateColorAsState(colors.ink, hubTween(AetherDur.Base), label = "strip-ink")
-    Surface(
-        modifier = modifier.fillMaxWidth().semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        shape = HubShapes.Card,
-        color = wash,
-        border = BorderStroke(1.dp, ink.copy(alpha = 0.24f)),
-    ) {
-        Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(ink, pulsing = tone == TunnelTone.WORKING)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-                if (detail != null) {
-                    Text(
-                        detail,
-                        style = AetherMetaLabel,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            AnimatedVisibility(
-                visible = locked,
-                enter = fadeIn(hubTween()) + scaleIn(hubTween(), initialScale = 0.85f),
-                exit = fadeOut(hubTween(AetherDur.Snap)),
-            ) {
-                LockBadge(Modifier.padding(start = 12.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusDot(color: Color, pulsing: Boolean) {
-    val reduced = LocalReducedMotion.current
-    Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-        if (pulsing && !reduced) {
-            val transition = rememberInfiniteTransition(label = "status-dot")
-            val halo = transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(AetherDur.Loop / 2, easing = AetherEaseOut)),
-                label = "halo",
-            )
-            // Read in the draw layer: the halo never recomposes the strip.
-            Box(
-                Modifier.matchParentSize().graphicsLayer {
-                    val v = halo.value
-                    scaleX = 0.4f + v * 0.6f
-                    scaleY = scaleX
-                    alpha = 1f - v
-                }.background(color.copy(alpha = 0.45f), CircleShape),
-            )
-        }
-        Box(Modifier.size(8.dp).background(color, CircleShape))
-    }
-}
-
 @Composable
 fun LockBadge(modifier: Modifier = Modifier, compact: Boolean = false) {
     if (compact) {
@@ -272,119 +181,6 @@ fun TagChip(text: String, modifier: Modifier = Modifier) {
     val a = LocalAetherAccents.current
     Surface(modifier, shape = CircleShape, color = a.brandWash, contentColor = a.brand) {
         Text(text, Modifier.padding(horizontal = 10.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
-    }
-}
-
-// ----------------------------------------------------------- quick toggles --
-
-@Composable
-fun QuickToggleTile(
-    icon: ImageVector,
-    title: String,
-    value: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-    locked: Boolean = false,
-    tone: TunnelTone = TunnelTone.PROTECTED,
-) {
-    val colors = tone.colors()
-    val scheme = MaterialTheme.colorScheme
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, hubTween(AetherDur.Snap), label = "tile-press")
-    val container by animateColorAsState(if (checked) colors.wash else scheme.surfaceContainerLow, hubTween(), label = "tile-bg")
-    val border by animateColorAsState(if (checked) colors.ink.copy(alpha = 0.45f) else scheme.outlineVariant, hubTween(), label = "tile-border")
-    val ink by animateColorAsState(if (checked) colors.ink else scheme.onSurfaceVariant, hubTween(), label = "tile-ink")
-    val lockedLabel = stringResource(R.string.hub_locked_row)
-
-    Surface(
-        modifier = modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(HubShapes.Tile)
-            .toggleable(
-                value = checked,
-                interactionSource = interaction,
-                indication = LocalIndication.current,
-                enabled = !locked,
-                role = Role.Switch,
-                onValueChange = onCheckedChange,
-            )
-            .semantics { if (locked) stateDescription = lockedLabel },
-        shape = HubShapes.Tile,
-        color = container,
-        border = BorderStroke(1.dp, border),
-    ) {
-        Column(Modifier.heightIn(min = 104.dp).padding(16.dp).alpha(if (locked) 0.72f else 1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, Modifier.size(22.dp), ink)
-                Spacer(Modifier.weight(1f))
-                if (locked) {
-                    LockBadge(compact = true)
-                } else {
-                    Box(
-                        Modifier.size(10.dp)
-                            .background(if (checked) ink else Color.Transparent, CircleShape)
-                            .border(1.5.dp, ink, CircleShape),
-                    )
-                }
-            }
-            Spacer(Modifier.height(18.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall, color = scheme.onSurface, maxLines = 2)
-            Spacer(Modifier.height(2.dp))
-            Text(value, style = AetherMetaLabel, color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-// ----------------------------------------------------------------- presets --
-
-@Composable
-fun PresetCard(
-    title: String,
-    detail: String,
-    icon: ImageVector,
-    active: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val a = LocalAetherAccents.current
-    val scheme = MaterialTheme.colorScheme
-    val container by animateColorAsState(if (active) a.brandWash else scheme.surfaceContainerLow, hubTween(), label = "preset-bg")
-    val border by animateColorAsState(if (active) a.brand.copy(alpha = 0.5f) else scheme.outlineVariant, hubTween(), label = "preset-border")
-    Surface(
-        onClick = onClick,
-        enabled = enabled && !active,
-        modifier = modifier.width(200.dp).semantics { selected = active },
-        shape = HubShapes.Tile,
-        color = container,
-        border = BorderStroke(1.dp, border),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, Modifier.size(20.dp), if (active) a.brand else scheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                AnimatedVisibility(active, enter = fadeIn(hubTween()) + scaleIn(hubTween(), initialScale = 0.8f), exit = fadeOut(hubTween(AetherDur.Snap))) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.CheckCircle, null, Modifier.size(14.dp), a.brand)
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.hub_preset_active), style = MaterialTheme.typography.labelSmall, color = a.brand)
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = scheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.heightIn(min = 32.dp),
-            )
-        }
     }
 }
 

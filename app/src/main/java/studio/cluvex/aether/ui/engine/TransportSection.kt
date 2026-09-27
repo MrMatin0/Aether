@@ -33,6 +33,11 @@ import studio.cluvex.aether.ui.noizeLabel
  * separate card named after the engine version that introduced them, which
  * told the user when a setting arrived rather than what it does; both are
  * on-the-wire behaviour, so this is their page.
+ *
+ * "MASQUE over HTTP/2" used to live here as well. It only means anything for
+ * the MASQUE transports, so it now sits under the protocol picker on the
+ * Connection page and only appears while MASQUE or MASQUE-in-MASQUE is chosen
+ * (see ConnectionSection).
  */
 @Composable
 internal fun TransportSection(
@@ -43,7 +48,6 @@ internal fun TransportSection(
     fragmentSize: String,
     fragmentDelay: String,
     ech: Boolean,
-    masqueHttp2: Boolean,
     quicV2Opener: Boolean,
     dnsServers: String,
     socketMark: String,
@@ -96,14 +100,6 @@ internal fun TransportSection(
             checked = ech,
             enabled = enabled,
             onChange = { value -> edit { copy(ech = value) } },
-        )
-        EngineDivider()
-        SwitchRow(
-            title = stringResource(R.string.masque_http2),
-            description = stringResource(R.string.masque_http2_desc),
-            checked = masqueHttp2,
-            enabled = enabled,
-            onChange = { value -> edit { copy(masqueHttp2 = value) } },
         )
         EngineDivider()
         SwitchRow(
