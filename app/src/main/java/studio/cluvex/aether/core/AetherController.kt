@@ -17,6 +17,7 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
@@ -214,6 +215,11 @@ object ProfileCodec {
         add("halfCloseSecs=${p.halfCloseSecs}")
         add("tcpKeepaliveSecs=${p.tcpKeepaliveSecs}")
         add("tcpConnectSecs=${p.tcpConnectSecs}")
+        // Psiphon CDN fronting. IPs and SNIs are comma/space separated lists,
+        // so the ordinary comma fold is exactly right for them.
+        add("psiphonProtocol=${p.psiphonProtocol.name}")
+        add("psiphonCdnIps=${flatten(p.psiphonCdnEdgeIps)}")
+        add("psiphonCdnSni=${flatten(p.psiphonCdnSni)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -306,6 +312,11 @@ object ProfileCodec {
                 halfCloseSecs = map["halfCloseSecs"]?.toIntOrNull() ?: d.halfCloseSecs,
                 tcpKeepaliveSecs = map["tcpKeepaliveSecs"]?.toIntOrNull() ?: d.tcpKeepaliveSecs,
                 tcpConnectSecs = map["tcpConnectSecs"]?.toIntOrNull() ?: d.tcpConnectSecs,
+                // ---- Psiphon CDN fronting ----
+                // Not enumOr(): an imported config can say "cdn" or "fronting".
+                psiphonProtocol = PsiphonProtocol.fromStored(map["psiphonProtocol"]) ?: d.psiphonProtocol,
+                psiphonCdnEdgeIps = map["psiphonCdnIps"] ?: d.psiphonCdnEdgeIps,
+                psiphonCdnSni = map["psiphonCdnSni"] ?: d.psiphonCdnSni,
             )
         }.getOrDefault(d)
     }

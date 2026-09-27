@@ -17,6 +17,7 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
@@ -114,6 +115,10 @@ class ProfileStore(private val context: Context) {
         val halfCloseSecs = intPreferencesKey("halfCloseSecs")
         val tcpKeepaliveSecs = intPreferencesKey("tcpKeepaliveSecs")
         val tcpConnectSecs = intPreferencesKey("tcpConnectSecs")
+        // Psiphon CDN fronting. Same key names as ProfileCodec.
+        val psiphonProtocol = stringPreferencesKey("psiphonProtocol")
+        val psiphonCdnIps = stringPreferencesKey("psiphonCdnIps")
+        val psiphonCdnSni = stringPreferencesKey("psiphonCdnSni")
 
         // ---- RETIRED keys: read once for migration, removed on save ----
 
@@ -290,6 +295,10 @@ class ProfileStore(private val context: Context) {
             halfCloseSecs = prefs[Keys.halfCloseSecs] ?: 0,
             tcpKeepaliveSecs = prefs[Keys.tcpKeepaliveSecs] ?: 0,
             tcpConnectSecs = prefs[Keys.tcpConnectSecs] ?: 0,
+            // ---- Psiphon CDN fronting ----
+            psiphonProtocol = PsiphonProtocol.fromStored(prefs[Keys.psiphonProtocol]) ?: d.psiphonProtocol,
+            psiphonCdnEdgeIps = prefs[Keys.psiphonCdnIps] ?: "",
+            psiphonCdnSni = prefs[Keys.psiphonCdnSni] ?: "",
         )
     }
 
@@ -357,6 +366,10 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.halfCloseSecs] = profile.halfCloseSecs
             prefs[Keys.tcpKeepaliveSecs] = profile.tcpKeepaliveSecs
             prefs[Keys.tcpConnectSecs] = profile.tcpConnectSecs
+            // ---- Psiphon CDN fronting ----
+            prefs[Keys.psiphonProtocol] = profile.psiphonProtocol.name
+            prefs[Keys.psiphonCdnIps] = profile.psiphonCdnEdgeIps
+            prefs[Keys.psiphonCdnSni] = profile.psiphonCdnSni
             // Retired keys. The protocol written above already carries the
             // MIM choice, so the old switch has nothing left to say, and the
             // engine-Tor keys describe a Tor this app no longer runs.

@@ -13,6 +13,7 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
@@ -112,6 +113,12 @@ class ProfileCodecTest {
         halfCloseSecs = 45,
         tcpKeepaliveSecs = 90,
         tcpConnectSecs = 20,
+        // ---- Psiphon CDN fronting ----
+        psiphonProtocol = PsiphonProtocol.CDN_FRONTING,
+        // Single line: the codec folds newlines to commas, which the parser
+        // treats the same way, but a byte-for-byte round trip needs one line.
+        psiphonCdnEdgeIps = "23.215.0.206,104.16.0.0/24",
+        psiphonCdnSni = "www.example.com",
     )
 
     /**
@@ -194,6 +201,15 @@ class ProfileCodecTest {
         assertTrue(decoded.quicV2Opener, "the QUIC v2 opener must default to on")
         assertEquals(Protocol.MASQUE, decoded.protocol)
         assertEquals(0, decoded.maxClients)
+    }
+
+    @Test
+    fun psiphonProtocolAcceptsHandWrittenAliases() {
+        assertEquals(PsiphonProtocol.CDN_FRONTING, ProfileCodec.decode("psiphonProtocol=cdn").psiphonProtocol)
+        assertEquals(PsiphonProtocol.CDN_FRONTING, ProfileCodec.decode("psiphonProtocol=cdn-fronting").psiphonProtocol)
+        assertEquals(PsiphonProtocol.DIRECT, ProfileCodec.decode("psiphonProtocol=direct").psiphonProtocol)
+        assertEquals(PsiphonProtocol.AUTO, ProfileCodec.decode("psiphonProtocol=nonsense").psiphonProtocol)
+        assertEquals(PsiphonProtocol.AUTO, ProfileCodec.decode("protocol=MASQUE").psiphonProtocol)
     }
 
     /**

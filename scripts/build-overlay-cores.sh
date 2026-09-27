@@ -3,7 +3,11 @@
 # Builds the OVERLAY cores that the chain modes stack on top of Aether:
 #
 #   libpsiphon.so  <- psiphon-tunnel-core's ConsoleClient, cross-compiled from
-#                     source with the NDK toolchain.
+#                     source with the NDK toolchain. By default this is
+#                     shirokhorshid's GPL-3.0 fork (pinned by commit), because
+#                     it adds CDN fronting: the FRONTED-MEEK-CDN-* protocols,
+#                     FrontedMeekDialOverrides and the CDN edge scan. See
+#                     docs/CDN_FRONTING.md.
 #   libtor.so      <- tor for Android. Taken from the Tor Project / Guardian
 #                     Project's published AAR by default (see WHY below), or
 #                     built from source with TOR_FROM_SOURCE=1.
@@ -33,7 +37,7 @@
 # WHY THE GO VERSION IS CHECKED HERE AND NOT LEFT TO GO
 # ============================================================================
 # psiphon-tunnel-core's go.mod carries BOTH a `go` and a `toolchain` directive
-# (currently go 1.26.0 / toolchain go1.26.5). actions/setup-go exports
+# (currently go 1.26.0 / toolchain go1.26.x). actions/setup-go exports
 # GOTOOLCHAIN=local whenever a go-version is requested, deliberately, so Go then
 # REFUSES to fetch the newer toolchain and stops with
 #
@@ -43,6 +47,18 @@
 # that message went into a green run's log and the APK simply shipped without a
 # Psiphon core. The requirement is therefore read from upstream's own go.mod and
 # compared here, where the failure can name the file to edit.
+#
+# ============================================================================
+# WHY PSIPHON COMES FROM A FORK, PINNED BY COMMIT
+# ============================================================================
+# Upstream Psiphon has no FRONTED-MEEK-CDN-* protocols and no config keys to
+# point fronted meek at user-chosen CDN edges. shirokhorshid/psiphon-tunnel-core
+# adds both on its `shirokhorshid` branch and keeps the upstream module path, so
+# ConsoleClient builds unchanged. A moving branch of a fork is a supply-chain
+# risk, so the default ref is a full commit SHA: bumping it is a reviewed diff.
+# PSIPHON_REPO=Psiphon-Labs/psiphon-tunnel-core PSIPHON_REF=staging-client
+# builds plain upstream again (CDN fronting settings are then ignored by the
+# core, everything else keeps working).
 #
 # ============================================================================
 # WHY TOR COMES FROM THE PUBLISHED AAR BY DEFAULT
@@ -64,6 +80,8 @@
 #
 # Optional: AETHER_ABIS="arm64-v8a" (space-separated) builds only those ABIs.
 # CI uses it to compile each ABI on its own runner, in parallel.
+# Optional: PSIPHON_REPO / PSIPHON_REF pick the tunnel-core source. PSIPHON_REF
+# may be a branch, a tag or a full 40-character commit SHA.
 set -euo pipefail
 
 TARGET="${1:-all}"
@@ -95,11 +113,13 @@ MAVEN="https://""repo1.maven.org/maven2"
 # upstream for the same reasoning applied to Gradle's own resolution.
 MAVEN_MIRROR="https://""maven-central.storage-download.googleapis.com/maven2"
 
-PSIPHON_REPO="${PSIPHON_REPO:-Psiphon-Labs/psiphon-tunnel-core}"
-# staging-client is upstream's production client branch (see their README: the
-# module cannot be resolved by @latest, so a branch or commit is the only way).
-PSIPHON_REF="${PSIPHON_REF:-staging-client}"
+# shirokhorshid's fork (branch `shirokhorshid`) pinned at a reviewed commit; see
+# WHY PSIPHON COMES FROM A FORK above. For plain upstream use
+# PSIPHON_REPO=Psiphon-Labs/psiphon-tunnel-core PSIPHON_REF=staging-client.
+PSIPHON_REPO="${PSIPHON_REPO:-shirokhorshid/psiphon-tunnel-core}"
+PSIPHON_REF="${PSIPHON_REF:-df55f0ac0eed3d6846501744b7f086a42fcadfaf}"
 PSIPHON_SRC="${NATIVE_DIR}/psiphon-tunnel-core"
+PSIPHON_STAMP="${PSIPHON_SRC}/.aether-source"
 
 TOR_VERSION="${TOR_ANDROID_VERSION:-0.4.9.11}"
 TOR_FROM_SOURCE="${TOR_FROM_SOURCE:-}"
@@ -240,23 +260,68 @@ assert_go_can_build_psiphon() {
   echo "    Go ${have} is older than ${want}; GOTOOLCHAIN=${GOTOOLCHAIN:-auto} will fetch it."
 }
 
+# A full 40-hex-digit commit SHA cannot go through `git clone --branch`.
+is_commit_sha() {
+  printf '%s' "$1" | grep -qE '^[0-9a-f]{40}$'
+}
+
+# Checks out PSIPHON_REPO @ PSIPHON_REF into PSIPHON_SRC, shallowly.
+clone_psiphon() {
+  local url="${GH}/${PSIPHON_REPO}.git"
+  rm -rf "${PSIPHON_SRC}"
+  echo "==> [psiphon] cloning ${PSIPHON_REPO} @ ${PSIPHON_REF}"
+  if is_commit_sha "${PSIPHON_REF}"; then
+    # GitHub serves any reachable commit by SHA (uploadpack.allowReachableSHA1InWant),
+    # so a shallow fetch of exactly the pinned commit works without the history.
+    mkdir -p "${PSIPHON_SRC}"
+    local attempt ok=0
+    for attempt in 1 2 3; do
+      if ( cd "${PSIPHON_SRC}" && \
+           git init -q && \
+           { git remote get-url origin >/dev/null 2>&1 || git remote add origin "${url}"; } && \
+           git fetch -q --depth 1 origin "${PSIPHON_REF}" && \
+           git -c advice.detachedHead=false checkout -q FETCH_HEAD ); then
+        ok=1
+        break
+      fi
+      echo "    fetch of ${PSIPHON_REF} failed (attempt ${attempt}); retrying in 10s"
+      sleep 10
+    done
+    if [ "${ok}" != 1 ]; then
+      echo "ERROR: could not fetch commit ${PSIPHON_REF} from ${PSIPHON_REPO}." >&2
+      exit 1
+    fi
+  else
+    if ! git clone --depth 1 --branch "${PSIPHON_REF}" \
+        "${url}" "${PSIPHON_SRC}" 2>/dev/null; then
+      echo "    ref '${PSIPHON_REF}' not found; using the default branch"
+      rm -rf "${PSIPHON_SRC}"
+      git clone --depth 1 "${url}" "${PSIPHON_SRC}"
+    fi
+  fi
+  printf '%s@%s\n' "${PSIPHON_REPO}" "${PSIPHON_REF}" > "${PSIPHON_STAMP}"
+  echo "    checked out $(cd "${PSIPHON_SRC}" && git rev-parse HEAD 2>/dev/null || echo '?')"
+}
+
 build_psiphon() {
   if ! command -v go >/dev/null 2>&1; then
     echo "ERROR: Go is not installed - cannot build the Psiphon core." >&2
     exit 1
   fi
 
-  if [ ! -d "${PSIPHON_SRC}/.git" ]; then
-    rm -rf "${PSIPHON_SRC}"
-    echo "==> [psiphon] cloning ${PSIPHON_REPO} @ ${PSIPHON_REF}"
-    if ! git clone --depth 1 --branch "${PSIPHON_REF}" \
-        "${GH}/${PSIPHON_REPO}.git" "${PSIPHON_SRC}" 2>/dev/null; then
-      echo "    ref '${PSIPHON_REF}' not found; using the default branch"
-      rm -rf "${PSIPHON_SRC}"
-      git clone --depth 1 "${GH}/${PSIPHON_REPO}.git" "${PSIPHON_SRC}"
-    fi
+  # Reuse a cached checkout only if it was made from the SAME repo@ref; a stale
+  # upstream tree silently building without CDN fronting is exactly the kind of
+  # failure nobody notices.
+  local want_stamp have_stamp=""
+  want_stamp="${PSIPHON_REPO}@${PSIPHON_REF}"
+  [ -f "${PSIPHON_STAMP}" ] && have_stamp="$(head -n1 "${PSIPHON_STAMP}")"
+  if [ -d "${PSIPHON_SRC}/.git" ] && [ "${have_stamp}" = "${want_stamp}" ]; then
+    echo "==> [psiphon] reusing the checkout in ${PSIPHON_SRC} (${want_stamp})"
   else
-    echo "==> [psiphon] reusing the checkout in ${PSIPHON_SRC}"
+    if [ -d "${PSIPHON_SRC}" ]; then
+      echo "==> [psiphon] cached checkout is '${have_stamp:-unknown}', want '${want_stamp}'; re-cloning"
+    fi
+    clone_psiphon
   fi
 
   if [ ! -d "${PSIPHON_SRC}/ConsoleClient" ]; then

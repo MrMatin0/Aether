@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- گزینه‌های پروتکل سایفون / CDN fronting در صفحه زنجیره. ببینید docs/CDN_FRONTING.md -->
+<resources>
+    <string name="psiphon_protocol_label">پروتکل سایفون</string>
+    <string name="psiphon_protocol_auto">خودکار</string>
+    <string name="psiphon_protocol_direct">پروتکل‌های مستقیم</string>
+    <string name="psiphon_protocol_cdn">فقط CDN fronting</string>
+    <string name="psiphon_protocol_auto_desc">سایفون خودش پروتکل را انتخاب می‌کند، مثل قبل. لبه‌های CDN پایین همچنان برای هر پروتکل fronted که انتخاب کند استفاده می‌شوند.</string>
+    <string name="psiphon_protocol_direct_desc">پروتکل‌های معمول سایفون (SSH، OSSH، TLS، QUIC، meek) به همراه نسخه‌های CDN. تاکتیک‌های ارسالی از سرور خاموش می‌شوند.</string>
+    <string name="psiphon_protocol_cdn_desc">تمام ترافیک از لبه یک CDN بزرگ (Akamai یا Fastly) با یک SNI بی‌خطر عبور می‌کند. برای شبکه‌هایی که جز CDNهای بزرگ چیزی رد نمی‌شود. از بقیه کندتر است.</string>
+    <string name="psiphon_cdn_quic_note">در این حالت سایفون از داخل Aether عبور می‌کند، پس نسخه‌های QUIC کنار گذاشته می‌شوند: پراکسی SOCKS نمی‌تواند UDP حمل کند.</string>
+    <string name="psiphon_cdn_ips_label">لبه‌های CDN دلخواه (اختیاری)</string>
+    <string name="psiphon_cdn_ips_hint">23.215.0.206, 104.16.0.0/24</string>
+    <string name="psiphon_cdn_ips_count">%1$d مورد معتبر اسکن می‌شود</string>
+    <string name="psiphon_cdn_sni_label">نام‌های SNI (اختیاری)</string>
+    <string name="psiphon_cdn_sni_hint">www.example.com</string>
+    <string name="psiphon_cdn_help">هر دو را خالی بگذارید تا از لبه‌های داخلی Akamai و Fastly استفاده شود. لبه‌های دلخواه (IPv4 یا CIDR، جدا شده با ویرگول یا خط جدید) پیش از اتصال بررسی می‌شوند. SNI نامی است که شبکه در دست‌دهی TLS می‌بیند؛ خالی یعنی خود IP لبه.</string>
+</resources>
