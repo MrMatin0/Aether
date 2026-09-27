@@ -43,10 +43,8 @@ import studio.cluvex.aether.ui.chainLabel
 import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hint
-import studio.cluvex.aether.ui.components.LtrOutlinedTextField
 import studio.cluvex.aether.ui.components.NoticeBar
 import studio.cluvex.aether.ui.components.SectionRule
-import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
@@ -75,6 +73,14 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  *     Persian, so the literal path is printed on every card rather than once
  *     under the selection.
  *
+ * ### Where the Psiphon exit country lives
+ *
+ * Directly under the selected Psiphon mode card, not in a block at the bottom
+ * of the page. The exit country belongs to the choice the user just made, and
+ * with seven cards in between a block at the bottom was easy to never see. Only
+ * the SELECTED card opens it, so the page never shows two pickers for one
+ * setting.
+ *
  * ### What the Psiphon block used to be
  *
  * A multi-line box asking the user to paste a Psiphon client config as JSON.
@@ -83,13 +89,20 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * nothing pasted and nothing bundled, every Psiphon mode failed before the core
  * was even started. It is gone: [studio.cluvex.aether.core.PsiphonCore] carries
  * its own config, and the only thing left to choose is where to come out.
+ *
+ * ### Why Tor has no exit country any more
+ *
+ * It needed the geoip database, it was a free-typed two-letter box, and pinning
+ * Tor's exit only narrows the relay set on networks where Tor is already the
+ * slowest thing in the app. The field (and the StrictNodes switch that only
+ * existed for it) is gone, and [studio.cluvex.aether.core.TorCore] no longer
+ * writes either option, so a value saved by an older build cannot keep pinning
+ * the exit with no UI left to clear it.
  */
 @Composable
 internal fun ChainSection(
     chain: ChainMode,
     psiphonRegion: String,
-    torExitCountry: String,
-    torStrictNodes: Boolean,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -123,46 +136,15 @@ internal fun ChainSection(
         Column(Modifier.fillMaxWidth().selectableGroup()) {
             FieldLabel(stringResource(R.string.chain_group_single))
             SingleCoreModes.forEach { mode ->
-                ChainModeCard(mode, chain, cores, enabled, edit)
+                ChainModeEntry(mode, chain, psiphonRegion, cores, enabled, edit)
             }
             Spacer(Modifier.height(EngineSpacing.Field))
             FieldLabel(stringResource(R.string.chain_group_stacked))
             Hint(stringResource(R.string.chain_group_stacked_note))
             Spacer(Modifier.height(EngineSpacing.Inline))
             StackedModes.forEach { mode ->
-                ChainModeCard(mode, chain, cores, enabled, edit)
+                ChainModeEntry(mode, chain, psiphonRegion, cores, enabled, edit)
             }
-        }
-
-        // Psiphon's own options: only shown when a Psiphon hop exists, because
-        // an exit country for a core that is not running is noise.
-        DependentBlock(visible = chain.usesPsiphon) {
-            Spacer(Modifier.height(EngineSpacing.Divider))
-            EngineDivider()
-            SectionRule(stringResource(R.string.chain_psiphon_options), topSpace = 24)
-
-            // The one payload fact that can still stop Psiphon. Said here rather
-            // than discovered from a three-minute connect attempt.
-            if (cores.psiphonServerList) {
-                NoticeBar(
-                    text = stringResource(R.string.psiphon_ready),
-                    tone = accents.protected,
-                    icon = Icons.Rounded.CheckCircle,
-                )
-            } else {
-                NoticeBar(
-                    text = stringResource(R.string.psiphon_serverlist_missing),
-                    tone = accents.failed,
-                    icon = Icons.Rounded.Warning,
-                )
-            }
-
-            Spacer(Modifier.height(EngineSpacing.Field))
-            PsiphonExitField(
-                value = psiphonRegion,
-                onValueChange = { code -> edit { copy(psiphonRegion = code) } },
-                enabled = enabled,
-            )
         }
 
         DependentBlock(visible = chain.usesTor) {
@@ -182,33 +164,6 @@ internal fun ChainSection(
             // out they exist: the card above says Tor is blocked outright on many
             // Iranian networks, and without this that is a dead end.
             Hint(stringResource(R.string.chain_tor_bridges_hint))
-
-            Spacer(Modifier.height(EngineSpacing.Field))
-            CountryField(
-                value = torExitCountry,
-                onValueChange = { value -> edit { copy(torExitCountry = value) } },
-                label = stringResource(R.string.tor_exit_label),
-                placeholder = stringResource(R.string.tor_exit_hint),
-                helpText = if (cores.torGeoipBundled) {
-                    stringResource(R.string.tor_exit_help)
-                } else {
-                    stringResource(R.string.tor_exit_no_geoip)
-                },
-                // Without the database tor cannot map relays to countries and
-                // ignores the request, so an editable field here would be a
-                // setting that pretends to work.
-                enabled = enabled && cores.torGeoipBundled,
-            )
-
-            Spacer(Modifier.height(EngineSpacing.Divider))
-            EngineDivider()
-            SwitchRow(
-                title = stringResource(R.string.tor_strict_title),
-                description = stringResource(R.string.tor_strict_desc),
-                checked = torStrictNodes,
-                enabled = enabled && cores.torGeoipBundled && torExitCountry.isNotBlank(),
-                onChange = { value -> edit { copy(torStrictNodes = value) } },
-            )
         }
     }
 }
@@ -218,6 +173,77 @@ private val SingleCoreModes: List<ChainMode> = ChainMode.entries.filterNot { it.
 
 /** The four stackings, cheapest first - which is also fewest-hops first. */
 private val StackedModes: List<ChainMode> = ChainMode.entries.filter { it.isChained }
+
+/**
+ * One mode card, plus - for a Psiphon mode that is the current selection - the
+ * Psiphon options opened right underneath it.
+ */
+@Composable
+private fun ColumnScope.ChainModeEntry(
+    mode: ChainMode,
+    selected: ChainMode,
+    psiphonRegion: String,
+    cores: CoreAvailability.Snapshot,
+    enabled: Boolean,
+    edit: ProfileEdit,
+) {
+    ChainModeCard(mode, selected, cores, enabled, edit)
+    if (mode.usesPsiphon) {
+        DependentBlock(visible = mode == selected) {
+            PsiphonOptions(
+                psiphonRegion = psiphonRegion,
+                serverListBundled = cores.psiphonServerList,
+                enabled = enabled,
+                edit = edit,
+            )
+        }
+    }
+}
+
+/**
+ * Psiphon's own options, shown under the selected Psiphon mode: whether this
+ * build can start Psiphon at all, then where it comes out.
+ *
+ * Indented and bracketed by small gaps so it reads as belonging to the card
+ * above it rather than as the next card.
+ */
+@Composable
+private fun PsiphonOptions(
+    psiphonRegion: String,
+    serverListBundled: Boolean,
+    enabled: Boolean,
+    edit: ProfileEdit,
+) {
+    val accents = LocalAetherAccents.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, top = 8.dp, bottom = 12.dp),
+    ) {
+        // The one payload fact that can still stop Psiphon. Said here rather
+        // than discovered from a three-minute connect attempt.
+        if (serverListBundled) {
+            NoticeBar(
+                text = stringResource(R.string.psiphon_ready),
+                tone = accents.protected,
+                icon = Icons.Rounded.CheckCircle,
+            )
+        } else {
+            NoticeBar(
+                text = stringResource(R.string.psiphon_serverlist_missing),
+                tone = accents.failed,
+                icon = Icons.Rounded.Warning,
+            )
+        }
+
+        Spacer(Modifier.height(EngineSpacing.Field))
+        PsiphonExitField(
+            value = psiphonRegion,
+            onValueChange = { code -> edit { copy(psiphonRegion = code) } },
+            enabled = enabled,
+        )
+    }
+}
 
 /**
  * One mode, with everything needed to choose it: name, cost badge, literal path,
@@ -345,17 +371,16 @@ private fun CostBadge(mode: ChainMode) {
 }
 
 /**
- * Psiphon's exit country: tap, and pick from the countries Psiphon publishes.
+ * Psiphon's exit country: tap, and pick from the countries Psiphon can reach.
  *
- * ### Why this is not a text field any more
+ * ### Why this is not a text field
  *
- * It used to be the same two-letter box Tor still uses, and for Psiphon that was
- * the wrong shape twice over. `EgressRegion` is a HARD filter in
- * psiphon-tunnel-core, so a code Psiphon has no servers in does not degrade to
- * "anywhere" - it hangs establishment until the budget runs out. And the set of
- * codes that mean anything is a fixed, published list, which a keyboard cannot
- * express: `IR`, `EN` and `UK` are all things a user would reasonably type and
- * none of them is a Psiphon exit.
+ * `EgressRegion` is a HARD filter in psiphon-tunnel-core, so a code Psiphon has
+ * no reachable servers in does not degrade to "anywhere" - it hangs
+ * establishment until the budget runs out. And the set of codes that mean
+ * anything is a fixed list, which a keyboard cannot express: `IR`, `EN` and `UK`
+ * are all things a user would reasonably type and none of them is a Psiphon
+ * exit.
  *
  * So the list IS the input. Every row carries its flag (derived from the code,
  * see [PsiphonRegions]), Automatic is the first row and the default, and there is
@@ -378,7 +403,7 @@ private fun ColumnScope.PsiphonExitField(
     DropdownSelector(
         options = PsiphonRegions.codes,
         // Sanitised, so a code saved by an older build (or imported in a config)
-        // that Psiphon does not serve shows as Automatic instead of as a row that
+        // that is no longer offered shows as Automatic instead of as a row that
         // is not in the list.
         selected = PsiphonRegions.sanitize(value),
         onSelect = onValueChange,
@@ -394,41 +419,5 @@ private fun ColumnScope.PsiphonExitField(
         text = stringResource(R.string.psiphon_region_fallback),
         tone = LocalAetherAccents.current.working,
         icon = Icons.Rounded.Public,
-    )
-}
-
-/**
- * A two-letter country code and nothing else.
- *
- * tor takes ISO 3166-1 alpha-2 and silently ignores anything else (its torrc
- * never receives it), so a free-text field let the user type "Germany", see it
- * persisted, and get no exit country with no explanation. Constraining the input
- * is the difference between a setting that works and a setting that looks like it
- * works.
- *
- * Psiphon used to share this field and no longer does - see [PsiphonExitField]
- * for why a list beats a keyboard when the valid set is published and finite.
- */
-@Composable
-private fun CountryField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    placeholder: String,
-    helpText: String,
-    enabled: Boolean,
-) {
-    LtrOutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        inputTransform = { raw ->
-            raw.filter { it in 'a'..'z' || it in 'A'..'Z' }.uppercase().take(2)
-        },
-        enabled = enabled,
-        singleLine = true,
-        label = { Text(label) },
-        placeholder = { Text(placeholder) },
-        supportingText = { Text(helpText) },
-        modifier = Modifier.fillMaxWidth(),
     )
 }
