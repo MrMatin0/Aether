@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Psiphon protocol / CDN fronting options on the Chain page. See docs/CDN_FRONTING.md. -->
+<resources>
+    <string name="psiphon_protocol_label">Psiphon protocol</string>
+    <string name="psiphon_protocol_auto">Automatic</string>
+    <string name="psiphon_protocol_direct">Direct protocols</string>
+    <string name="psiphon_protocol_cdn">CDN fronting only</string>
+    <string name="psiphon_protocol_auto_desc">Psiphon picks the protocol itself, as before. The CDN edges below are still offered for any fronted protocol it chooses.</string>
+    <string name="psiphon_protocol_direct_desc">The ordinary Psiphon protocols (SSH, OSSH, TLS, QUIC, meek), CDN fronted ones included. Server issued tactics are turned off.</string>
+    <string name="psiphon_protocol_cdn_desc">Every byte goes through a big CDN edge (Akamai or Fastly) with an innocent looking SNI. For networks where nothing but the major CDNs gets through. Slower than the others.</string>
+    <string name="psiphon_cdn_quic_note">Psiphon runs through Aether in this mode, so the QUIC variants are skipped: a SOCKS hop cannot carry UDP.</string>
+    <string name="psiphon_cdn_ips_label">Custom CDN edges (optional)</string>
+    <string name="psiphon_cdn_ips_hint">23.215.0.206, 104.16.0.0/24</string>
+    <string name="psiphon_cdn_ips_count">%1$d valid entries will be scanned</string>
+    <string name="psiphon_cdn_sni_label">SNI host names (optional)</string>
+    <string name="psiphon_cdn_sni_hint">www.example.com</string>
+    <string name="psiphon_cdn_help">Leave both blank to use the built in Akamai and Fastly edges. Custom edges (IPv4 or CIDR, separated by commas or new lines) are probed before connecting. The SNI is the name the network sees in the TLS handshake; blank means the edge IP itself.</string>
+</resources>

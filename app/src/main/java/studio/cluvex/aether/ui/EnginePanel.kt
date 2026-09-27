@@ -68,6 +68,9 @@ internal fun EngineDestination(
             // the Tor exit options: the Chain page no longer offers them.
             SettingsPage.CHAIN -> ChainSection(
                 chain = profile.chain, psiphonRegion = profile.psiphonRegion,
+                psiphonProtocol = profile.psiphonProtocol,
+                psiphonCdnEdgeIps = profile.psiphonCdnEdgeIps,
+                psiphonCdnSni = profile.psiphonCdnSni,
                 enabled = enabled, edit = edit,
             )
             // The chain is passed so the page can say when bridges are

@@ -35,9 +35,11 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.CoreAvailability
+import studio.cluvex.aether.core.PsiphonCdnFronting
 import studio.cluvex.aether.core.PsiphonRegions
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.Hop
+import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.ui.chainDescription
 import studio.cluvex.aether.ui.chainLabel
 import studio.cluvex.aether.ui.components.DropdownSelector
@@ -79,7 +81,8 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * of the page. The exit country belongs to the choice the user just made, and
  * with seven cards in between a block at the bottom was easy to never see. Only
  * the SELECTED card opens it, so the page never shows two pickers for one
- * setting.
+ * setting. The Psiphon protocol / CDN fronting options live there too, for the
+ * same reason.
  *
  * ### What the Psiphon block used to be
  *
@@ -103,6 +106,9 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
 internal fun ChainSection(
     chain: ChainMode,
     psiphonRegion: String,
+    psiphonProtocol: PsiphonProtocol,
+    psiphonCdnEdgeIps: String,
+    psiphonCdnSni: String,
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
@@ -111,6 +117,7 @@ internal fun ChainSection(
     val context = LocalContext.current
     // Install-time facts: read once, never per recomposition.
     val cores = remember(context) { CoreAvailability.of(context) }
+    val psiphon = PsiphonUi(psiphonRegion, psiphonProtocol, psiphonCdnEdgeIps, psiphonCdnSni)
 
     EngineSection(
         title = stringResource(R.string.section_chain),
@@ -136,14 +143,14 @@ internal fun ChainSection(
         Column(Modifier.fillMaxWidth().selectableGroup()) {
             FieldLabel(stringResource(R.string.chain_group_single))
             SingleCoreModes.forEach { mode ->
-                ChainModeEntry(mode, chain, psiphonRegion, cores, enabled, edit)
+                ChainModeEntry(mode, chain, psiphon, cores, enabled, edit)
             }
             Spacer(Modifier.height(EngineSpacing.Field))
             FieldLabel(stringResource(R.string.chain_group_stacked))
             Hint(stringResource(R.string.chain_group_stacked_note))
             Spacer(Modifier.height(EngineSpacing.Inline))
             StackedModes.forEach { mode ->
-                ChainModeEntry(mode, chain, psiphonRegion, cores, enabled, edit)
+                ChainModeEntry(mode, chain, psiphon, cores, enabled, edit)
             }
         }
 
@@ -168,6 +175,14 @@ internal fun ChainSection(
     }
 }
 
+/** The Psiphon fields the Chain page edits, carried together to the options block. */
+private data class PsiphonUi(
+    val region: String,
+    val protocol: PsiphonProtocol,
+    val cdnEdgeIps: String,
+    val cdnSni: String,
+)
+
 /** Aether alone, Psiphon alone, Tor alone. */
 private val SingleCoreModes: List<ChainMode> = ChainMode.entries.filterNot { it.isChained }
 
@@ -182,7 +197,7 @@ private val StackedModes: List<ChainMode> = ChainMode.entries.filter { it.isChai
 private fun ColumnScope.ChainModeEntry(
     mode: ChainMode,
     selected: ChainMode,
-    psiphonRegion: String,
+    psiphon: PsiphonUi,
     cores: CoreAvailability.Snapshot,
     enabled: Boolean,
     edit: ProfileEdit,
@@ -191,7 +206,9 @@ private fun ColumnScope.ChainModeEntry(
     if (mode.usesPsiphon) {
         DependentBlock(visible = mode == selected) {
             PsiphonOptions(
-                psiphonRegion = psiphonRegion,
+                psiphon = psiphon,
+                // Psiphon over Aether: its upstream is a SOCKS5 hop, no UDP.
+                viaUpstream = mode.upstreamOf(Hop.PSIPHON) != null,
                 serverListBundled = cores.psiphonServerList,
                 enabled = enabled,
                 edit = edit,
@@ -202,14 +219,16 @@ private fun ColumnScope.ChainModeEntry(
 
 /**
  * Psiphon's own options, shown under the selected Psiphon mode: whether this
- * build can start Psiphon at all, then where it comes out.
+ * build can start Psiphon at all, then where it comes out, then which
+ * protocols it may use.
  *
  * Indented and bracketed by small gaps so it reads as belonging to the card
  * above it rather than as the next card.
  */
 @Composable
 private fun PsiphonOptions(
-    psiphonRegion: String,
+    psiphon: PsiphonUi,
+    viaUpstream: Boolean,
     serverListBundled: Boolean,
     enabled: Boolean,
     edit: ProfileEdit,
@@ -238,11 +257,98 @@ private fun PsiphonOptions(
 
         Spacer(Modifier.height(EngineSpacing.Field))
         PsiphonExitField(
-            value = psiphonRegion,
+            value = psiphon.region,
             onValueChange = { code -> edit { copy(psiphonRegion = code) } },
             enabled = enabled,
         )
+
+        Spacer(Modifier.height(EngineSpacing.Field))
+        PsiphonCdnFrontingFields(
+            protocol = psiphon.protocol,
+            edgeIps = psiphon.cdnEdgeIps,
+            sni = psiphon.cdnSni,
+            viaUpstream = viaUpstream,
+            enabled = enabled,
+            edit = edit,
+        )
     }
+}
+
+/**
+ * Which protocols Psiphon may use, and the CDN edges / SNI for fronted meek.
+ * See [PsiphonProtocol] and docs/CDN_FRONTING.md.
+ *
+ * The edge field is free text and silently drops what it cannot use (see
+ * [PsiphonCdnFronting.parseIpCandidates]), so the number of entries that WILL
+ * be used is shown under it - otherwise a typo would look like a setting that
+ * does nothing.
+ */
+@Composable
+private fun ColumnScope.PsiphonCdnFrontingFields(
+    protocol: PsiphonProtocol,
+    edgeIps: String,
+    sni: String,
+    viaUpstream: Boolean,
+    enabled: Boolean,
+    edit: ProfileEdit,
+) {
+    // Resolved OUTSIDE the label lambda, like the exit field: the dropdown
+    // renders that lambda once per row.
+    val labels = mapOf(
+        PsiphonProtocol.AUTO to stringResource(R.string.psiphon_protocol_auto),
+        PsiphonProtocol.DIRECT to stringResource(R.string.psiphon_protocol_direct),
+        PsiphonProtocol.CDN_FRONTING to stringResource(R.string.psiphon_protocol_cdn),
+    )
+    val description = when (protocol) {
+        PsiphonProtocol.AUTO -> stringResource(R.string.psiphon_protocol_auto_desc)
+        PsiphonProtocol.DIRECT -> stringResource(R.string.psiphon_protocol_direct_desc)
+        PsiphonProtocol.CDN_FRONTING -> stringResource(R.string.psiphon_protocol_cdn_desc)
+    }
+
+    FieldLabel(stringResource(R.string.psiphon_protocol_label))
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    DropdownSelector(
+        options = PsiphonProtocol.entries.toList(),
+        selected = protocol,
+        onSelect = { choice -> edit { copy(psiphonProtocol = choice) } },
+        label = { choice -> labels[choice] ?: choice.name },
+        enabled = enabled,
+    )
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    Hint(description)
+
+    if (viaUpstream && protocol != PsiphonProtocol.AUTO) {
+        Spacer(Modifier.height(EngineSpacing.Inline))
+        NoticeBar(
+            text = stringResource(R.string.psiphon_cdn_quic_note),
+            tone = LocalAetherAccents.current.working,
+            icon = Icons.Rounded.Public,
+        )
+    }
+
+    Spacer(Modifier.height(EngineSpacing.Field))
+    val accepted = remember(edgeIps) { PsiphonCdnFronting.parseIpCandidates(edgeIps).size }
+    ProfileTextField(
+        value = edgeIps,
+        onValueChange = { value -> edit { copy(psiphonCdnEdgeIps = value) } },
+        label = stringResource(R.string.psiphon_cdn_ips_label),
+        placeholder = stringResource(R.string.psiphon_cdn_ips_hint),
+        singleLine = false,
+        enabled = enabled,
+    )
+    if (edgeIps.isNotBlank()) {
+        Hint(stringResource(R.string.psiphon_cdn_ips_count, accepted))
+    }
+    Spacer(Modifier.height(EngineSpacing.Inline))
+    ProfileTextField(
+        value = sni,
+        onValueChange = { value -> edit { copy(psiphonCdnSni = value) } },
+        label = stringResource(R.string.psiphon_cdn_sni_label),
+        placeholder = stringResource(R.string.psiphon_cdn_sni_hint),
+        singleLine = true,
+        enabled = enabled,
+    )
+    Hint(stringResource(R.string.psiphon_cdn_help))
 }
 
 /**
