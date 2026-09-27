@@ -502,6 +502,30 @@ data class ConnectionProfile(
     /** Upstream TCP connect timeout, seconds (engine env). 0 = engine default (30). */
     val tcpConnectSecs: Int = 0,
 
+    // ---- Psiphon CDN fronting (shirokhorshid psiphon-tunnel-core fork) ----
+
+    /**
+     * Which protocols the Psiphon hop may use. [PsiphonProtocol.AUTO] keeps
+     * Psiphon's own choice, which is what every build before this did. Like the
+     * other chain fields it never reaches the engine; PsiphonCore turns it into
+     * LimitTunnelProtocols / DisableTactics. See docs/CDN_FRONTING.md.
+     */
+    val psiphonProtocol: PsiphonProtocol = PsiphonProtocol.AUTO,
+
+    /**
+     * Extra CDN edge addresses for fronted meek to dial, IPv4 or IPv4 CIDR,
+     * separated by commas, spaces or newlines. Blank = only the built-in edges.
+     * Re-validated by core/PsiphonCdnFronting.kt before any of it reaches the
+     * core, because this field can hold anything that was pasted into it.
+     */
+    val psiphonCdnEdgeIps: String = "",
+
+    /**
+     * SNI host names to present to those edges (comma separated). Blank = the
+     * edge IP itself, as shirokhorshid does.
+     */
+    val psiphonCdnSni: String = "",
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
