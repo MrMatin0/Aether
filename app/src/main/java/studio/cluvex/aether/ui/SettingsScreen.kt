@@ -61,13 +61,16 @@ enum class SettingsPage {
      * Technical terms people actually type, in either language. Deliberately
      * NOT string resources: "MTU" is "MTU" in Persian too, and a translator
      * localising "obfs4" would break search.
+     *
+     * "HTTP/2" points at CONNECTION: the MASQUE over HTTP/2 switch lives under
+     * the protocol picker now, not on the Transport page.
      */
     internal val tags: List<String>
         get() = when (this) {
-            CONNECTION -> listOf("MASQUE", "WireGuard", "endpoint", "scan", "IPv4", "IPv6", "peer")
+            CONNECTION -> listOf("MASQUE", "WireGuard", "endpoint", "scan", "IPv4", "IPv6", "peer", "HTTP/2")
             CHAIN -> listOf("Tor", "Psiphon", "chain", "region")
             BRIDGES -> listOf("obfs4", "Snowflake", "WebTunnel", "meek", "bridge")
-            TRANSPORT -> listOf("MTU", "DNS", "ECH", "fragment", "noize", "keepalive", "QUIC", "HTTP/2")
+            TRANSPORT -> listOf("MTU", "DNS", "ECH", "fragment", "noize", "keepalive", "QUIC")
             ROUTING -> listOf("split tunnel", "proxy", "apps", "bypass", "block", "direct")
             SHARING -> listOf("LAN", "hotspot", "SOCKS")
             SECURITY -> listOf("kill switch", "lockdown", "IPv6 leak", "reconnect")

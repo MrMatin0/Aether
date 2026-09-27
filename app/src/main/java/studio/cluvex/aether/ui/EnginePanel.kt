@@ -53,12 +53,14 @@ internal fun EngineDestination(
     Column(modifier.fillMaxWidth()) {
         when (page) {
             // MASQUE-in-MASQUE is a protocol, so its two optional endpoints
-            // travel with the protocol picker.
+            // travel with the protocol picker. MASQUE over HTTP/2 only applies
+            // to the MASQUE transports, so it travels with the picker too.
             SettingsPage.CONNECTION -> ConnectionSection(
                 protocol = profile.protocol, scanMode = profile.scanMode,
                 endpointMode = profile.endpointMode, manualPeer = profile.manualPeer,
                 manualRange = profile.manualRange, ipVersion = profile.ipVersion,
                 mimOuterPeer = profile.mimOuterPeer, mimInnerPeer = profile.mimInnerPeer,
+                masqueHttp2 = profile.masqueHttp2,
                 enabled = enabled, edit = edit,
             )
             // psiphonConfig is deliberately NOT passed: the Psiphon core ships
@@ -80,7 +82,7 @@ internal fun EngineDestination(
                     noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,
                     fragment = profile.fragment, fragmentSize = profile.fragmentSize,
                     fragmentDelay = profile.fragmentDelay, ech = profile.ech,
-                    masqueHttp2 = profile.masqueHttp2, quicV2Opener = profile.quicV2Opener,
+                    quicV2Opener = profile.quicV2Opener,
                     dnsServers = profile.dnsServers, socketMark = profile.socketMark,
                     enabled = enabled, edit = edit,
                 )
