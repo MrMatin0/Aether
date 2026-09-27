@@ -20,7 +20,7 @@ use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
 use crate::masque::{self, Capsule, CapsuleParser};
 use crate::quic::{AssignedAddr, Control, Internals};
-use self::spoof::{self, SpoofMode};
+use self::spoof::SpoofMode;
 use crate::tls;
 
 const H2_ALPN: &[u8] = b"\x02h2";
