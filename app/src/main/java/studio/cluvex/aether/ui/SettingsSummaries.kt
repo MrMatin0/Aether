@@ -14,6 +14,7 @@ import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.Noize
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.SplitMode
 
 internal const val HUB_DOT = " \u00B7 "
@@ -30,9 +31,7 @@ internal data class SettingsEntry(
 }
 
 /**
- * The live summary of every destination. Same logic as before the redesign
- * (moved, not rewritten), except the preset count now comes from the caller,
- * which already collects the store for the Recommended strip.
+ * The live summary of every destination.
  */
 @Composable
 internal fun settingsEntries(profile: ConnectionProfile, presetCount: Int): List<SettingsEntry> {
@@ -105,10 +104,14 @@ private fun bridgeStateLine(profile: ConnectionProfile): String {
 
 @Composable
 private fun transportStateLine(profile: ConnectionProfile): String {
+    val spoof = profile.effectiveSpoofMode
+    val spoofSni = profile.effectiveSpoofSni
     val parts = listOfNotNull(
         if (profile.noize != Noize.OFF) noizeLabel(profile.noize) else null,
         if (profile.fragment) stringResource(R.string.hub_state_fragment) else null,
         if (profile.ech) stringResource(R.string.hub_state_ech) else null,
+        if (spoof != SpoofMode.OFF) spoofModeLabel(spoof) else null,
+        if (spoofSni.isNotEmpty()) stringResource(R.string.hub_state_spoof_sni, spoofSni) else null,
         if (profile.mtu != ConnectionProfile.DEFAULT_MTU) stringResource(R.string.hub_state_mtu, profile.mtu) else null,
         if (profile.keepalive > 0) stringResource(R.string.hub_state_keepalive, profile.keepalive) else null,
         if (profile.dnsServers.isNotBlank()) stringResource(R.string.hub_state_dns) else null,
