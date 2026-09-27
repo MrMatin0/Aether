@@ -31,8 +31,6 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.data.PresetStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
-import studio.cluvex.aether.model.isBusy
-import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.*
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.aetherDuration
@@ -80,13 +78,6 @@ fun SettingsHub(
     scrollState: ScrollState = rememberScrollState(),
 ) {
     SettingsHubLayout(locked, null, profile, null, onOpen, modifier, scrollState)
-}
-
-internal fun ConnectionState.tunnelTone(): TunnelTone = when {
-    isConnected -> TunnelTone.PROTECTED
-    this is ConnectionState.Error -> TunnelTone.FAILED
-    isBusy -> TunnelTone.WORKING // includes Verifying: never shown as ready
-    else -> TunnelTone.IDLE
 }
 
 private val GroupSetSaver = listSaver<Set<SettingsGroup>, String>(
