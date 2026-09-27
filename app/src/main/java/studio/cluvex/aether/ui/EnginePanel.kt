@@ -62,10 +62,10 @@ internal fun EngineDestination(
                 enabled = enabled, edit = edit,
             )
             // psiphonConfig is deliberately NOT passed: the Psiphon core ships
-            // its own client config, so there is no field to fill.
+            // its own client config, so there is no field to fill. Neither are
+            // the Tor exit options: the Chain page no longer offers them.
             SettingsPage.CHAIN -> ChainSection(
                 chain = profile.chain, psiphonRegion = profile.psiphonRegion,
-                torExitCountry = profile.torExitCountry, torStrictNodes = profile.torStrictNodes,
                 enabled = enabled, edit = edit,
             )
             // The chain is passed so the page can say when bridges are
