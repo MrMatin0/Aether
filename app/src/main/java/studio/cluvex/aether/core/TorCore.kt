@@ -22,7 +22,12 @@ internal object Torrc {
         dnsPort: Int,
         /** Local SOCKS5 the whole Tor client dials through, or null for direct. */
         upstreamPort: Int?,
-        /** Two-letter exit country, or null. Ignored without a geoip database. */
+        /**
+         * Two-letter exit country, or null. Ignored without a geoip database.
+         * [TorCore] always passes null now - the Chain page no longer offers an
+         * exit country - but the option stays here so the torrc builder remains
+         * a complete, tested description of what tor can be told.
+         */
         exitCountry: String?,
         strictNodes: Boolean,
         /** tor's geoip / geoip6 files, when they were bundled with the build. */
@@ -146,6 +151,14 @@ internal object Torrc {
  * knows nothing about the ladder: walking it is
  * [studio.cluvex.aether.vpn.session.ChainStack]'s job, and it does so with a
  * fresh [TorCore] per rung.
+ *
+ * ### No exit country
+ *
+ * The Chain page no longer offers a Tor exit country, so this class never asks
+ * for one: `profile.torExitCountry` / `profile.torStrictNodes` are still
+ * persisted (old profiles and exported configs keep decoding) but are not
+ * written into the torrc. Otherwise a value saved by an older build would keep
+ * pinning the exit with no UI left to clear it.
  */
 class TorCore(
     private val context: Context,
@@ -214,12 +227,6 @@ class TorCore(
         bootstrapPercent = 0
         val geoip = installGeoip("geoip")
         val geoip6 = installGeoip("geoip6")
-        if (geoip == null && profile.torExitCountry.isNotBlank()) {
-            DiagnosticsLog.w(
-                TAG,
-                "No geoip database in this build - the Tor exit country will be ignored.",
-            )
-        }
 
         // BRIDGES. [attempt] is already filtered to what this build can launch
         // (see BridgePlan), and it is filtered AGAIN here through the same
@@ -258,8 +265,9 @@ class TorCore(
             socksPort = TunnelConfig.TOR_SOCKS_PORT,
             dnsPort = TunnelConfig.TOR_DNS_PORT,
             upstreamPort = upstreamPort,
-            exitCountry = profile.torExitCountry,
-            strictNodes = profile.torStrictNodes,
+            // Deliberately never pinned: see "No exit country" in the class doc.
+            exitCountry = null,
+            strictNodes = false,
             geoipFile = geoip,
             geoip6File = geoip6,
             bridges = usable.map { it.line },
@@ -312,8 +320,8 @@ class TorCore(
      * Copies tor's geoip database out of assets, once per install-version.
      *
      * tor needs a real file path, and an asset is not one. Returns null when the
-     * build does not bundle the database, which is a supported state: only exit
-     * country selection depends on it.
+     * build does not bundle the database, which is a supported state: nothing
+     * the app asks of tor depends on it.
      */
     private fun installGeoip(name: String): String? {
         val target = File(dataDir, name)
