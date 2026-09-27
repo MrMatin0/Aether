@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hub_group_routing_safety">مسیریابی و ایمنی</string>
+    <string name="hub_group_advanced">پیشرفته</string>
+
+    <string name="hub_quick_title">کنترل‌های سریع</string>
+    <string name="hub_quick_kill">کلید قطع اضطراری</string>
+    <string name="hub_quick_ipv6">جلوگیری از نشت IPv6</string>
+    <string name="hub_quick_retry">اتصال مجدد هوشمند</string>
+    <string name="hub_quick_lan">اشتراک در شبکه محلی</string>
+
+    <string name="hub_presets_title">پیشنهادی</string>
+    <string name="hub_preset_manage">مدیریت</string>
+    <string name="hub_preset_active">فعال</string>
+    <string name="hub_preset_hardened">سخت‌گیرانه</string>
+    <string name="hub_preset_hardened_sub">قطع اضطراری سخت‌گیرانه، جلوگیری از نشت، تلاش مجدد خودکار</string>
+    <string name="hub_preset_balanced">متعادل</string>
+    <string name="hub_preset_balanced_sub">قطع اضطراری و جلوگیری از نشت، بدون قفل کامل</string>
+
+    <string name="hub_lock_badge">در حین اتصال قفل است</string>
+    <string name="hub_status_reconnecting">اتصال مجدد · %1$d/%2$d</string>
+
+    <string name="hub_search_placeholder">جستجو: MTU، قطع اضطراری، Tor…</string>
+    <plurals name="hub_search_count">
+        <item quantity="one">%d نتیجه</item>
+        <item quantity="other">%d نتیجه</item>
+    </plurals>
+
+    <string name="hub_expand">باز کردن</string>
+    <string name="hub_collapse">بستن</string>
+    <string name="hub_open_full">باز کردن در صفحهٔ کامل</string>
+</resources>

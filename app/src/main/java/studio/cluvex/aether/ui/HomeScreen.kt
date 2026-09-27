@@ -1,6 +1,15 @@
 package studio.cluvex.aether.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
@@ -17,9 +26,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.IpEndpoint
@@ -29,12 +40,18 @@ import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.LanguageToggle
+import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.AetherEaseOut
+import studio.cluvex.aether.ui.theme.AetherEaseOutExpo
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
+import studio.cluvex.aether.ui.theme.LocalReducedMotion
 
 internal enum class HomeTab { HOME, DIAGNOSTICS, SETTINGS }
 internal data class HomeRoute(val tab: HomeTab = HomeTab.HOME, val page: SettingsPage? = null) {
     init { require(page == null || tab == HomeTab.SETTINGS) }
     val canGoBack: Boolean get() = page != null || tab != HomeTab.HOME
+    /** 0 = a tab root, 1 = a settings page. Drives the direction of the transition. */
+    val depth: Int get() = if (page != null) 1 else 0
     fun select(tab: HomeTab) = HomeRoute(tab)
     fun open(page: SettingsPage) = HomeRoute(HomeTab.SETTINGS, page)
     fun back() = if (page != null) HomeRoute(HomeTab.SETTINGS) else HomeRoute()
@@ -81,13 +98,14 @@ fun HomeScreen(
     onToggleConnection: () -> Unit, modifier: Modifier = Modifier,
 ) {
     var route by rememberSaveable(stateSaver = HomeRouteSaver) { mutableStateOf(HomeRoute()) }
-    // One-shot: "See the error" asks the console to open on the Errors filter.
     var focusErrors by rememberSaveable { mutableStateOf(false) }
     val homeScroll = rememberScrollState()
     val settingsScroll = rememberScrollState()
     val pages = rememberSaveableStateHolder()
     val haptics = LocalHapticFeedback.current
     val editable = state is ConnectionState.Idle || state is ConnectionState.Error
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val reduced = LocalReducedMotion.current
     BackHandler(route.canGoBack) { route = route.back() }
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -106,37 +124,63 @@ fun HomeScreen(
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     HomeHeader(route, onBack = { route = route.back() })
                     Box(Modifier.weight(1f).widthIn(max = 880.dp).fillMaxWidth()) {
-                        pages.SaveableStateProvider(route.savedValues().joinToString("/")) {
-                            val page = route.page
-                            when {
-                                page != null -> SettingsPageBody(page, state, profile, onProfileChange, editable)
-                                route.tab == HomeTab.SETTINGS -> SettingsHub(!editable, profile,
-                                    { route = route.open(it) }, scrollState = settingsScroll)
-                                route.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(
-                                    focusErrors = focusErrors,
-                                    onFocusConsumed = { focusErrors = false },
-                                )
-                                else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
-                                    editable = editable,
-                                    onProfileChange = onProfileChange,
-                                    onToggleConnection = {
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onToggleConnection()
-                                    },
-                                    onOpenDiagnostics = {
-                                        focusErrors = true
-                                        route = route.select(HomeTab.DIAGNOSTICS)
-                                    })
+                        AnimatedContent(
+                            targetState = route,
+                            contentKey = { it.savedValues().joinToString("/") },
+                            transitionSpec = {
+                                when {
+                                    reduced -> EnterTransition.None togetherWith ExitTransition.None
+                                    // Tab swaps are lateral: cross-fade, no travel.
+                                    targetState.depth == initialState.depth ->
+                                        fadeIn(tween(AetherDur.Quick, easing = AetherEaseOut)) togetherWith
+                                            fadeOut(tween(AetherDur.Quick / 2))
+                                    else -> {
+                                        // Deeper enters from the END edge, which is the left in Persian.
+                                        val sign = (if (targetState.depth > initialState.depth) 1 else -1) * (if (rtl) -1 else 1)
+                                        (slideInHorizontally(tween(AetherDur.Base, easing = AetherEaseOutExpo)) { it / 8 * sign } +
+                                            fadeIn(tween(AetherDur.Base, easing = AetherEaseOut))) togetherWith
+                                            (slideOutHorizontally(tween(AetherDur.Base, easing = AetherEaseOutExpo)) { -it / 12 * sign } +
+                                                fadeOut(tween(AetherDur.Quick)))
+                                    }
+                                }
+                            },
+                            label = "home-route",
+                        ) { target ->
+                            pages.SaveableStateProvider(target.savedValues().joinToString("/")) {
+                                val page = target.page
+                                when {
+                                    page != null -> SettingsPageBody(
+                                        page, state, profile, onProfileChange, editable, Modifier.fillMaxSize(),
+                                    )
+                                    target.tab == HomeTab.SETTINGS -> SettingsHub(
+                                        state = state,
+                                        profile = profile,
+                                        onProfileChange = onProfileChange,
+                                        onOpen = { route = route.open(it) },
+                                        scrollState = settingsScroll,
+                                    )
+                                    target.tab == HomeTab.DIAGNOSTICS -> DiagnosticsDestination(
+                                        focusErrors = focusErrors,
+                                        onFocusConsumed = { focusErrors = false },
+                                    )
+                                    else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
+                                        editable = editable,
+                                        onProfileChange = onProfileChange,
+                                        onToggleConnection = {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onToggleConnection()
+                                        },
+                                        onOpenDiagnostics = {
+                                            focusErrors = true
+                                            route = route.select(HomeTab.DIAGNOSTICS)
+                                        })
+                                }
                             }
                         }
                     }
                     Surface(color = MaterialTheme.colorScheme.surface) {
                         Column(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            // The connection tab has no dock any more: the orb IS the
-                            // control, and a second button 40dp below it was the same
-                            // intent twice. Every other tab keeps the one-line status
-                            // shortcut back to it.
                             if (route.tab != HomeTab.HOME) {
                                 TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                                     Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
@@ -168,10 +212,9 @@ private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
             Spacer(Modifier.width(8.dp))
         }
         Column(Modifier.weight(1f)) {
-            // Inside a settings destination the eyebrow names the section it came
-            // from, so a page called "Transport" is not floating on its own.
             if (route.tab != HomeTab.HOME) Text(
-                stringResource(if (route.page != null) R.string.nav_settings else R.string.app_name),
+                // Inside a page the eyebrow names its group, not just "Settings".
+                route.page?.let { stringResource(it.group.label) } ?: stringResource(R.string.app_name),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -183,20 +226,6 @@ private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
     }
 }
 
-/**
- * The diagnostics destination: the console, filling the tab.
- *
- * NO VERTICAL SCROLL HERE any more. The console is a LazyColumn that owns its
- * own scrolling; nesting it in a scrolling column forced a fixed 420dp height
- * and gave the rest of the screen to controls.
- *
- * EDGE-TO-EDGE: the root inserts the status bar, the navigation bar and the IME,
- * which covers the vertical edges and nothing else. A display cutout in
- * landscape and a rounded-corner inset both land on the HORIZONTAL edges, and
- * this is the one screen whose content runs right up to them - a monospace
- * console with no natural margin. safeDrawing's horizontal side is resolved by
- * the layout direction, so one modifier is correct in Persian and English.
- */
 @Composable
 private fun DiagnosticsDestination(focusErrors: Boolean, onFocusConsumed: () -> Unit) {
     DiagnosticsPanel(

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- New strings for the redesigned settings hub. Existing hub_* strings are reused as-is. -->
+<resources>
+    <string name="hub_group_routing_safety">Routing &amp; safety</string>
+    <string name="hub_group_advanced">Advanced</string>
+
+    <string name="hub_quick_title">Quick controls</string>
+    <string name="hub_quick_kill">Kill switch</string>
+    <string name="hub_quick_ipv6">IPv6 leak guard</string>
+    <string name="hub_quick_retry">Smart reconnect</string>
+    <string name="hub_quick_lan">LAN sharing</string>
+
+    <string name="hub_presets_title">Recommended</string>
+    <string name="hub_preset_manage">Manage</string>
+    <string name="hub_preset_active">Active</string>
+    <string name="hub_preset_hardened">Hardened</string>
+    <string name="hub_preset_hardened_sub">Strict kill switch, leak guard, auto-retry</string>
+    <string name="hub_preset_balanced">Balanced</string>
+    <string name="hub_preset_balanced_sub">Kill switch and leak guard, no lockdown</string>
+
+    <string name="hub_lock_badge">Locked while connected</string>
+    <string name="hub_status_reconnecting">Reconnecting · %1$d/%2$d</string>
+
+    <string name="hub_search_placeholder">Search MTU, kill switch, Tor…</string>
+    <plurals name="hub_search_count">
+        <item quantity="one">%d match</item>
+        <item quantity="other">%d matches</item>
+    </plurals>
+
+    <string name="hub_expand">Expand</string>
+    <string name="hub_collapse">Collapse</string>
+    <string name="hub_open_full">Open as full page</string>
+</resources>
