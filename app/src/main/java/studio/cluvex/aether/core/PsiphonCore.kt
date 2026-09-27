@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.PsiphonProtocol
 import java.io.File
 
 /**
@@ -51,6 +52,12 @@ import java.io.File
  * A pasted or bundled config still WINS if one exists, so a build with its own
  * network-issued config behaves exactly as before. There is simply no longer a
  * path on which the absence of one is fatal - see [baseConfig].
+ *
+ * ### CDN fronting
+ *
+ * The core is built from shirokhorshid's fork (scripts/build-overlay-cores.sh),
+ * which adds the FRONTED-MEEK-CDN-* protocols. [PsiphonCdnFronting] decides
+ * what to ask for and [applyCdnFronting] writes it; see docs/CDN_FRONTING.md.
  */
 class PsiphonCore(
     private val context: Context,
@@ -129,7 +136,7 @@ class PsiphonCore(
         upstreamPort: Int?,
         egress: String = profile.psiphonRegion,
     ) {
-        val config = buildConfig(baseConfig(profile), upstreamPort, egress)
+        val config = buildConfig(baseConfig(profile), profile, upstreamPort, egress)
         val configFile = File(dataDir, CONFIG_FILE)
         configFile.writeText(config)
         tunnelCount = 0
@@ -156,7 +163,8 @@ class PsiphonCore(
             TAG,
             "Starting Psiphon on 127.0.0.1:${TunnelConfig.PSIPHON_SOCKS_PORT}" +
                 (upstreamPort?.let { " through 127.0.0.1:$it" } ?: " (direct)") +
-                " exit=${PsiphonRegions.name(PsiphonRegions.sanitize(egress))}",
+                " exit=${PsiphonRegions.name(PsiphonRegions.sanitize(egress))}" +
+                " protocols=${profile.psiphonProtocol.name.lowercase()}",
         )
         child.start(args = args, onLine = ::onNotice)
     }
@@ -283,6 +291,7 @@ class PsiphonCore(
      */
     private fun buildConfig(
         base: String,
+        profile: ConnectionProfile,
         upstreamPort: Int?,
         egress: String,
     ): String {
@@ -335,6 +344,19 @@ class PsiphonCore(
         val region = PsiphonRegions.sanitize(egress)
         if (region.isNotEmpty()) json.put("EgressRegion", region) else json.remove("EgressRegion")
 
+        // CDN FRONTING: edge overrides, scan spec and the protocol limit. The
+        // QUIC protocols are dropped when there is an upstream, because a SOCKS5
+        // hop carries no UDP.
+        applyCdnFronting(
+            json,
+            PsiphonCdnFronting.plan(
+                protocol = profile.psiphonProtocol,
+                edgeIps = profile.psiphonCdnEdgeIps,
+                sni = profile.psiphonCdnSni,
+                viaUpstream = upstreamPort != null,
+            ),
+        )
+
         if (!json.has("PropagationChannelId") || !json.has("SponsorId")) {
             DiagnosticsLog.w(
                 TAG,
@@ -342,6 +364,51 @@ class PsiphonCore(
             )
         }
         return json.toString()
+    }
+
+    /**
+     * Writes a [PsiphonCdnFronting.Plan] into the config. Keys only the fork
+     * understands are ignored by an upstream core, EXCEPT protocol names in
+     * LimitTunnelProtocols, which upstream rejects - so a plain-upstream build
+     * (PSIPHON_REPO override) must stay on [PsiphonProtocol.AUTO].
+     */
+    private fun applyCdnFronting(json: JSONObject, plan: PsiphonCdnFronting.Plan) {
+        json.put("FrontedMeekDialOverrides", JSONArray(plan.dialOverrides.map { it.toJson() }))
+        json.put("FrontedMeekDialOverridesProbability", plan.dialOverridesProbability)
+        json.put("FrontedMeekCDNScanUseBuiltInSpec", plan.useBuiltInScanSpec)
+        val spec = plan.scanSpec
+        if (spec != null) {
+            json.put(
+                "FrontedMeekCDNScanSpec",
+                JSONObject().apply {
+                    put("IPCandidates", JSONArray(spec.ipCandidates))
+                    if (spec.sniServerNames.isNotEmpty()) put("SNIServerNames", JSONArray(spec.sniServerNames))
+                },
+            )
+        } else {
+            json.remove("FrontedMeekCDNScanSpec")
+        }
+        // AUTO leaves a network-issued limit and tactics exactly as issued.
+        plan.limitTunnelProtocols?.let { json.put("LimitTunnelProtocols", JSONArray(it)) }
+        if (plan.disableTactics) json.put("DisableTactics", true)
+
+        DiagnosticsLog.i(
+            TAG,
+            "CDN fronting: ${plan.dialOverrides.size} edge overrides, " +
+                "${spec?.ipCandidates?.size ?: 0} custom edges, " +
+                "protocols=${plan.limitTunnelProtocols?.joinToString(",") ?: "auto"}",
+        )
+    }
+
+    private fun PsiphonCdnFronting.DialOverride.toJson(): JSONObject = JSONObject().apply {
+        put("OverrideID", id)
+        if (providerRegexes.isNotEmpty()) put("MatchFrontingProviderIDRegexes", JSONArray(providerRegexes))
+        if (dialAddressRegexes.isNotEmpty()) put("MatchDialAddressRegexes", JSONArray(dialAddressRegexes))
+        put("DialAddresses", JSONArray(dialAddresses))
+        put("SNIServerName", sniServerName)
+        put("VerifyServerNames", JSONArray(verifyServerNames))
+        put("ALPNProtocols", JSONArray(alpnProtocols))
+        put("TLSProfile", tlsProfile)
     }
 
     /**
@@ -400,6 +467,16 @@ class PsiphonCore(
                 }
                 if (list.isNotEmpty()) {
                     DiagnosticsLog.i(TAG, "Psiphon reachable exits: ${list.sorted().joinToString(", ")}")
+                }
+            }
+            // The fork reports its CDN edge scan (active / progress / found /
+            // exhausted) and the fronting route it settled on as Info notices.
+            // Surfaced because they are the only way to tell whether CDN
+            // fronting is doing anything on a given network.
+            "Info" -> {
+                val message = data?.optString("message").orEmpty()
+                if (message.contains("cdn fronting", ignoreCase = true)) {
+                    DiagnosticsLog.i(TAG, "Psiphon: $message")
                 }
             }
             "Alert", "Error", "Warning" ->
