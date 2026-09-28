@@ -5,12 +5,10 @@
     <string name="spoof_mode_off">خاموش</string>
     <string name="spoof_mode_sni_split">شکستن SNI</string>
     <string name="spoof_mode_stream_split">تقسیم جریان</string>
-    <string name="spoof_mode_decoy">فریب‌دهنده (آزمایشی)</string>
-    <string name="spoof_mode_needs_h2">حالت‌های شکستن و فریب فقط روی حامل HTTP/2 کار می‌کنند. برای استفاده، «MASQUE روی HTTP/2» را در صفحه اتصال روشن کنید؛ در HTTP/3، ClientHello داخل فریم‌های QUIC است و موتور آن را تقسیم نمی‌کند.</string>
+    <string name="spoof_mode_needs_h2">حالت‌های شکستن فقط روی حامل HTTP/2 کار می‌کنند. برای استفاده، «MASQUE روی HTTP/2» را در صفحه اتصال روشن کنید؛ در HTTP/3، ClientHello داخل فریم‌های QUIC است و موتور آن را تقسیم نمی‌کند. SNI سفارشی پایین روی هر دو کار می‌کند.</string>
     <string name="spoof_mode_unsupported">جعل، روی TLS ClientHello کار می‌کند و WireGuard و WARP×2 چیزی به نام ClientHello ارسال نمی‌کنند. برای استفاده، در صفحه اتصال یکی از حالت‌های MASQUE را انتخاب کنید.</string>
-    <string name="spoof_decoy_warning">آزمایشی: قبل از ClientHello واقعی، یک رکورد مقدماتی بی‌ضرر ارسال می‌کند. مؤثر بودنش به شبکه بستگی دارد و روی میان‌جعبه‌های سخت‌گیر ممکن است اتصال را بشکند. سنجاق گواهی فعال می‌ماند، پس پاسخ جعلی نمی‌تواند تونل را باز کند - اتصال یا سر‌به‌سر اعتبارسنجی می‌شود یا شکست می‌خورد.</string>
     <string name="spoof_sni_label">SNI سفارشی</string>
     <string name="spoof_sni_hint">مثلاً speed.cloudflare.com</string>
-    <string name="spoof_sni_help">به‌جای نام پیش‌فرض به سرور لبه MASQUE ارائه می‌شود. گواهی سرور سنجاق شده، پس نام اشتباه راه شنود را باز نمی‌کند - ولی ممکن است سرور آن را رد کند. برای پیش‌فرض، خالی بگذارید. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="spoof_sni_help">به‌جای نام پیش‌فرض به سرور لبه MASQUE ارائه می‌شود، هم روی HTTP/2 و هم HTTP/3. گواهی سرور سنجاق شده، پس نام اشتباه راه شنود را باز نمی‌کند - ولی ممکن است سرور آن را رد کند. برای پیش‌فرض، خالی بگذارید. از اتصال بعدی اعمال می‌شود.</string>
     <string name="hub_state_spoof_sni">SNI %1$s</string>
 </resources>

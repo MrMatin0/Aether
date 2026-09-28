@@ -27,10 +27,10 @@ import studio.cluvex.aether.ui.spoofModeLabel
  * the ClientHello is shaped, next to fragmentation and ECH - the settings it
  * combines with, not a feature to hunt for. The whole group is only shown
  * while the protocol CAN shape a ClientHello at all: the MASQUE transports for
- * the SNI, and the HTTP/2 carrier specifically for the split/decoy modes
- * (which is where the reference repo's techniques apply). On WireGuard and
- * gool there is no TLS ClientHello on the wire, so the card says so instead
- * of offering switches that would do nothing.
+ * the SNI, and the HTTP/2 carrier specifically for the split modes (which is
+ * where the reference repo's techniques apply). On WireGuard and gool there is
+ * no TLS ClientHello on the wire, so the card says so instead of offering
+ * switches that would do nothing.
  */
 @Composable
 internal fun TransportSection(
@@ -135,10 +135,10 @@ internal fun TransportSection(
 
         // ----------------------------------------------------- spoofing --
         // The SNI applies to every MASQUE carrier (H2 and H3 both put it in
-        // their ClientHello); the split/decoy modes only the HTTP/2 one,
-        // whose TCP stream the engine writes itself. A WireGuard session has
-        // no ClientHello for any of this, so it gets the explanation rather
-        // than dead switches.
+        // their ClientHello); the split modes only the HTTP/2 one, whose TCP
+        // stream the engine writes itself. A WireGuard session has no
+        // ClientHello for any of this, so it gets the explanation rather than
+        // dead switches.
         if (protocol.isMasque) {
             Spacer(Modifier.height(EngineSpacing.Divider))
             EngineDivider()
@@ -152,9 +152,6 @@ internal fun TransportSection(
                     enabled = enabled,
                 )
                 Hint(stringResource(R.string.spoof_mode_desc))
-                DependentBlock(visible = spoofMode == SpoofMode.DECOY) {
-                    Hint(stringResource(R.string.spoof_decoy_warning))
-                }
             } else {
                 Hint(stringResource(R.string.spoof_mode_needs_h2))
             }

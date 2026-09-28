@@ -1,7 +1,8 @@
 # MASQUE ClientHello spoofing
 
 How the app shapes the TLS handshake toward the MASQUE edge for DPI, and why it
-is built the way it is. Added in 2.2.0 (`feat/masque-spoofing`).
+is built the way it is. Added in 2.2.0 (`feat/masque-spoofing`), corrected in
+`fix/masque-spoofing-bugs`.
 
 ## What the reference repo actually does
 
@@ -22,23 +23,53 @@ so it proves a TCP connection opened, not that a strategy works.
 ## What Aether implements instead
 
 Each mode is named for what the code does, and lives on the HTTP/2 carrier
-(the one TCP stream the engine writes end to end):
+(the one TCP stream the engine writes end to end). Both split modes shape the
+**first write only** - the ClientHello - and every later write goes out whole,
+so the session is not taxed for its whole life.
 
 | Mode | Behaviour |
 | --- | --- |
 | Off | plain handshake (default) |
-| SNI split | first write is cut in the middle of the server name, found by parsing the ClientHello (the parser fragmentation already uses) |
-| Stream split | first write is sent as a few small pieces - what `wrong_seq` actually performs |
-| Decoy (experimental) | a well-formed, empty **HelloRequest** record is sent before the real ClientHello. RFC 8446 §4.1.1 requires the server to ignore it, so only a middlebox parsing what it does not own can react to it |
+| SNI split | the first write is cut in the middle of the server name, found by parsing the ClientHello (the parser fragmentation already uses). A first write without a parseable SNI is sent whole |
+| Stream split | the first write is sent as pieces of 64, 32 and 24 bytes, then the rest - what `wrong_seq` actually performs |
 
-A custom **SNI** can also be set for both MASQUE carriers (H2 and H3).
+Every piece is a real write of the inner stream. The wrapper never returns
+`Pending` on its own (that would need a waker it does not have), and it stops
+shaping as soon as the first byte comes back from the server.
+
+## No decoy
+
+The first 2.2.0 build had a "Decoy (experimental)" mode that sent
+`16 03 01 00 04 01 00 00 00` before the real hello, described as a
+HelloRequest the server must ignore. It was not: handshake type `0x01` is
+**ClientHello**, so the record was an *empty ClientHello*, and TLS 1.3 has no
+record a server is required to ignore before the ClientHello (HelloRequest
+does not exist in 1.3, and in 1.2 only a server sends it). A strict edge can
+only answer it with an alert. The implementation also hung the handshake: it
+returned `Pending` after writing the decoy without registering a wake-up.
+
+It was removed rather than patched, because there is no correct version of
+it. `decoy`, `fake_client_hello` and `custom_decoy` are read as `off` - in the
+engine and in saved app profiles - so nobody's config fails to load.
+
+## Custom SNI
+
+`AETHER_MASQUE_SNI` replaces the default `consumer-masque.cloudflareclient.com`
+on **both** carriers (HTTP/2 and HTTP/3), including the scanner's verify
+probes and the ECH retry, so an edge the scan accepted was tested with the
+same name the tunnel dials it with. The swap happens at the four handshake
+entry points (`masque_h2::run`, `masque_h2::verify_h2`, `quic::run`,
+`quic::verify_masque`) through `spoof::resolve_sni`, which only replaces the
+default name: a caller that passes a different SNI on purpose is never
+overridden. An invalid value is ignored with a single warning.
 
 ## Security boundary
 
-The MASQUE edge certificate is verified by **SPKI pin**, not by hostname, so a
-spoofed SNI or a shaped hello cannot open the tunnel to interception: the
-connection validates end to end or it does not open. Nothing here touches the
-pin logic.
+The MASQUE edge is verified by the engine's pinned-key check (tls.rs,
+`pin_endpoint`), which does not match the hostname, so a custom SNI does not by
+itself fail verification, and a shaped hello only changes how the same bytes
+are framed. Nothing here touches tls.rs: whatever verifier it installs for the
+edge is installed the same way with spoofing on or off.
 
 Whether an edge *accepts* a custom SNI is a network question - the engine's
 existing data-plane check already refuses to expose the proxy until traffic
@@ -53,17 +84,19 @@ to start.
 
 | Variable | Values | Default |
 | --- | --- | --- |
-| `AETHER_MASQUE_H2_SPOOF` | `off`, `sni_split`, `stream_split`, `decoy` | `off` |
+| `AETHER_MASQUE_H2_SPOOF` | `off`, `sni_split`, `stream_split` (retired: `decoy` -> `off`) | `off` |
 | `AETHER_MASQUE_SNI` | a hostname (LDH labels, at least one dot) | `consumer-masque.cloudflareclient.com` |
 
 Invalid values fall back to the defaults with a warning, never to a refusal.
 
 ## Composition
 
-Spoofing runs **under** fragmentation: with SNI split the first write is cut
-at the server name and the fragmenter then chops those pieces further; the
-decoy record is always sent whole, before the fragmenter sees the real hello.
+Spoofing sits **above** fragmentation: the spoofing wrapper writes into the
+(possibly fragmenting) socket, so with SNI split the first write is cut at the
+server name first and the fragmenter then chops each of those pieces further.
+With fragmentation on, SNI split mostly decides *where* the first cut lands.
 
 WireGuard and WARP×2 have no TLS ClientHello, and on HTTP/3 the hello sits
 inside QUIC crypto frames the engine does not split - the app only offers the
-modes where they can take effect, and says so everywhere else.
+split modes where they can take effect, and says so everywhere else. The
+custom SNI is the exception: it works on both MASQUE carriers.

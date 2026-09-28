@@ -28,9 +28,24 @@ class SpoofModeTest {
     fun `the reference repo option names are read as what they actually do`() {
         // wrong_seq never touched a TCP sequence number; it splits the stream.
         assertEquals(SpoofMode.STREAM_SPLIT, SpoofMode.fromStored("wrong_seq"))
-        // fake_client_hello is the decoy idea, done correctly here.
-        assertEquals(SpoofMode.DECOY, SpoofMode.fromStored("fake_client_hello"))
-        assertEquals(SpoofMode.DECOY, SpoofMode.fromStored("custom_decoy"))
+        // There is no decoy mode (its record was an empty ClientHello, which a
+        // TLS 1.3 server cannot ignore), so the decoy-shaped names mean OFF.
+        assertEquals(SpoofMode.OFF, SpoofMode.fromStored("fake_client_hello"))
+        assertEquals(SpoofMode.OFF, SpoofMode.fromStored("custom_decoy"))
+    }
+
+    @Test
+    fun `a profile saved with the removed decoy mode reads back as off`() {
+        assertEquals(SpoofMode.OFF, SpoofMode.fromStored("decoy"))
+        assertEquals(SpoofMode.OFF, SpoofMode.fromStored("DECOY"))
+        // And nothing can emit it any more.
+        assertFalse(SpoofMode.entries.any { it.engineValue == "decoy" })
+        val profile = ConnectionProfile(
+            protocol = Protocol.MASQUE,
+            masqueHttp2 = true,
+            spoofMode = SpoofMode.fromStored("decoy") ?: SpoofMode.OFF,
+        )
+        assertFalse(profile.toEnv().containsKey("AETHER_MASQUE_H2_SPOOF"))
     }
 
     @Test
