@@ -16,6 +16,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 
@@ -119,6 +120,9 @@ class ProfileCodecTest {
         // treats the same way, but a byte-for-byte round trip needs one line.
         psiphonCdnEdgeIps = "23.215.0.206,104.16.0.0/24",
         psiphonCdnSni = "www.example.com",
+        // ---- 2.2.0: MASQUE spoofing ----
+        spoofMode = SpoofMode.SNI_SPLIT,
+        spoofSni = "speed.cloudflare.com",
     )
 
     /**
