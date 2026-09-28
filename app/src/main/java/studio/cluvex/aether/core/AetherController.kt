@@ -20,6 +20,7 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 import studio.cluvex.aether.vpn.AetherVpnService
@@ -220,6 +221,10 @@ object ProfileCodec {
         add("psiphonProtocol=${p.psiphonProtocol.name}")
         add("psiphonCdnIps=${flatten(p.psiphonCdnEdgeIps)}")
         add("psiphonCdnSni=${flatten(p.psiphonCdnSni)}")
+        // Added in 2.2.0 (MASQUE spoofing). Same keys as ProfileStore, so the
+        // codec keeps carrying every non-secret field (ProfileCodecTest).
+        add("spoofMode=${p.spoofMode.name}")
+        add("spoofSni=${flatten(p.spoofSni)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -317,6 +322,11 @@ object ProfileCodec {
                 psiphonProtocol = PsiphonProtocol.fromStored(map["psiphonProtocol"]) ?: d.psiphonProtocol,
                 psiphonCdnEdgeIps = map["psiphonCdnIps"] ?: d.psiphonCdnEdgeIps,
                 psiphonCdnSni = map["psiphonCdnSni"] ?: d.psiphonCdnSni,
+                // ---- MASQUE spoofing (2.2.0) ----
+                // Not enumOr(): fromStored also reads the reference repo's
+                // option names, and anything unknown keeps the OFF default.
+                spoofMode = SpoofMode.fromStored(map["spoofMode"]) ?: d.spoofMode,
+                spoofSni = map["spoofSni"] ?: d.spoofSni,
             )
         }.getOrDefault(d)
     }
