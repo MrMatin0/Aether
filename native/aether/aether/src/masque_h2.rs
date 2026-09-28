@@ -345,6 +345,9 @@ pub async fn dial(peer: std::net::SocketAddr) -> Result<TcpStream> {
 pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Duration> {
     let start = Instant::now();
     let data_check = data_check_enabled();
+    // Same name the tunnel will present, so the scanner and the quick verify
+    // test exactly what run() is going to send.
+    let sni = spoof::resolve_sni(&cfg.sni);
 
     let attempt = async {
         let tls_config = build_tls(cfg)?;
@@ -352,7 +355,7 @@ pub async fn verify_h2(cfg: &H2TunnelConfig, timeout: Duration) -> Result<Durati
         let _ = tcp.set_nodelay(true);
         let fragment = FragmentingStream::new(tcp, FragmentConfig::from_env());
         let spoofed = SpoofingStream::new(fragment, SpoofMode::from_env());
-        let tls = tokio_boring::connect(tls_config, &cfg.sni, spoofed)
+        let tls = tokio_boring::connect(tls_config, &sni, spoofed)
             .await
             .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
         let (h2, connection) = h2_builder()
@@ -495,12 +498,13 @@ pub async fn run(
             format!("[h2] client hello spoofing: {}", spoof_mode.label()),
         );
     }
-    if cfg.sni != consts::CONNECT_SNI {
-        log_or_debug(quiet, format!("[h2] presenting custom sni {}", cfg.sni));
+    let sni = spoof::resolve_sni(&cfg.sni);
+    if sni != cfg.sni {
+        log_or_debug(quiet, format!("[h2] presenting custom sni {sni}"));
     }
     let spoofed = SpoofingStream::new(fragment, spoof_mode);
 
-    let tls = tokio_boring::connect(tls_config, &cfg.sni, spoofed)
+    let tls = tokio_boring::connect(tls_config, &sni, spoofed)
         .await
         .map_err(|e| AetherError::Tls(format!("h2 tls handshake: {e}")))?;
     log_or_debug(
@@ -943,9 +947,11 @@ fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
 /// shared by both MASQUE carriers.
 ///
 /// The split modes live here because the only consumer is this transport.
-/// [configured_sni] is read by `lib.rs` wherever a MASQUE config (tunnel,
-/// quick verify or scanner probe, H2 and H3 alike) is built, so the scanner
-/// tests the same name the tunnel will present.
+/// [resolve_sni] is applied at the four places a MASQUE handshake actually
+/// starts - [super::run] and [super::verify_h2] here, `quic::run` and
+/// `quic::verify_masque` for HTTP/3 - so the tunnel, the quick verify and
+/// every scanner probe present the same name without `lib.rs` having to
+/// change the configs it builds.
 ///
 /// WHAT THIS IS NOT: the reference repo (MrMatin0/SPOOOOOOOFING) ships options
 /// named `wrong_seq` and `custom_decoy` whose code does neither - its
@@ -1019,6 +1025,19 @@ pub mod spoof {
                 SpoofMode::SniSplit => "sni_split",
                 SpoofMode::StreamSplit => "stream_split",
             }
+        }
+    }
+
+    /// The SNI to put on the wire for a MASQUE handshake whose config asked
+    /// for `requested`. Every config `lib.rs` builds asks for the built-in
+    /// default, and that request is answered with [configured_sni], so the
+    /// user's override reaches the tunnel, the quick verify and the scanner
+    /// alike. A caller that explicitly asked for some other name keeps it.
+    pub fn resolve_sni(requested: &str) -> String {
+        if requested == crate::consts::CONNECT_SNI {
+            configured_sni()
+        } else {
+            requested.to_string()
         }
     }
 
@@ -1162,6 +1181,11 @@ pub mod spoof {
             assert_eq!(sni_or_default(Some("speed.cloudflare.com")), "speed.cloudflare.com");
             assert_eq!(sni_or_default(Some("not a hostname")), crate::consts::CONNECT_SNI);
             assert_eq!(sni_or_default(Some("  ")), crate::consts::CONNECT_SNI);
+        }
+
+        #[test]
+        fn an_explicitly_chosen_sni_is_never_overridden() {
+            assert_eq!(resolve_sni("example.org"), "example.org");
         }
     }
 }
