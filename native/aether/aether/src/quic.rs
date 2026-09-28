@@ -334,6 +334,13 @@ pub async fn run(
     let mut validate_deadline: Option<Instant> = None;
     let mut validate_successes: u32 = 0;
 
+    // The name that actually goes into the ClientHello: the user's custom SNI
+    // (AETHER_MASQUE_SNI) when the caller asked for the built-in default.
+    let sni = crate::masque_h2::spoof::resolve_sni(&cfg.sni);
+    if sni != cfg.sni {
+        log_or_debug(quiet, format!("presenting custom sni {sni}"));
+    }
+
     let init_sock = bind_udp_fast(bind_addr_for(&peer)).await?;
     let _init_detour = crate::upstream::attach_detour(&init_sock, peer).await?;
     let local = init_sock.local_addr()?;
@@ -369,7 +376,7 @@ pub async fn run(
     let scid_bytes = random_scid();
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
 
-    let mut conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
+    let mut conn = quiche::connect(Some(&sni), &scid, local, peer, &mut config)?;
 
     if let Some(ref ech) = current_ech {
         tls::inject_ech(&mut conn, ech)?;
@@ -600,7 +607,7 @@ pub async fn run(
 
                     let scid_bytes = random_scid();
                     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                    conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
+                    conn = quiche::connect(Some(&sni), &scid, local, peer, &mut config)?;
                     if let Some(ref ech) = current_ech {
                         tls::inject_ech(&mut conn, ech)?;
                     }
@@ -1063,9 +1070,13 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         expected_pins: consts::MASQUE_PINS,
     })?;
 
+    // Same name the tunnel will present, so the scanner and the quick
+    // verify test exactly what run() is going to send.
+    let sni = crate::masque_h2::spoof::resolve_sni(&p.sni);
+
     let scid_bytes = random_scid();
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
+    let mut conn = quiche::connect(Some(&sni), &scid, local, p.peer, &mut config)?;
 
     if let Some(ref ech) = p.ech_config_list {
         let _ = tls::inject_ech(&mut conn, ech);

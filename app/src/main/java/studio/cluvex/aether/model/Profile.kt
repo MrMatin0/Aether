@@ -207,18 +207,26 @@ enum class CoreLogLevel(val raw: String) { OFF("off"), ERROR("error"), WARN("war
  *                   SNI never sees it whole. (The reference's "sni_split" cut
  *                   at a fixed byte 14, which lands wherever it lands; the
  *                   engine finds the actual hostname.)
- *  - [STREAM_SPLIT]: the ClientHello is written in several small pieces. This
- *                   is what the reference's `wrong_seq` option really does.
- *  - [DECOY]      : EXPERIMENTAL. A valid but empty-hello-shaped prefix record
- *                   is sent before the real ClientHello on the same TCP stream.
- *                   Phase 1 established the reference proves nothing about
- *                   this working (its builder emits a malformed record), so it
- *                   is off by default and the UI says what it is.
+ *  - [STREAM_SPLIT]: the ClientHello is written in several small pieces (64,
+ *                   32 and 24 bytes, then the rest). This is what the
+ *                   reference's `wrong_seq` option really does.
  *
- * All of these only ever apply to the MASQUE HTTP/2 carrier (the one TCP
- * stream the app controls end to end). WireGuard and gool have no TLS
- * ClientHello at all; HTTP/3's is inside QUIC crypto frames the engine does
- * not fragment. The engine env var is `AETHER_MASQUE_H2_SPOOF`; a value it
+ * Both split modes shape the FIRST write only - the ClientHello. Everything
+ * after it goes out whole, so a session is not taxed for its whole life.
+ *
+ * NO DECOY MODE. An earlier build offered one: a "harmless" prefix record
+ * before the real ClientHello. The bytes it sent (`16 03 01 00 04 01 00 00 00`)
+ * are an EMPTY ClientHello (handshake type 1), not a HelloRequest, and TLS 1.3
+ * has no record a server must ignore before the ClientHello - so a strict edge
+ * can only answer it with an alert. It cannot be made correct, so it was
+ * removed from the engine and from here; its stored names read as [OFF] (see
+ * [fromStored]).
+ *
+ * The modes only ever apply to the MASQUE HTTP/2 carrier (the one TCP stream
+ * the app controls end to end). WireGuard and gool have no TLS ClientHello at
+ * all; HTTP/3's is inside QUIC crypto frames the engine does not split. The
+ * custom SNI ([ConnectionProfile.spoofSni]) is separate and applies to both
+ * MASQUE carriers. The engine env var is `AETHER_MASQUE_H2_SPOOF`; a value it
  * does not know is ignored rather than fatal, so an older core silently runs
  * without spoofing instead of refusing to start.
  */
@@ -226,7 +234,6 @@ enum class SpoofMode(val engineValue: String) {
     OFF("off"),
     SNI_SPLIT("sni_split"),
     STREAM_SPLIT("stream_split"),
-    DECOY("decoy"),
     ;
 
     companion object {
@@ -235,7 +242,11 @@ enum class SpoofMode(val engineValue: String) {
          * The reference repo's option names are accepted as aliases where the
          * behaviour matches what its code ACTUALLY does ("wrong_seq" splits
          * the stream), so a config imported from a write-up about it does not
-         * fall back to OFF without a word.
+         * fall back to the default without a word.
+         *
+         * MIGRATION: `decoy` (the removed mode) and the reference's decoy
+         * names are read as [OFF], explicitly - a profile saved with the old
+         * mode says "off" instead of carrying a value nothing implements.
          */
         fun fromStored(raw: String?): SpoofMode? {
             val name = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
@@ -243,7 +254,7 @@ enum class SpoofMode(val engineValue: String) {
                 ?.let { return it }
             return when (name) {
                 "wrong_seq", "wrongseq", "split" -> STREAM_SPLIT
-                "fake_client_hello", "fake", "custom_decoy", "client_hello" -> DECOY
+                "decoy", "fake_client_hello", "fake", "custom_decoy", "client_hello" -> OFF
                 else -> null
             }
         }
@@ -600,13 +611,17 @@ data class ConnectionProfile(
     /**
      * A custom SNI to put in the ClientHello toward the MASQUE edge, INSTEAD
      * of the default `consumer-masque.cloudflareclient.com`. Blank = default.
+     * The engine uses it on both carriers (HTTP/2 and HTTP/3), and in the
+     * scanner's verify probes too, so the name an edge was accepted with is
+     * the name the tunnel dials it with.
      *
-     * SECURITY: this works because the engine pins the edge certificate's
-     * public key instead of verifying a hostname, so a name the cert does not
-     * cover still cannot open the connection to a man in the middle. It is
-     * validated with the same rules as a hostname on the wire (see
-     * [sanitizedSpoofSni]) and only ever reaches the MASQUE transports
-     * ([effectiveSpoofMode]); WireGuard and gool have no ClientHello to carry it.
+     * SECURITY: the engine verifies the MASQUE edge by pinned public key
+     * (tls.rs, pin_endpoint) and does not match the hostname for it, so a
+     * name the cert does not cover does not by itself fail verification, and
+     * a middlebox without the pinned key still cannot complete the handshake.
+     * The value is validated with the same rules as a hostname on the wire
+     * (see [sanitizedSpoofSni]) and only ever reaches the MASQUE transports
+     * ([effectiveSpoofSni]); WireGuard and gool have no ClientHello to carry it.
      *
      * Whether a given edge ACCEPTS a different SNI is a network question, not
      * a code one - the connection either validates end to end or it does not,

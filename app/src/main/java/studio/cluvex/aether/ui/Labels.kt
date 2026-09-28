@@ -84,12 +84,12 @@ internal fun noizeLabel(n: Noize): String = when (n) {
     Noize.AGGRESSIVE -> stringResource(R.string.noize_aggressive)
 }
 
+/** No decoy entry: the engine has no decoy mode (see SpoofMode, docs/SPOOFING.md). */
 @Composable
 internal fun spoofModeLabel(m: SpoofMode): String = when (m) {
     SpoofMode.OFF -> stringResource(R.string.spoof_mode_off)
     SpoofMode.SNI_SPLIT -> stringResource(R.string.spoof_mode_sni_split)
     SpoofMode.STREAM_SPLIT -> stringResource(R.string.spoof_mode_stream_split)
-    SpoofMode.DECOY -> stringResource(R.string.spoof_mode_decoy)
 }
 
 @Composable
