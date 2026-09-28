@@ -1,0 +1,45 @@
+diff --git a/app/src/main/java/studio/cluvex/aether/core/AetherController.kt b/app/src/main/java/studio/cluvex/aether/core/AetherController.kt
+--- a/app/src/main/java/studio/cluvex/aether/core/AetherController.kt
++++ b/app/src/main/java/studio/cluvex/aether/core/AetherController.kt
+@@ -1,4 +1,5 @@
+ import studio.cluvex.aether.model.ScanMode
+ import studio.cluvex.aether.model.SplitMode
++import studio.cluvex.aether.model.SpoofMode
+ import studio.cluvex.aether.model.TeamAuth
+ import studio.cluvex.aether.model.TorBridgeMode
+@@ -16,4 +17,8 @@ import studio.cluvex.aether.model.TorBridgeMode
+         add("psiphonCdnIps=${flatten(p.psiphonCdnEdgeIps)}")
+         add("psiphonCdnSni=${flatten(p.psiphonCdnSni)}")
++        // Added in 2.2.0 (MASQUE spoofing). Same keys as ProfileStore, so the
++        // codec keeps carrying every non-secret field (ProfileCodecTest).
++        add("spoofMode=${p.spoofMode.name}")
++        add("spoofSni=${flatten(p.spoofSni)}")
+     }.joinToString("\n")
+ 
+@@ -31,4 +36,9 @@ import studio.cluvex.aether.model.TorBridgeMode
+                 psiphonCdnEdgeIps = map["psiphonCdnIps"] ?: d.psiphonCdnEdgeIps,
+                 psiphonCdnSni = map["psiphonCdnSni"] ?: d.psiphonCdnSni,
++                // ---- MASQUE spoofing (2.2.0) ----
++                // Not enumOr(): fromStored also reads the reference repo's
++                // option names, and anything unknown keeps the OFF default.
++                spoofMode = SpoofMode.fromStored(map["spoofMode"]) ?: d.spoofMode,
++                spoofSni = map["spoofSni"] ?: d.spoofSni,
+             )
+         }.getOrDefault(d)
+diff --git a/app/src/test/java/studio/cluvex/aether/core/ProfileCodecTest.kt b/app/src/test/java/studio/cluvex/aether/core/ProfileCodecTest.kt
+--- a/app/src/test/java/studio/cluvex/aether/core/ProfileCodecTest.kt
++++ b/app/src/test/java/studio/cluvex/aether/core/ProfileCodecTest.kt
+@@ -1,4 +1,5 @@
+ import studio.cluvex.aether.model.ScanMode
+ import studio.cluvex.aether.model.SplitMode
++import studio.cluvex.aether.model.SpoofMode
+ import studio.cluvex.aether.model.TeamAuth
+ import studio.cluvex.aether.model.TorBridgeMode
+@@ -15,4 +16,7 @@ import studio.cluvex.aether.model.TorBridgeMode
+         psiphonCdnEdgeIps = "23.215.0.206,104.16.0.0/24",
+         psiphonCdnSni = "www.example.com",
++        // ---- 2.2.0: MASQUE spoofing ----
++        spoofMode = SpoofMode.SNI_SPLIT,
++        spoofSni = "speed.cloudflare.com",
+     )
+ 
