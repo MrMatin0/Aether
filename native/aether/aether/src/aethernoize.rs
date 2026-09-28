@@ -22,6 +22,9 @@ pub struct AetherNoizeConfig {
     pub junk_interval: Duration,
     pub handshake_delay: Duration,
     pub allow_zero_size: bool,
+    /// Send invalid-but-wire-shaped WireGuard initiation packets before the real handshake.
+    /// The server drops them because their MACs are not valid; DPI still sees a plausible UDP shape.
+    pub decoy: bool,
 }
 
 impl AetherNoizeConfig {
@@ -41,6 +44,7 @@ impl AetherNoizeConfig {
             junk_interval: Duration::ZERO,
             handshake_delay: Duration::ZERO,
             allow_zero_size: false,
+            decoy: false,
         }
     }
 
@@ -60,6 +64,7 @@ impl AetherNoizeConfig {
             junk_interval: Duration::from_millis(3),
             handshake_delay: Duration::from_millis(5),
             allow_zero_size: false,
+            decoy: false,
         }
     }
 
@@ -79,6 +84,7 @@ impl AetherNoizeConfig {
             junk_interval: Duration::from_millis(2),
             handshake_delay: Duration::from_millis(8),
             allow_zero_size: false,
+            decoy: false,
         }
     }
 
@@ -98,6 +104,7 @@ impl AetherNoizeConfig {
             junk_interval: Duration::from_millis(1),
             handshake_delay: Duration::from_millis(12),
             allow_zero_size: false,
+            decoy: true,
         }
     }
 
@@ -117,6 +124,7 @@ impl AetherNoizeConfig {
             junk_interval: Duration::from_millis(2),
             handshake_delay: Duration::from_millis(10),
             allow_zero_size: false,
+            decoy: false,
         }
     }
 
@@ -136,23 +144,36 @@ impl AetherNoizeConfig {
             junk_interval: Duration::from_millis(1),
             handshake_delay: Duration::from_millis(16),
             allow_zero_size: true,
+            decoy: true,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.jc > 0 || self.i1.is_some()
+        self.jc > 0 || self.i1.is_some() || self.decoy
     }
 }
 
 pub fn from_profile(name: &str) -> AetherNoizeConfig {
-    match name.trim().to_ascii_lowercase().as_str() {
+    let mut cfg = match name.trim().to_ascii_lowercase().as_str() {
         "off" | "none" => AetherNoizeConfig::off(),
         "light" => AetherNoizeConfig::light(),
         "firewall" => AetherNoizeConfig::firewall(),
         "gfw" => AetherNoizeConfig::gfw(),
-        "aggressive" | "heavy" => AetherNoizeConfig::aggressive(),
+        "aggressive" | "heavy" | "decoy" => AetherNoizeConfig::aggressive(),
         _ => AetherNoizeConfig::balanced(),
+    };
+
+    // Explicit override is useful for testing and for older app builds that do
+    // not expose a separate Decoy picker. Unknown values preserve the profile.
+    if let Ok(raw) = std::env::var("AETHER_WG_DECOY") {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => cfg.decoy = true,
+            "0" | "false" | "no" | "off" => cfg.decoy = false,
+            _ => log::warn!("[-] ignoring invalid AETHER_WG_DECOY value"),
+        }
     }
+
+    cfg
 }
 
 fn parse_range(data: &str) -> usize {
@@ -282,6 +303,17 @@ fn wrap_ikev2(payload: &[u8]) -> Vec<u8> {
     header
 }
 
+/// Creates a deliberately invalid WireGuard initiation with the correct
+/// message type and packet length. It is a decoy for passive classifiers only:
+/// random MACs make a real WireGuard peer discard it before any state changes.
+fn wireguard_decoy() -> Vec<u8> {
+    const INITIATION_LEN: usize = 148;
+    let mut packet = vec![0u8; INITIATION_LEN];
+    packet[0] = 1;
+    rand::rng().fill_bytes(&mut packet[1..]);
+    packet
+}
+
 fn generate_junk(cfg: &AetherNoizeConfig) -> Vec<u8> {
     let (min_size, max_size) = match (cfg.jmin, cfg.jmax) {
         (0, 0) if cfg.allow_zero_size => return vec![],
@@ -317,6 +349,15 @@ async fn send_connected(sock: &UdpSocket, pkt: &[u8]) {
 pub async fn apply_obfuscation(sock: &UdpSocket, _peer: SocketAddr, cfg: &AetherNoizeConfig) {
     if !cfg.is_enabled() {
         return;
+    }
+
+    if cfg.decoy {
+        // Two decoys are enough to alter the opening shape without creating a
+        // burst. The real authenticated initiation still follows this block.
+        for _ in 0..2 {
+            send_connected(sock, &wireguard_decoy()).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     if let Some(ref i1) = cfg.i1 {
@@ -407,15 +448,26 @@ mod tests {
     fn every_advertised_profile_resolves_to_its_own_shape() {
         assert!(!from_profile("off").is_enabled());
         assert_eq!(from_profile("light").jc, AetherNoizeConfig::light().jc);
-        assert_eq!(
-            from_profile("firewall").jc,
-            AetherNoizeConfig::firewall().jc
-        );
+        assert_eq!(from_profile("firewall").jc, AetherNoizeConfig::firewall().jc);
         assert_eq!(from_profile("gfw").jc, AetherNoizeConfig::gfw().jc);
-        assert_eq!(
-            from_profile("aggressive").jc,
-            AetherNoizeConfig::aggressive().jc
-        );
+        assert_eq!(from_profile("aggressive").jc, AetherNoizeConfig::aggressive().jc);
+    }
+
+    #[test]
+    fn decoy_profiles_use_wireguard_shape_without_being_valid_handshakes() {
+        assert!(!AetherNoizeConfig::balanced().decoy);
+        assert!(AetherNoizeConfig::gfw().decoy);
+        assert!(AetherNoizeConfig::aggressive().decoy);
+        let packet = wireguard_decoy();
+        assert_eq!(packet.len(), 148);
+        assert_eq!(packet[0], 1);
+    }
+
+    #[test]
+    fn the_named_decoy_profile_is_an_aggressive_profile() {
+        let decoy = from_profile("decoy");
+        assert!(decoy.decoy);
+        assert_eq!(decoy.jmax, AetherNoizeConfig::aggressive().jmax);
     }
 
     #[test]
