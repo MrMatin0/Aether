@@ -21,7 +21,11 @@ import studio.cluvex.aether.ui.spoofModeLabel
 
 /**
  * How the traffic is shaped on the wire: obfuscation, packet sizes, TLS/QUIC
- * tricks, resolvers. Expert depth only.
+ * tricks. Expert depth only.
+ *
+ * The custom resolver field that used to live here is gone: it never had an
+ * effect on the device's lookups, and Smart DNS (Routing page) is the one
+ * place resolvers are chosen now.
  *
  * SPOOFING lives here rather than on its own page because it is one more way
  * the ClientHello is shaped, next to fragmentation and ECH - the settings it
@@ -42,7 +46,6 @@ internal fun TransportSection(
     fragmentDelay: String,
     ech: Boolean,
     quicV2Opener: Boolean,
-    dnsServers: String,
     socketMark: String,
     protocol: Protocol,
     masqueHttp2: Boolean,
@@ -169,16 +172,6 @@ internal fun TransportSection(
             EngineDivider()
             Hint(stringResource(R.string.spoof_mode_unsupported))
         }
-
-        Spacer(Modifier.height(EngineSpacing.Field))
-        ProfileTextField(
-            value = dnsServers,
-            onValueChange = { value -> edit { copy(dnsServers = value) } },
-            label = stringResource(R.string.dns_label),
-            placeholder = stringResource(R.string.dns_hint),
-            helpText = stringResource(R.string.dns_help),
-            enabled = enabled,
-        )
 
         Spacer(Modifier.height(EngineSpacing.Field))
         ProfileTextField(

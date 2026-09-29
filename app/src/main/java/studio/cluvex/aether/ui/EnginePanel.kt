@@ -68,7 +68,7 @@ internal fun EngineDestination(
                     fragment = profile.fragment, fragmentSize = profile.fragmentSize,
                     fragmentDelay = profile.fragmentDelay, ech = profile.ech,
                     quicV2Opener = profile.quicV2Opener,
-                    dnsServers = profile.dnsServers, socketMark = profile.socketMark,
+                    socketMark = profile.socketMark,
                     protocol = profile.protocol, masqueHttp2 = profile.masqueHttp2,
                     spoofMode = profile.spoofMode, spoofSni = profile.spoofSni,
                     enabled = enabled, edit = edit,
@@ -85,11 +85,11 @@ internal fun EngineDestination(
                 )
                 Spacer(Modifier.height(32.dp))
                 SmartDnsSection(
-                    smartDns = profile.smartDns, smartDnsServers = profile.smartDnsServers,
-                    smartDnsDirect = profile.smartDnsDirect, smartDnsProxies = profile.smartDnsProxies,
+                    smartDns = profile.smartDns,
+                    smartDnsProtocol = profile.smartDnsProtocol,
+                    smartDnsServers = profile.smartDnsServers,
                     chain = profile.chain,
                     validServers = profile.sanitizedSmartDns().size,
-                    validProxies = profile.sanitizedSmartDnsProxies().size,
                     enabled = enabled, edit = edit,
                 )
                 Spacer(Modifier.height(32.dp))
