@@ -15,6 +15,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
@@ -124,14 +125,14 @@ class ProfileCodecTest {
         spoofMode = SpoofMode.SNI_SPLIT,
         spoofSni = "speed.cloudflare.com",
         // ---- Smart DNS ----
-        // Single line, for the same reason as the CDN edge list above. Both
-        // lists hold VALID entries on purpose: the model caches their parsed
-        // form in private fields, which the reflection check below also
-        // walks, and an unparseable fixture would leave those at the default.
+        // DoH rather than the PLAIN default, so the protocol travels too.
+        // Single line, for the same reason as the CDN edge list above, and
+        // VALID entries on purpose: the model caches the parsed list in a
+        // private field, which the reflection check below also walks, and an
+        // unparseable fixture would leave it at the default (empty).
         smartDns = true,
-        smartDnsServers = "192.0.2.53,198.51.100.53",
-        smartDnsDirect = true,
-        smartDnsProxies = "192.0.2.10,198.51.100.0/24",
+        smartDnsProtocol = SmartDnsProtocol.DOH,
+        smartDnsServers = "https://dns.example.com/dns-query,192.0.2.53",
     )
 
     /**
@@ -220,10 +221,38 @@ class ProfileCodecTest {
     fun aPayloadFromBeforeSmartDnsKeepsItOff() {
         val decoded = ProfileCodec.decode("protocol=MASQUE\nmtu=1280")
         assertFalse(decoded.smartDns)
+        assertEquals(SmartDnsProtocol.PLAIN, decoded.smartDnsProtocol)
         assertEquals("", decoded.smartDnsServers)
-        assertFalse(decoded.smartDnsDirect)
-        assertEquals("", decoded.smartDnsProxies)
         assertFalse(decoded.usesSmartDns)
+    }
+
+    /**
+     * The manual direct switch and proxy list were retired by the DoH / DoT
+     * rework: the front picks its path by itself. A payload from the build
+     * that had them must still decode, keep the rest of its Smart DNS setup,
+     * and never have those keys written back.
+     */
+    @Test
+    fun retiredSmartDnsKeysAreIgnored() {
+        val decoded = ProfileCodec.decode(
+            "protocol=MASQUE\nsmartDns=true\nsmartDnsServers=192.0.2.53\n" +
+                "smartDnsDirect=true\nsmartDnsProxies=192.0.2.10,198.51.100.0/24",
+        )
+        assertTrue(decoded.smartDns)
+        assertEquals("192.0.2.53", decoded.smartDnsServers)
+        assertEquals(SmartDnsProtocol.PLAIN, decoded.smartDnsProtocol)
+        assertTrue(decoded.usesSmartDns)
+        val reEncoded = ProfileCodec.encode(decoded)
+        assertFalse(reEncoded.contains("smartDnsDirect"))
+        assertFalse(reEncoded.contains("smartDnsProxies"))
+    }
+
+    @Test
+    fun smartDnsProtocolAcceptsHandWrittenAliases() {
+        assertEquals(SmartDnsProtocol.DOH, ProfileCodec.decode("smartDnsProtocol=https").smartDnsProtocol)
+        assertEquals(SmartDnsProtocol.DOT, ProfileCodec.decode("smartDnsProtocol=tls").smartDnsProtocol)
+        assertEquals(SmartDnsProtocol.PLAIN, ProfileCodec.decode("smartDnsProtocol=udp").smartDnsProtocol)
+        assertEquals(SmartDnsProtocol.PLAIN, ProfileCodec.decode("smartDnsProtocol=nonsense").smartDnsProtocol)
     }
 
     @Test
