@@ -225,11 +225,12 @@ object ProfileCodec {
         // codec keeps carrying every non-secret field (ProfileCodecTest).
         add("spoofMode=${p.spoofMode.name}")
         add("spoofSni=${flatten(p.spoofSni)}")
-        // Smart DNS. Same keys as ProfileStore. The server list is a comma /
-        // space / newline separated list, so the comma fold is exactly right.
+        // Smart DNS. Same keys as ProfileStore. The server and proxy lists are
+        // comma / space / newline separated, so the comma fold is exactly right.
         add("smartDns=${p.smartDns}")
         add("smartDnsServers=${flatten(p.smartDnsServers)}")
         add("smartDnsDirect=${p.smartDnsDirect}")
+        add("smartDnsProxies=${flatten(p.smartDnsProxies)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -338,6 +339,7 @@ object ProfileCodec {
                 smartDns = map["smartDns"]?.toBooleanStrictOrNull() ?: d.smartDns,
                 smartDnsServers = map["smartDnsServers"] ?: d.smartDnsServers,
                 smartDnsDirect = map["smartDnsDirect"]?.toBooleanStrictOrNull() ?: d.smartDnsDirect,
+                smartDnsProxies = map["smartDnsProxies"] ?: d.smartDnsProxies,
             )
         }.getOrDefault(d)
     }
