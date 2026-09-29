@@ -4,6 +4,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import studio.cluvex.aether.core.DiagnosticsLog
+import studio.cluvex.aether.core.SmartDnsRuntime
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
@@ -52,6 +53,7 @@ internal object TunFactory {
         profile: ConnectionProfile,
     ): ParcelFileDescriptor {
         logSmartDns(profile)
+        SmartDnsRuntime.setIpv6Fallback(false)
         if (isIpv4OnlyExit(profile)) {
             // Some ROMs refuse an interface with an IPv6 route and no IPv6
             // address. That is a legitimate thing for a ROM to do, so it is a
@@ -63,12 +65,20 @@ internal object TunFactory {
                 logEstablished(profile, ipv6Address = false)
                 return tun
             }
+            // On a Psiphon entry the SOCKS front still answers AAAA with
+            // NODATA, so nothing is lost. With Smart DNS nothing answers for
+            // it - the device's queries go through hev and the engine's UDP
+            // ASSOCIATE untouched - so the feature is bypassed for covered
+            // sites that have an AAAA record. Say so where the user will see
+            // it, not only in the log.
+            if (profile.usesSmartDns) SmartDnsRuntime.setIpv6Fallback(true)
             DiagnosticsLog.w(
                 TAG,
                 "This device refused a TUN with an IPv6 route and no IPv6 address - falling " +
                     "back to the addressed interface. On a Psiphon entry AAAA queries are still " +
                     "answered NODATA by the SOCKS front; with Smart DNS, apps may now be handed " +
-                    "AAAA answers that reach a covered site over IPv6 without its proxy.",
+                    "AAAA answers that reach a covered site over IPv6 without its proxy (the " +
+                    "Routing page shows a warning for this session).",
             )
         }
         val tun = build(service, profile, withIpv6Address = true).establish()
@@ -106,11 +116,25 @@ internal object TunFactory {
     private fun logSmartDns(profile: ConnectionProfile) {
         if (!profile.smartDns) return
         when {
-            profile.usesSmartDns -> DiagnosticsLog.i(
-                TAG,
-                "Smart DNS active: resolvers=${profile.sanitizedSmartDns()} " +
-                    "direct=${profile.smartDnsDirect} (no IPv6 address on the TUN)",
-            )
+            profile.usesSmartDns -> {
+                val proxies = profile.sanitizedSmartDnsProxies()
+                DiagnosticsLog.i(
+                    TAG,
+                    "Smart DNS active: resolvers=${profile.sanitizedSmartDns()} " +
+                        "direct=${profile.smartDnsDirect}" +
+                        (if (profile.smartDnsDirect) " proxies=$proxies" else "") +
+                        " engineDns=${if (profile.engineUsesSmartDns) "smart" else "ordinary"}" +
+                        " (no IPv6 address on the TUN)",
+                )
+                if (profile.smartDnsDirect && proxies.isEmpty()) {
+                    DiagnosticsLog.w(
+                        TAG,
+                        "Smart DNS direct mode has no proxy addresses: only the DNS queries " +
+                            "leave directly, and a provider that also checks the source on its " +
+                            "SNI proxy will still refuse covered sites reached through WARP.",
+                    )
+                }
+            }
             profile.chain != ChainMode.AETHER -> DiagnosticsLog.w(
                 TAG,
                 "Smart DNS is on but inactive: it only applies to the Aether-only chain " +
@@ -118,8 +142,8 @@ internal object TunFactory {
             )
             else -> DiagnosticsLog.w(
                 TAG,
-                "Smart DNS is on but inactive: no valid resolver (IPv4, port 53) in the list - " +
-                    "using the default resolvers.",
+                "Smart DNS is on but inactive: no valid resolver (unicast IPv4, port 53) in " +
+                    "the list - using the default resolvers.",
             )
         }
     }

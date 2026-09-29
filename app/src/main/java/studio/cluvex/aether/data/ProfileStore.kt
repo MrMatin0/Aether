@@ -125,11 +125,12 @@ class ProfileStore(private val context: Context) {
         // exactly as a fresh one does.
         val spoofMode = stringPreferencesKey("spoofMode")
         val spoofSni = stringPreferencesKey("spoofSni")
-        // Smart DNS. Same key names as ProfileCodec; all three read with the
+        // Smart DNS. Same key names as ProfileCodec; all of them read with the
         // profile's own defaults, so an older profile means "off".
         val smartDns = booleanPreferencesKey("smartDns")
         val smartDnsServers = stringPreferencesKey("smartDnsServers")
         val smartDnsDirect = booleanPreferencesKey("smartDnsDirect")
+        val smartDnsProxies = stringPreferencesKey("smartDnsProxies")
 
         // ---- RETIRED keys: read once for migration, removed on save ----
 
@@ -320,6 +321,7 @@ class ProfileStore(private val context: Context) {
             smartDns = prefs[Keys.smartDns] ?: d.smartDns,
             smartDnsServers = prefs[Keys.smartDnsServers] ?: d.smartDnsServers,
             smartDnsDirect = prefs[Keys.smartDnsDirect] ?: d.smartDnsDirect,
+            smartDnsProxies = prefs[Keys.smartDnsProxies] ?: d.smartDnsProxies,
         )
     }
 
@@ -401,6 +403,7 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.smartDns] = profile.smartDns
             prefs[Keys.smartDnsServers] = profile.smartDnsServers
             prefs[Keys.smartDnsDirect] = profile.smartDnsDirect
+            prefs[Keys.smartDnsProxies] = profile.smartDnsProxies
             // Retired keys. The protocol written above already carries the
             // MIM choice, so the old switch has nothing left to say, and the
             // engine-Tor keys describe a Tor this app no longer runs.
