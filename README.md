@@ -1,4 +1,4 @@
-# Aether+ for Android
+# Aether+ for Android! :)
 
 **An Android client for censorship circumvention, powered by Aether, Psiphon, and Tor**
 
