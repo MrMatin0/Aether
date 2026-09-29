@@ -1,5 +1,7 @@
 package studio.cluvex.aether.core
 
+import studio.cluvex.aether.model.ConnectionProfile
+
 /**
  * Single source of truth for the tunnel plumbing constants shared between the
  * VpnService (which builds the TUN + hev config) and the UI/diagnostics layer
@@ -74,7 +76,7 @@ object TunnelConfig {
     const val TUN_IPV6_PREFIX = 126
 
     /**
-     * DNS resolvers advertised on the TUN interface.
+     * DNS resolvers advertised on the TUN interface by default.
      *
      * NOTE: there is deliberately no MTU constant here any more. The one source
      * of truth is [studio.cluvex.aether.model.ConnectionProfile.DEFAULT_MTU]
@@ -83,4 +85,18 @@ object TunnelConfig {
      * `tunnel.mtu`.
      */
     val DNS_SERVERS = listOf("1.1.1.1", "8.8.8.8")
+
+    /**
+     * The resolvers the TUN advertises for [profile]: the Smart DNS servers
+     * when Smart DNS is active ([ConnectionProfile.usesSmartDns]), otherwise
+     * [DNS_SERVERS].
+     *
+     * This is the ONLY setting that changes which resolver the device's own
+     * apps query on a VPN session: hev relays their UDP queries to whatever
+     * address the TUN advertised, as-is, through the engine's UDP ASSOCIATE.
+     * `usesSmartDns` already guarantees a non-empty list, so a session can
+     * never come up with no resolver at all.
+     */
+    fun dnsServersFor(profile: ConnectionProfile): List<String> =
+        if (profile.usesSmartDns) profile.sanitizedSmartDns() else DNS_SERVERS
 }
