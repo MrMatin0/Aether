@@ -33,8 +33,9 @@ internal sealed interface DnsRoute {
 }
 
 /**
- * A loopback SOCKS5 front that adds the ONE thing the TUN forwarder needs and
- * neither Psiphon's nor Tor's local proxy provides: an answer to UDP DNS.
+ * A loopback SOCKS5 front that adds what the TUN forwarder needs and neither
+ * Psiphon's nor Tor's local proxy provides: an answer to UDP DNS, and - on a
+ * Psiphon entry - a path for every other datagram.
  *
  * ### The problem this exists to solve
  *
@@ -56,9 +57,16 @@ internal sealed interface DnsRoute {
  *  - **UDP ASSOCIATE** is accepted, and datagrams for port 53 are answered out
  *    of band via [DnsRoute]. The reply is wrapped in the request's own SOCKS5
  *    UDP header, which is what identifies the sender to the client.
- *  - **Any other UDP** is dropped, because there is nothing honest to do with
- *    it: neither core can carry it. Every dropped datagram is COUNTED, and the
- *    first UDP/443 one says what it means in the log - see below.
+ *  - **Any other UDP**, when [udpgw] is on (a Psiphon entry), is handed to
+ *    [UdpgwMux]: Psiphon's udpgw relay, reached as a CONNECT to
+ *    `127.0.0.1:7300` through the Psiphon SOCKS5, which the Psiphon server
+ *    intercepts and turns into real UDP at the exit. Replies come back under a
+ *    SOCKS5 UDP header for the original destination. See
+ *    `docs/PSIPHON_UDPGW.md`.
+ *  - Otherwise (a Tor entry, a domain-addressed datagram, or no udpgw session
+ *    right now) it is dropped, because there is nothing honest to do with it.
+ *    Every dropped datagram is COUNTED, and the first UDP/443 one says what it
+ *    means in the log - see below.
  *  - **BIND** is refused with a proper SOCKS5 error rather than a dead socket.
  *
  * ### 1.4.7: why apps said "no internet" on a Psiphon exit
@@ -79,14 +87,12 @@ internal sealed interface DnsRoute {
  *    working. Connections are pooled per resolver and reused, and a reused one
  *    is only trusted when the answer's transaction id matches the question's.
  *
- * ### The QUIC gap, stated rather than hidden
+ * ### The QUIC gap
  *
- * UDP/443 still cannot be carried: this front's upstream is a CONNECT-only
- * SOCKS5, so there is no path for a datagram and no way to return an ICMP
- * port-unreachable that would make a client fall back fast. Clients that pin
- * HTTP/3 for their own origins read that as a dead link. Carrying it needs a
- * udpgw-style relay on the Psiphon hop, which is tracked separately - what this
- * class does now is make the drop VISIBLE instead of silent.
+ * On a Psiphon entry, UDP/443 now goes through udpgw like any other datagram.
+ * On a Tor entry it still cannot be carried, and there is no way to return an
+ * ICMP port-unreachable that would make a client fall back fast; clients that
+ * pin HTTP/3 read that as a dead link. The drop is made VISIBLE, not silent.
  *
  * ### Security posture
  *
@@ -94,12 +100,17 @@ internal sealed interface DnsRoute {
  * inside this app's sandbox (the in-process TUN forwarder, or an app the user
  * pointed at the proxy port), and concurrency is capped so a runaway client
  * cannot exhaust the process's threads.
+ *
+ * @param udpgw carry non-DNS UDP through Psiphon's udpgw relay. Defaults to on
+ *   exactly for [DnsRoute.OverSocksTcp], which is the route ChainStack gives a
+ *   Psiphon entry; a Tor entry gets [DnsRoute.LocalUdp] and tor has no udpgw.
  */
 internal class SocksFront(
     private val listenPort: Int,
     private val upstreamHost: String,
     private val upstreamPort: Int,
     private val dns: DnsRoute,
+    private val udpgw: Boolean = dns is DnsRoute.OverSocksTcp,
 ) {
     @Volatile
     private var server: ServerSocket? = null
@@ -127,6 +138,17 @@ internal class SocksFront(
     private val aaaaSuppressed = AtomicLong(0)
     private val dnsDialled = AtomicLong(0)
     private val dnsReused = AtomicLong(0)
+
+    /**
+     * The shared udpgw session, or null when this front does not carry UDP.
+     * Opened lazily on the first non-DNS datagram, not at start: a session that
+     * never sees UDP should not hold a channel on the Psiphon server.
+     */
+    private val udpgwMux: UdpgwMux? = if (udpgw) {
+        UdpgwMux(dial = { dialThroughUpstream(UDPGW_TARGET, DIAL_TIMEOUT_MS) })
+    } else {
+        null
+    }
 
     /** An idle, already-tunnelled TCP connection to one DNS resolver. */
     private class PooledDns(val socket: Socket, val idleSince: Long)
@@ -165,7 +187,7 @@ internal class SocksFront(
         DiagnosticsLog.i(
             TAG,
             "SOCKS front on ${TunnelConfig.SOCKS_HOST}:$listenPort -> $upstreamHost:$upstreamPort " +
-                "(dns: ${describeDns()})",
+                "(dns: ${describeDns()}; other udp: ${describeUdp()})",
         )
         thread(name = "socks-front-accept", isDaemon = true) { acceptLoop(socket) }
         startIpv6Probe()
@@ -179,12 +201,14 @@ internal class SocksFront(
         server = null
         resolvers.shutdownNow()
         closeDnsPool()
+        udpgwMux?.close()
         DiagnosticsLog.i(
             TAG,
             "SOCKS front stopped. Session: udp/443 (QUIC) dropped=${quicDropped.get()}, " +
                 "other udp dropped=${otherUdpDropped.get()}, " +
                 "AAAA answered NODATA=${aaaaSuppressed.get()}, " +
-                "dns connections dialled=${dnsDialled.get()} reused=${dnsReused.get()}",
+                "dns connections dialled=${dnsDialled.get()} reused=${dnsReused.get()}" +
+                (udpgwMux?.let { ", ${it.summary()}" } ?: ""),
         )
     }
 
@@ -301,6 +325,25 @@ internal class SocksFront(
     // -------------------------------------------------------- UDP ASSOCIATE
 
     /**
+     * One UDP association: its relay socket, and the client address replies
+     * go to. It is also the udpgw flow OWNER and reply [UdpgwMux.Sink], so its
+     * flows are scoped to it and released with it.
+     */
+    private inner class Association(val relay: DatagramSocket) : UdpgwMux.Sink {
+        @Volatile
+        var clientAddress: InetAddress? = null
+
+        @Volatile
+        var clientPort: Int = 0
+
+        override fun deliver(address: ByteArray, port: Int, payload: ByteArray) {
+            val to = clientAddress ?: return
+            val out = udpHeader(address, port) + payload
+            runCatching { relay.send(DatagramPacket(out, out.size, to, clientPort)) }
+        }
+    }
+
+    /**
      * Accepts an association and pumps datagrams for as long as the client
      * holds the TCP control connection open, which is what RFC 1928 says the
      * lifetime of an association is.
@@ -316,6 +359,7 @@ internal class SocksFront(
             }
             return
         }
+        val association = Association(relay)
         try {
             val reply = ByteArray(10)
             reply[0] = VERSION
@@ -333,17 +377,19 @@ internal class SocksFront(
             out.write(reply)
             out.flush()
 
-            val pump = thread(name = "socks-front-udp", isDaemon = true) { udpLoop(relay) }
+            val pump = thread(name = "socks-front-udp", isDaemon = true) { udpLoop(association) }
             // Park on the control connection: when it ends, the association ends.
             drainUntilEof(client.getInputStream())
             relay.close()
             runCatching { pump.join(UDP_JOIN_MS) }
         } finally {
             runCatching { relay.close() }
+            udpgwMux?.release(association)
         }
     }
 
-    private fun udpLoop(relay: DatagramSocket) {
+    private fun udpLoop(association: Association) {
+        val relay = association.relay
         val buffer = ByteArray(UDP_BUFFER_BYTES)
         while (running && !relay.isClosed) {
             val packet = DatagramPacket(buffer, buffer.size)
@@ -353,20 +399,37 @@ internal class SocksFront(
                 return
             }
             val datagram = parseUdpRequest(packet.data, packet.length) ?: continue
+            val source = packet.address
+            val sourcePort = packet.port
+            association.clientAddress = source
+            association.clientPort = sourcePort
             if (datagram.port != DNS_PORT) {
-                // Honest silence: neither Psiphon's SOCKS5 nor tor can carry
-                // this, and a fake answer would be worse than a dropped packet.
-                // Counted and, for QUIC, explained once - a silent drop is what
-                // made this cost three bug reports to find.
+                if (forwardViaUdpgw(association, datagram)) continue
+                // Honest silence: no path for this datagram, and a fake answer
+                // would be worse than a dropped packet. Counted and, for QUIC,
+                // explained once - a silent drop is what made this cost three
+                // bug reports to find.
                 noteUndeliverableUdp(datagram.port)
                 continue
             }
-            val source = packet.address
-            val sourcePort = packet.port
             runCatching {
                 resolvers.execute { resolveAndReply(relay, source, sourcePort, datagram) }
             }
         }
+    }
+
+    /**
+     * Hands one non-DNS datagram to the udpgw session. False when it cannot be
+     * carried: no udpgw on this front, a domain-addressed datagram (udpgw
+     * carries IPs only; hev always sends IPs), an IPv6 destination on an exit
+     * PROVEN to be IPv4-only, or no session right now.
+     */
+    private fun forwardViaUdpgw(association: Association, datagram: UdpRequest): Boolean {
+        val mux = udpgwMux ?: return false
+        val address = datagram.address
+        if (address.size != 4 && address.size != 16) return false
+        if (address.size == 16 && exitIpv6 == false) return false
+        return mux.send(association, association, address, datagram.port, datagram.payload)
     }
 
     private fun noteUndeliverableUdp(port: Int) {
@@ -375,12 +438,18 @@ internal class SocksFront(
             return
         }
         if (quicDropped.incrementAndGet() == 1L) {
+            val why = if (udpgwMux == null) {
+                "cannot be carried through this chain's entry core"
+            } else {
+                "could not be handed to Psiphon's udpgw relay (no session yet, or an " +
+                    "address it cannot carry)"
+            }
             DiagnosticsLog.w(
                 TAG,
-                "UDP/443 (QUIC) cannot be carried through this chain's entry core, so it is " +
-                    "being dropped. Apps that pin HTTP/3 for their own origins (Instagram, " +
-                    "YouTube, CapCut, the AI apps) can read a black hole as \"no internet\" " +
-                    "instead of falling back to TCP. See docs/PSIPHON_APP_CONNECTIVITY.md.",
+                "UDP/443 (QUIC) $why, so it is being dropped. Apps that pin HTTP/3 for " +
+                    "their own origins (Instagram, YouTube, CapCut, the AI apps) can read a " +
+                    "black hole as \"no internet\" instead of falling back to TCP. See " +
+                    "docs/PSIPHON_APP_CONNECTIVITY.md.",
             )
         }
     }
@@ -664,31 +733,56 @@ internal class SocksFront(
 
     // ------------------------------------------------------------ protocol
 
-    private class UdpRequest(val header: ByteArray, val port: Int, val payload: ByteArray)
+    /**
+     * A parsed SOCKS5 UDP request. [address] is the raw destination IP (4 or
+     * 16 bytes), or empty for ATYP=DOMAIN, which udpgw cannot carry.
+     */
+    private class UdpRequest(
+        val header: ByteArray,
+        val address: ByteArray,
+        val port: Int,
+        val payload: ByteArray,
+    )
 
     /**
-     * Splits a SOCKS5 UDP request into its header, destination port and
-     * payload. Fragmented datagrams (FRAG != 0) are rejected: there is no
-     * reassembly here, and forwarding one fragment as a whole message would
-     * corrupt it.
+     * Splits a SOCKS5 UDP request into its header, destination and payload.
+     * Fragmented datagrams (FRAG != 0) are rejected: there is no reassembly
+     * here, and forwarding one fragment as a whole message would corrupt it.
      */
     private fun parseUdpRequest(data: ByteArray, length: Int): UdpRequest? {
         if (length < 10) return null
         if ((data[2].toInt() and 0xFF) != 0) return null
-        val bodyStart = when (data[3].toInt() and 0xFF) {
+        val atyp = data[3].toInt() and 0xFF
+        val bodyStart = when (atyp) {
             ATYP_IPV4 -> 10
             ATYP_IPV6 -> 22
             ATYP_DOMAIN -> 5 + (data[4].toInt() and 0xFF) + 2
             else -> return null
         }
         if (length < bodyStart) return null
+        val address = when (atyp) {
+            ATYP_IPV4 -> data.copyOfRange(4, 8)
+            ATYP_IPV6 -> data.copyOfRange(4, 20)
+            else -> ByteArray(0)
+        }
         val port = ((data[bodyStart - 2].toInt() and 0xFF) shl 8) or
             (data[bodyStart - 1].toInt() and 0xFF)
         return UdpRequest(
             header = data.copyOf(bodyStart),
+            address = address,
             port = port,
             payload = data.copyOfRange(bodyStart, length),
         )
+    }
+
+    /** SOCKS5 UDP reply header (RSV RSV FRAG ATYP ADDR PORT) naming [address]:[port]. */
+    private fun udpHeader(address: ByteArray, port: Int): ByteArray {
+        val out = ByteArray(4 + address.size + 2)
+        out[3] = (if (address.size == 16) ATYP_IPV6 else ATYP_IPV4).toByte()
+        System.arraycopy(address, 0, out, 4, address.size)
+        out[out.size - 2] = ((port shr 8) and 0xFF).toByte()
+        out[out.size - 1] = (port and 0xFF).toByte()
+        return out
     }
 
     /**
@@ -813,6 +907,9 @@ internal class SocksFront(
         is DnsRoute.OverSocksTcp -> "DNS over TCP via ${route.resolvers.joinToString(",")}"
     }
 
+    private fun describeUdp(): String =
+        if (udpgwMux != null) "udpgw via ${UDPGW_TARGET.authority()}" else "dropped"
+
     private companion object {
         const val TAG = "front"
 
@@ -842,6 +939,15 @@ internal class SocksFront(
 
         /** The port every dropped-datagram report in the field is about. */
         const val QUIC_PORT = 443
+
+        /**
+         * The address the Psiphon server intercepts as its udpgw channel
+         * (`UDPInterceptUdpgwServerAddress`; `127.0.0.1:7300` in psiphond's
+         * generated config, and what psiphon-tunnel-core's own server test
+         * dials through the client's local SOCKS proxy). A LITERAL, so the
+         * dial never triggers a name lookup.
+         */
+        val UDPGW_TARGET = HostPort("127.0.0.1", 7300)
 
         /**
          * Where the IPv6 capability probe dials. Two operators, both anycast,
