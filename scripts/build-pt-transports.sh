@@ -34,6 +34,24 @@
 # reason to make an exception. They are also the binaries that see hostile
 # traffic first, which is a poor argument for downloading somebody's blob.
 #
+# ============================================================================
+# WHERE THE SOURCE COMES FROM
+# ============================================================================
+# 1. A git clone of the pinned tag from gitlab.torproject.org, using the
+#    canonical `.git` clone URL first and the bare project URL second, each
+#    retried. gitlab.torproject.org has started answering some clones from CI
+#    runners with a plain HTTP 400 (seen on GitHub Actions for the bare URL),
+#    and the old code hid git's stderr and then reported that as "ref not
+#    found", which sent the debugging in the wrong direction.
+# 2. The Go module proxy (proxy.golang.org, or AETHER_GOPROXY). All three are
+#    Go modules, so the proxy serves the exact source of the pinned tag, and
+#    the go command checks it against the public checksum database
+#    (sum.golang.org) before handing it over - a stronger integrity guarantee
+#    than an HTTPS clone, and it does not touch gitlab.torproject.org at all.
+# 3. Only if upstream is REACHABLE and the pinned ref genuinely does not exist
+#    there: the default branch, loudly. An unreachable upstream is a hard error,
+#    never a silent switch to "latest".
+#
 # Usage:  build-pt-transports.sh [lyrebird|snowflake|webtunnel|all]   (default: all)
 #
 # Requires: ANDROID_NDK_HOME, Go 1.23+, git. Every network access happens here
@@ -41,6 +59,7 @@
 #
 # Optional: AETHER_ABIS="arm64-v8a" (space-separated) builds only those ABIs.
 # CI uses it to compile each ABI on its own runner, in parallel.
+# Optional: AETHER_GOPROXY overrides the module proxy used by fallback 2.
 set -euo pipefail
 
 TARGET="${1:-all}"
@@ -63,15 +82,18 @@ unset _abi
 
 # Host prefixes assembled from fragments, same convention as the other scripts:
 # no full literal URL sits in the file.
-GITLAB="https://""gitlab.torproject.org/tpo/anti-censorship/pluggable-transports"
+PT_PATH="gitlab.torproject.org/tpo/anti-censorship/pluggable-transports"
+GITLAB="https://""${PT_PATH}"
+# The Go module paths are the same host/path, without the scheme.
+GOMOD_BASE="${PT_PATH}"
 
 # Pinned, and overridable. An unpinned circumvention binary means the thing that
 # talks to a censor is whatever was tagged that morning.
 #
-# EVERY REF HERE MUST BE A TAG THAT ACTUALLY EXISTS UPSTREAM. A missing ref does
-# not fail: build_go_transport falls back to the default branch, which silently
-# turns a pin into "latest". (webtunnel was pinned to a v0.0.9 that was never
-# tagged, and was being built from main as a result.)
+# EVERY REF HERE MUST BE A TAG THAT ACTUALLY EXISTS UPSTREAM. A missing ref only
+# falls back to the default branch when upstream is reachable and confirms the
+# tag is absent (see WHERE THE SOURCE COMES FROM). (webtunnel was pinned to a
+# v0.0.9 that was never tagged, and was being built from main as a result.)
 #
 #   lyrebird-0.8.1 : utls security fix (0.6.2), webtunnel hardening (0.7.0),
 #                    multiple meek url/front pairs (0.8.0), chrome120 fix.
@@ -194,24 +216,131 @@ verify_elf() {
 }
 
 # ---------------------------------------------------------------------------
-# One Go transport: clone (once), then one binary per ABI.
+# Source fetching (see WHERE THE SOURCE COMES FROM in the header).
 # ---------------------------------------------------------------------------
-# $1 short name, $2 repository, $3 ref, $4 package path, $5 output .so name
-build_go_transport() {
-  local name="$1" repo="$2" ref="$3" pkg="$4" out_name="$5"
-  local src="${NATIVE_DIR}/${name}"
-  local clone_url="${GITLAB}/${repo}"
+# Marker written into a source tree that came from the module proxy: there is
+# no .git in it, but it is just as reusable as a clone.
+SOURCE_MARKER=".aether-pt-source"
 
-  if [ ! -d "${src}/.git" ]; then
-    rm -rf "${src}"
-    echo "==> [${name}] cloning ${repo} @ ${ref}"
-    if ! git clone --depth 1 --branch "${ref}" "${clone_url}" "${src}" 2>/dev/null; then
-      echo "    ref '${ref}' not found; using the default branch"
-      rm -rf "${src}"
-      git clone --depth 1 "${clone_url}" "${src}"
+# $1 url, $2 ref, $3 dest. Shallow clone of one tag/branch, retried. git's own
+# error output is kept: it is the only thing that tells a missing tag apart from
+# a server that refused the request.
+git_clone_ref() {
+  local url="$1" ref="$2" dest="$3" attempt
+  for attempt in 1 2 3; do
+    rm -rf "${dest}"
+    if git -c advice.detachedHead=false clone --quiet --depth 1 --branch "${ref}" \
+         "${url}" "${dest}"; then
+      return 0
     fi
-  else
+    echo "    git clone attempt ${attempt} (${url} @ ${ref}) failed"
+    [ "${attempt}" -lt 3 ] && sleep 5
+  done
+  rm -rf "${dest}"
+  return 1
+}
+
+# $1 go module path, $2 ref (tag), $3 dest. Pulls the module source for that
+# ref out of the Go module proxy, checksum-verified by the go command against
+# sum.golang.org, and copies it to dest (the module cache is read-only).
+fetch_from_module_proxy() {
+  local module="$1" ref="$2" dest="$3" tmp out dir version
+  tmp="$(mktemp -d)"
+  # Run outside any module so no go.mod around us can influence resolution.
+  if ! out="$(cd "${tmp}" && \
+      env GO111MODULE=on GOFLAGS= \
+        ${AETHER_GOPROXY:+"GOPROXY=${AETHER_GOPROXY}"} \
+        go mod download -json "${module}@${ref}" 2>&1)"; then
+    echo "    module proxy could not serve ${module}@${ref}:" >&2
+    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+  rm -rf "${tmp}"
+
+  dir="$(printf '%s\n' "${out}" | sed -n 's/^[[:space:]]*"Dir":[[:space:]]*"\(.*\)",\{0,1\}[[:space:]]*$/\1/p' | head -n1)"
+  version="$(printf '%s\n' "${out}" | sed -n 's/^[[:space:]]*"Version":[[:space:]]*"\(.*\)",\{0,1\}[[:space:]]*$/\1/p' | head -n1)"
+  if [ -z "${dir}" ] || [ ! -f "${dir}/go.mod" ]; then
+    echo "    module proxy returned no usable source directory for ${module}@${ref}" >&2
+    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+    return 1
+  fi
+
+  rm -rf "${dest}"
+  mkdir -p "${dest}"
+  cp -R "${dir}/." "${dest}/"
+  chmod -R u+w "${dest}"
+  printf '%s@%s (ref %s, via module proxy)\n' "${module}" "${version:-?}" "${ref}" \
+    > "${dest}/${SOURCE_MARKER}"
+  echo "    fetched ${module}@${version:-${ref}} from the Go module proxy (checksum-verified)"
+}
+
+# $1 url, $2 ref. Exit 0: reachable and the ref exists. 1: reachable, ref absent.
+# 2: upstream unreachable / refused the request.
+upstream_ref_state() {
+  local url="$1" ref="$2" out
+  if ! out="$(git ls-remote "${url}" "refs/tags/${ref}" "refs/heads/${ref}" 2>/dev/null)"; then
+    return 2
+  fi
+  [ -n "${out}" ] && return 0
+  return 1
+}
+
+# $1 short name, $2 repository, $3 ref, $4 go module path, $5 dest
+fetch_source() {
+  local name="$1" repo="$2" ref="$3" module="$4" src="$5"
+  local url state
+
+  echo "==> [${name}] fetching ${repo} @ ${ref}"
+
+  # 1) git, canonical .git URL first.
+  for url in "${GITLAB}/${repo}.git" "${GITLAB}/${repo}"; do
+    if git_clone_ref "${url}" "${ref}" "${src}"; then
+      echo "    cloned ${url} @ ${ref}"
+      return 0
+    fi
+  done
+
+  # 2) Go module proxy, same pinned ref.
+  echo "    git could not fetch ${repo} @ ${ref}; trying the Go module proxy"
+  if fetch_from_module_proxy "${module}" "${ref}" "${src}"; then
+    return 0
+  fi
+
+  # 3) Default branch ONLY if upstream answers and says the pin does not exist.
+  state=0
+  upstream_ref_state "${GITLAB}/${repo}.git" "${ref}" || state=$?
+  if [ "${state}" = 1 ]; then
+    echo "    WARNING: ref '${ref}' does not exist upstream; building the DEFAULT BRANCH of ${repo}." >&2
+    echo "             Fix the pin ($(printf '%s' "${name}" | tr '[:lower:]' '[:upper:]')_REF) - this is no longer a pinned build." >&2
+    rm -rf "${src}"
+    if git clone --quiet --depth 1 "${GITLAB}/${repo}.git" "${src}"; then
+      return 0
+    fi
+  fi
+
+  rm -rf "${src}"
+  echo "ERROR: [${name}] could not fetch ${repo} @ ${ref} from git or the Go module proxy." >&2
+  echo "       gitlab.torproject.org refused or could not be reached, and ${module}@${ref}" >&2
+  echo "       was not available from the module proxy either. Set AETHER_GOPROXY to a" >&2
+  echo "       reachable proxy, or place a checkout at ${src} and rerun." >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# One Go transport: fetch (once), then one binary per ABI.
+# ---------------------------------------------------------------------------
+# $1 short name, $2 repository, $3 ref, $4 package path, $5 output .so name,
+# $6 go module path
+build_go_transport() {
+  local name="$1" repo="$2" ref="$3" pkg="$4" out_name="$5" module="$6"
+  local src="${NATIVE_DIR}/${name}"
+
+  if [ -d "${src}/.git" ] || [ -f "${src}/${SOURCE_MARKER}" ]; then
     echo "==> [${name}] reusing the checkout in ${src}"
+  else
+    rm -rf "${src}"
+    fetch_source "${name}" "${repo}" "${ref}" "${module}" "${src}" || exit 1
   fi
 
   if [ ! -d "${src}/${pkg}" ]; then
@@ -287,15 +416,19 @@ build_go_transport() {
 build_lyrebird() {
   # obfs4 AND meek_lite come out of this one binary, which is why the app wires
   # both transports to one ClientTransportPlugin line.
-  build_go_transport lyrebird lyrebird "${LYREBIRD_REF}" "cmd/lyrebird" liblyrebird.so
+  build_go_transport lyrebird lyrebird "${LYREBIRD_REF}" "cmd/lyrebird" liblyrebird.so \
+    "${GOMOD_BASE}/lyrebird"
 }
 
 build_snowflake() {
-  build_go_transport snowflake snowflake "${SNOWFLAKE_REF}" "client" libsnowflake.so
+  # snowflake is a v2 module, so its module path carries the /v2 suffix.
+  build_go_transport snowflake snowflake "${SNOWFLAKE_REF}" "client" libsnowflake.so \
+    "${GOMOD_BASE}/snowflake/v2"
 }
 
 build_webtunnel() {
-  build_go_transport webtunnel webtunnel "${WEBTUNNEL_REF}" "main/client" libwebtunnel.so
+  build_go_transport webtunnel webtunnel "${WEBTUNNEL_REF}" "main/client" libwebtunnel.so \
+    "${GOMOD_BASE}/webtunnel"
 }
 
 case "${TARGET}" in
