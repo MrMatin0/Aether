@@ -102,7 +102,7 @@ Aether+ is a circumvention client, **not a promise of anonymity or undetectable 
 
 - Android backup is disabled in the manifest. Diagnostics and crash reports can still contain sensitive information: review and redact them before sharing.
 - Kill-switch settings are opt-in. Proxy-only mode, direct routes, and excluded applications must not be mistaken for device-wide protection.
-- Obtain APKs from a source you trust. This repository supports a committed CI signing key as a fallback. **That key is public: it can preserve update compatibility but cannot establish publisher authenticity.** Production distributors should use a private release key and plan migration for existing installations.
+- Obtain APKs from a source you trust. This repository supports a committed CI signing key as a fallback. **That key is public: it can preserve update compatibility but cannot establish publisher authenticity.** Production distributors should use a private release key and plan migration for existing installations
 - The Android app does not contain an in-app APK installer. Install updates yourself from the repository's release page.
 - Existing security-review documents record findings at particular revisions; they are not certification of the current build.
 
