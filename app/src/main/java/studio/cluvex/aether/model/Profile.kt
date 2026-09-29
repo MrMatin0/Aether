@@ -359,6 +359,13 @@ data class ConnectionProfile(
      * Also used by the chained-core path: with a Psiphon entry these are the
      * resolvers the DNS-over-TCP shim queries through the tunnel (see
      * [studio.cluvex.aether.core.SocksFront]).
+     *
+     * NOTE: on an Aether-only VPN session this does NOT change the resolver
+     * the device itself uses. The TUN advertises its own servers
+     * ([studio.cluvex.aether.core.TunnelConfig.dnsServersFor]) and hev relays
+     * those UDP queries to their destination as-is; the engine only applies
+     * `--dns` to names it resolves itself (SOCKS5 domain requests). Smart DNS
+     * ([smartDns]) is the setting that changes both.
      */
     val dnsServers: String = "",
 
@@ -629,6 +636,60 @@ data class ConnectionProfile(
      */
     val spoofSni: String = "",
 
+    // ---- Smart DNS: sanctions bypass through a proxying resolver ----
+
+    /**
+     * Smart DNS ("sanctions DNS"): make the DEVICE resolve names through
+     * [smartDnsServers] instead of the TUN's default 1.1.1.1 / 8.8.8.8.
+     *
+     * ### What it is for
+     *
+     * A WARP exit is geolocated to the user's own country, so a site that
+     * geo-blocks Iran (Gemini, most AI services, a lot of developer tooling)
+     * refuses the session even though Aether itself is working. A Smart DNS
+     * provider answers the names it covers with the address of its OWN
+     * TLS-passthrough (SNI) proxy abroad. The device then opens its HTTPS
+     * connection to that proxy - still through the tunnel - and the proxy
+     * relays it by SNI, so the site sees the proxy's country. Names the
+     * provider does not cover resolve normally and keep the WARP exit, which
+     * is what still opens the filtered sites.
+     *
+     * The proxy relays TLS untouched: it can see WHICH site, never what is
+     * inside, and cannot impersonate the site without a certificate it has no
+     * way to obtain. It does see every name the device resolves.
+     *
+     * ### When it applies
+     *
+     * Only on the Aether-only chain ([usesSmartDns]). With a Psiphon or Tor
+     * entry the exit is already abroad and the SOCKS front answers DNS on its
+     * own, so the setting is kept but has nothing to do.
+     *
+     * While it is active the TUN carries no IPv6 address (see
+     * `TunFactory.isIpv4OnlyExit`), so apps are not handed AAAA answers they
+     * could use to reach a covered site over IPv6 and skip the proxy.
+     */
+    val smartDns: Boolean = false,
+
+    /**
+     * The Smart DNS resolvers: IPv4 addresses, comma / space / newline
+     * separated, port 53 only - Android's VpnService.Builder.addDnsServer has
+     * no port, so a resolver on any other port cannot serve the device. See
+     * [sanitizedSmartDns].
+     */
+    val smartDnsServers: String = "",
+
+    /**
+     * Send the queries to [smartDnsServers] - and any other traffic to those
+     * same addresses - straight out of the phone instead of through WARP
+     * (appended to `--route-direct`).
+     *
+     * For providers that only answer registered / Iranian source addresses.
+     * Off by default: a query through the tunnel reaches the provider from a
+     * Cloudflare address, which is the configuration it was reported working
+     * with, and a direct query is visible to the local network.
+     */
+    val smartDnsDirect: Boolean = false,
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -655,6 +716,15 @@ data class ConnectionProfile(
     /** True when the session is built as two MASQUE hops ([Protocol.MIM]). */
     val usesMim: Boolean
         get() = protocol == Protocol.MIM
+
+    /**
+     * True when Smart DNS actually shapes this session: switched on, on the
+     * Aether-only chain, and with at least one usable resolver. Anything less
+     * and the session runs exactly as it would with the switch off - a Smart
+     * DNS with no valid server must never leave the device with no resolver.
+     */
+    val usesSmartDns: Boolean
+        get() = smartDns && chain == ChainMode.AETHER && sanitizedSmartDns().isNotEmpty()
 
     /**
      * True when [ech] actually reaches the engine as `--ech auto`.
@@ -776,7 +846,14 @@ data class ConnectionProfile(
 
         // In-tunnel resolvers. Sanitised so a malformed entry can never inject
         // a second CLI token (the engine itself also re-validates each entry).
-        sanitizedDns().takeIf { it.isNotEmpty() }?.let {
+        //
+        // Smart DNS takes this slot when it is active, so every name the ENGINE
+        // resolves (proxy mode, LAN sharing, the self-test's socks5h probes)
+        // goes through the same resolver as the device's own queries, and a
+        // covered site cannot come out of the WARP exit on one path and the
+        // Smart DNS proxy on the other.
+        val resolvers = if (usesSmartDns) sanitizedSmartDns() else sanitizedDns()
+        resolvers.takeIf { it.isNotEmpty() }?.let {
             args += "--dns"
             args += it.joinToString(",")
         }
@@ -794,10 +871,17 @@ data class ConnectionProfile(
             args += "--route-block"
             args += it.joinToString(",")
         }
-        sanitizedRules(routeDirect).takeIf { it.isNotEmpty() }?.let {
-            args += "--route-direct"
-            args += it.joinToString(",")
-        }
+        // The Smart DNS resolvers join the user's direct rules when asked to
+        // be reached outside the tunnel. Bare addresses are rules the engine
+        // already understands, and the cap still holds for the merged list.
+        (sanitizedRules(routeDirect) + smartDnsDirectRules())
+            .distinct()
+            .take(MAX_ROUTE_RULES)
+            .takeIf { it.isNotEmpty() }
+            ?.let {
+                args += "--route-direct"
+                args += it.joinToString(",")
+            }
 
         // ---- 1.2.4 engine tuning ----
         if (fragment) {
@@ -939,6 +1023,29 @@ data class ConnectionProfile(
         .take(MAX_DNS_SERVERS)
 
     /**
+     * Validated Smart DNS resolvers, as bare IPv4 addresses.
+     *
+     * Stricter than [sanitizedDns] because the same list is handed to
+     * `VpnService.Builder.addDnsServer`, which takes an address and nothing
+     * else: `1.2.3.4` and `1.2.3.4:53` are accepted (and both become
+     * `1.2.3.4`), any other port is dropped rather than silently queried on
+     * 53, and so are IPv6 (the TUN carries no IPv6 address while Smart DNS is
+     * active), hostnames, `0.x` and loopback. Order is kept: Android tries the
+     * resolvers in the order they were added.
+     */
+    fun sanitizedSmartDns(): List<String> = smartDnsServers
+        .split(',', ' ', ';', '\n', '\t')
+        .map { it.trim() }
+        .mapNotNull { SMART_DNS_ENTRY.matchEntire(it)?.groupValues?.get(1) }
+        .filterNot { it.startsWith("0.") || it.startsWith("127.") }
+        .distinct()
+        .take(MAX_DNS_SERVERS)
+
+    /** The Smart DNS resolvers as `--route-direct` rules, when asked for. */
+    private fun smartDnsDirectRules(): List<String> =
+        if (usesSmartDns && smartDnsDirect) sanitizedSmartDns() else emptyList()
+
+    /**
      * Validated routing-rule list. Mirrors the grammar documented by the
      * engine (`example.com`, `full:`, `keyword:`, `regexp:`, CIDR, `port:`,
      * `private`) and rejects entries containing a comma, whitespace or a shell
@@ -1078,6 +1185,12 @@ data class ConnectionProfile(
         private val PORT = "(?:6553[0-5]|655[0-2]\\d|65[0-4]\\d{2}|6[0-4]\\d{3}|[1-9]\\d{0,3})"
         private val DNS_ENTRY =
             Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+])(?::$PORT)?$")
+
+        /**
+         * A Smart DNS resolver: an IPv4 address, optionally with `:53` - and
+         * only 53, see [sanitizedSmartDns]. Group 1 is the bare address.
+         */
+        private val SMART_DNS_ENTRY = Regex("^($OCTET(?:\\.$OCTET){3})(?::53)?$")
 
         /** The same address, but the port is required (see [sanitizedEndpoint]). */
         private val ENDPOINT_ENTRY =
