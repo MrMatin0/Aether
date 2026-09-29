@@ -1,14 +1,18 @@
 package studio.cluvex.aether.core
 
+import java.io.ByteArrayOutputStream
+
 /**
  * The few DNS wire-format questions this app has to answer for itself.
  *
  * Deliberately NOT a DNS library. [SocksFront] forwards queries verbatim and
  * only ever needs to know two things about one: what was asked, and how to say
- * "that name exists, but not in the family you asked for". Everything here is
- * pure Kotlin with no Android dependency, which is what makes it testable on
- * the JVM - and these bytes decide whether an app gets an address it can
- * actually connect to, so they are worth testing.
+ * "that name exists, but not in the family you asked for". The Smart DNS front
+ * adds three more: building a query of its own, reading the IPv4 answers out
+ * of a response, and reading its RCODE. Everything here is pure Kotlin with no
+ * Android dependency, which is what makes it testable on the JVM - and these
+ * bytes decide whether an app gets an address it can actually connect to, so
+ * they are worth testing.
  *
  * ### Why NODATA and not NXDOMAIN, and not a dropped packet
  *
@@ -28,6 +32,25 @@ internal object DnsMessage {
 
     /** QTYPE AAAA: an IPv6 address. */
     const val TYPE_AAAA = 28
+
+    /** QTYPE SVCB (RFC 9460). */
+    const val TYPE_SVCB = 64
+
+    /**
+     * QTYPE HTTPS (RFC 9460). Its answers can carry `ipv4hint` / `ipv6hint`
+     * addresses, which is a second way for a client to learn an address that
+     * is not the one the A record gave it.
+     */
+    const val TYPE_HTTPS = 65
+
+    /** QCLASS IN. */
+    const val CLASS_IN = 1
+
+    /** RCODE SERVFAIL. */
+    const val RCODE_SERVFAIL = 2
+
+    /** RCODE REFUSED: what a resolver that does not serve this client says. */
+    const val RCODE_REFUSED = 5
 
     /** ID, flags, and the four section counts. */
     private const val HEADER_BYTES = 12
@@ -89,6 +112,120 @@ internal object DnsMessage {
         out[11] = 0
         return out
     }
+
+    /**
+     * The same shape as [nodataResponse], with RCODE=SERVFAIL: "I could not
+     * answer this right now". Used when every Smart DNS server failed, so the
+     * client moves on at once instead of waiting out its timeout.
+     */
+    fun servfailResponse(query: ByteArray): ByteArray? {
+        val out = nodataResponse(query) ?: return null
+        out[3] = (0x80 or RCODE_SERVFAIL).toByte()
+        return out
+    }
+
+    /** RCODE of [message], or null when it is too short to have one. */
+    fun rcode(message: ByteArray): Int? {
+        if (message.size < HEADER_BYTES) return null
+        return message[3].toInt() and 0x0F
+    }
+
+    /** True when [message] is a response with QR=1. */
+    fun isResponse(message: ByteArray): Boolean =
+        message.size >= HEADER_BYTES && (message[2].toInt() and 0x80) != 0
+
+    /** True when the TC bit is set: the answer did not fit and must be re-asked over TCP. */
+    fun isTruncated(message: ByteArray): Boolean =
+        message.size >= HEADER_BYTES && (message[2].toInt() and 0x02) != 0
+
+    /**
+     * A one-question recursive query for [name] / [type] with transaction id
+     * [id], or null when [name] cannot be encoded (non-ASCII, an empty label, a
+     * label over 63 bytes, or more than 255 bytes in total).
+     */
+    fun buildQuery(name: String, type: Int, id: Int): ByteArray? {
+        val trimmed = name.trim().trimEnd('.')
+        if (trimmed.isEmpty() || trimmed.any { it.code > 127 }) return null
+        val labels = trimmed.split('.')
+        if (labels.any { it.isEmpty() || it.length > 63 }) return null
+        val out = ByteArrayOutputStream()
+        out.write((id shr 8) and 0xFF)
+        out.write(id and 0xFF)
+        out.write(0x01) // RD
+        out.write(0x00)
+        out.write(0)
+        out.write(1) // QDCOUNT
+        repeat(6) { out.write(0) }
+        var nameBytes = 0
+        for (label in labels) {
+            val bytes = label.toByteArray(Charsets.US_ASCII)
+            out.write(bytes.size)
+            out.write(bytes, 0, bytes.size)
+            nameBytes += bytes.size + 1
+        }
+        out.write(0)
+        nameBytes += 1
+        if (nameBytes > 255) return null
+        out.write((type shr 8) and 0xFF)
+        out.write(type and 0xFF)
+        out.write(0)
+        out.write(CLASS_IN)
+        return out.toByteArray()
+    }
+
+    /**
+     * Every IN A address in the answer section of [message], in order, as
+     * dotted quads. Bounds-checked throughout: a truncated or malformed message
+     * yields whatever was read before the damage, never an exception.
+     */
+    fun answerIpv4s(message: ByteArray): List<String> {
+        if (message.size < HEADER_BYTES) return emptyList()
+        val questions = u16(message, 4)
+        val answers = u16(message, 6)
+        var index = HEADER_BYTES
+        for (q in 0 until questions) {
+            index = skipName(message, index) ?: return emptyList()
+            index += 4
+            if (index > message.size) return emptyList()
+        }
+        val out = mutableListOf<String>()
+        for (a in 0 until answers) {
+            index = skipName(message, index) ?: break
+            if (index + 10 > message.size) break
+            val type = u16(message, index)
+            val klass = u16(message, index + 2)
+            val length = u16(message, index + 8)
+            index += 10
+            if (index + length > message.size) break
+            if (type == TYPE_A && klass == CLASS_IN && length == 4) {
+                out += Socks5Wire.ipv4Text(message.copyOfRange(index, index + 4))
+            }
+            index += length
+        }
+        return out
+    }
+
+    /** Index just past the (possibly compressed) name at [start], or null. */
+    private fun skipName(message: ByteArray, start: Int): Int? {
+        var index = start
+        var labels = 0
+        while (labels <= MAX_LABELS) {
+            if (index >= message.size) return null
+            val length = message[index].toInt() and 0xFF
+            if ((length and 0xC0) == 0xC0) {
+                return if (index + 2 <= message.size) index + 2 else null
+            }
+            if ((length and 0xC0) != 0) return null
+            index += 1
+            if (length == 0) return index
+            index += length
+            labels += 1
+        }
+        return null
+    }
+
+    private fun u16(message: ByteArray, offset: Int): Int =
+        ((message[offset].toInt() and 0xFF) shl 8) or (message[offset + 1].toInt() and 0xFF)
 
     /**
      * Index just past the question's QTYPE and QCLASS, or null when [query] is
