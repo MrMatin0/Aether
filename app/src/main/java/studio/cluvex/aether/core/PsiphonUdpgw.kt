@@ -128,11 +128,9 @@ internal class PsiphonUdpgwChannel(
     }
 
     private fun socksConnect(port: Int): ByteArray = byteArrayOf(
-        5, 1, 0, 3, 4, '1'.code.toByte(), '2'.code.toByte(), '7'.code.toByte(),
-        '.',code('0'),'.',code('0'),'.',code('1'), (port shr 8).toByte(), port.toByte(),
+        5, 1, 0, 1, 127, 0, 0, 1,
+        (port shr 8).toByte(), port.toByte(),
     )
-
-    private fun code(c: Char): Byte = c.code.toByte()
 
     private fun skipSocksAddress(input: DataInputStream) {
         when (input.readUnsignedByte()) {
