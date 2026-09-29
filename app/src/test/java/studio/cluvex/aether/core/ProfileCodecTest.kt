@@ -123,6 +123,11 @@ class ProfileCodecTest {
         // ---- 2.2.0: MASQUE spoofing ----
         spoofMode = SpoofMode.SNI_SPLIT,
         spoofSni = "speed.cloudflare.com",
+        // ---- Smart DNS ----
+        // Single line, for the same reason as the CDN edge list above.
+        smartDns = true,
+        smartDnsServers = "192.0.2.53,198.51.100.53",
+        smartDnsDirect = true,
     )
 
     /**
@@ -205,6 +210,15 @@ class ProfileCodecTest {
         assertTrue(decoded.quicV2Opener, "the QUIC v2 opener must default to on")
         assertEquals(Protocol.MASQUE, decoded.protocol)
         assertEquals(0, decoded.maxClients)
+    }
+
+    @Test
+    fun aPayloadFromBeforeSmartDnsKeepsItOff() {
+        val decoded = ProfileCodec.decode("protocol=MASQUE\nmtu=1280")
+        assertFalse(decoded.smartDns)
+        assertEquals("", decoded.smartDnsServers)
+        assertFalse(decoded.smartDnsDirect)
+        assertFalse(decoded.usesSmartDns)
     }
 
     @Test

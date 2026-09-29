@@ -84,6 +84,13 @@ internal fun EngineDestination(
                     onPickBlockedApps = { picker = AppPicker.BLOCKED },
                 )
                 Spacer(Modifier.height(32.dp))
+                SmartDnsSection(
+                    smartDns = profile.smartDns, smartDnsServers = profile.smartDnsServers,
+                    smartDnsDirect = profile.smartDnsDirect, chain = profile.chain,
+                    validServers = profile.sanitizedSmartDns().size,
+                    enabled = enabled, edit = edit,
+                )
+                Spacer(Modifier.height(32.dp))
                 RoutesSection(
                     routeBlock = profile.routeBlock, routeDirect = profile.routeDirect,
                     enabled = enabled, edit = edit,

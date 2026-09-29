@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.SplitMode
@@ -50,6 +51,7 @@ internal object TunFactory {
         service: VpnService,
         profile: ConnectionProfile,
     ): ParcelFileDescriptor {
+        logSmartDns(profile)
         if (isIpv4OnlyExit(profile)) {
             // Some ROMs refuse an interface with an IPv6 route and no IPv6
             // address. That is a legitimate thing for a ROM to do, so it is a
@@ -64,9 +66,9 @@ internal object TunFactory {
             DiagnosticsLog.w(
                 TAG,
                 "This device refused a TUN with an IPv6 route and no IPv6 address - falling " +
-                    "back to the addressed interface. AAAA queries are still answered NODATA " +
-                    "by the SOCKS front, so apps do not race IPv6 addresses the exit cannot " +
-                    "reach.",
+                    "back to the addressed interface. On a Psiphon entry AAAA queries are still " +
+                    "answered NODATA by the SOCKS front; with Smart DNS, apps may now be handed " +
+                    "AAAA answers that reach a covered site over IPv6 without its proxy.",
             )
         }
         val tun = build(service, profile, withIpv6Address = true).establish()
@@ -76,17 +78,51 @@ internal object TunFactory {
     }
 
     /**
-     * True when the core the destination actually sees cannot carry IPv6.
+     * True when the session must not advertise IPv6 to apps.
      *
-     * The exit is the ENTRY hop, not the internet-facing one: the outermost
-     * proxy is what terminates the device's connection and reissues it, so in
-     * `Psiphon -> Aether -> internet` the address a site sees belongs to
-     * Psiphon's server, which reached that site over IPv4. With a Tor entry the
-     * exit is a Tor relay, which can and does dial IPv6, so nothing is changed
-     * for it.
+     * On a Psiphon entry, because the core the destination actually sees cannot
+     * carry IPv6. The exit is the ENTRY hop, not the internet-facing one: the
+     * outermost proxy is what terminates the device's connection and reissues
+     * it, so in `Psiphon -> Aether -> internet` the address a site sees belongs
+     * to Psiphon's server, which reached that site over IPv4. With a Tor entry
+     * the exit is a Tor relay, which can and does dial IPv6, so nothing is
+     * changed for it.
+     *
+     * With Smart DNS, because its answers are what move a covered site to the
+     * provider's proxy - and those proxies are IPv4. With an IPv6 address on
+     * the TUN, an app would also be handed a real AAAA record (from the
+     * provider or its upstream) and Happy Eyeballs would prefer it, reaching
+     * the site straight out of the WARP exit: the exact sanctions error the
+     * setting is there to avoid.
      */
     private fun isIpv4OnlyExit(profile: ConnectionProfile): Boolean =
-        profile.chain.entryHop == Hop.PSIPHON
+        profile.chain.entryHop == Hop.PSIPHON || profile.usesSmartDns
+
+    /**
+     * One line saying whether Smart DNS shapes this session - and, when it was
+     * switched on but does not, why. "I turned it on and nothing changed" is
+     * otherwise indistinguishable from a provider that does not cover the site.
+     */
+    private fun logSmartDns(profile: ConnectionProfile) {
+        if (!profile.smartDns) return
+        when {
+            profile.usesSmartDns -> DiagnosticsLog.i(
+                TAG,
+                "Smart DNS active: resolvers=${profile.sanitizedSmartDns()} " +
+                    "direct=${profile.smartDnsDirect} (no IPv6 address on the TUN)",
+            )
+            profile.chain != ChainMode.AETHER -> DiagnosticsLog.w(
+                TAG,
+                "Smart DNS is on but inactive: it only applies to the Aether-only chain " +
+                    "(current: ${profile.chain.pathLabel()}).",
+            )
+            else -> DiagnosticsLog.w(
+                TAG,
+                "Smart DNS is on but inactive: no valid resolver (IPv4, port 53) in the list - " +
+                    "using the default resolvers.",
+            )
+        }
+    }
 
     /**
      * The kill-switch blackhole: routes everything, reads nothing, so every
@@ -163,7 +199,10 @@ internal object TunFactory {
             builder.setBlocking(true)
         }
 
-        TunnelConfig.DNS_SERVERS.forEach { builder.addDnsServer(it) }
+        // The device's resolvers. With Smart DNS active these are the user's
+        // Smart DNS servers, which is what moves a sanctioned site to the
+        // provider's proxy abroad (see ConnectionProfile.smartDns).
+        TunnelConfig.dnsServersFor(profile).forEach { builder.addDnsServer(it) }
 
         // Split tunneling + loop prevention (keeps the engine's own traffic off
         // the TUN, equivalent to v2rayNG's in-process protect()).
@@ -186,7 +225,8 @@ internal object TunFactory {
             "TUN established: ipv4=${TunnelConfig.TUN_IPV4}/${TunnelConfig.TUN_IPV4_PREFIX} " +
                 "ipv6=$ipv6 mtu=${profile.safeMtu()} chain=${profile.chain.pathLabel()} " +
                 "split=${profile.splitMode} apps=${profile.splitApps.size} " +
-                "dns=${TunnelConfig.DNS_SERVERS}",
+                "dns=${TunnelConfig.dnsServersFor(profile)}" +
+                if (profile.usesSmartDns) " (smart)" else "",
         )
     }
 
