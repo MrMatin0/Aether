@@ -124,10 +124,14 @@ class ProfileCodecTest {
         spoofMode = SpoofMode.SNI_SPLIT,
         spoofSni = "speed.cloudflare.com",
         // ---- Smart DNS ----
-        // Single line, for the same reason as the CDN edge list above.
+        // Single line, for the same reason as the CDN edge list above. Both
+        // lists hold VALID entries on purpose: the model caches their parsed
+        // form in private fields, which the reflection check below also
+        // walks, and an unparseable fixture would leave those at the default.
         smartDns = true,
         smartDnsServers = "192.0.2.53,198.51.100.53",
         smartDnsDirect = true,
+        smartDnsProxies = "192.0.2.10,198.51.100.0/24",
     )
 
     /**
@@ -218,6 +222,7 @@ class ProfileCodecTest {
         assertFalse(decoded.smartDns)
         assertEquals("", decoded.smartDnsServers)
         assertFalse(decoded.smartDnsDirect)
+        assertEquals("", decoded.smartDnsProxies)
         assertFalse(decoded.usesSmartDns)
     }
 

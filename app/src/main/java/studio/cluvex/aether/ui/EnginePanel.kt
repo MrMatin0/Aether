@@ -86,8 +86,10 @@ internal fun EngineDestination(
                 Spacer(Modifier.height(32.dp))
                 SmartDnsSection(
                     smartDns = profile.smartDns, smartDnsServers = profile.smartDnsServers,
-                    smartDnsDirect = profile.smartDnsDirect, chain = profile.chain,
+                    smartDnsDirect = profile.smartDnsDirect, smartDnsProxies = profile.smartDnsProxies,
+                    chain = profile.chain,
                     validServers = profile.sanitizedSmartDns().size,
+                    validProxies = profile.sanitizedSmartDnsProxies().size,
                     enabled = enabled, edit = edit,
                 )
                 Spacer(Modifier.height(32.dp))

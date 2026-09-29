@@ -34,19 +34,47 @@ changed the device's resolver.
 
 ## What this change does
 
-- `ConnectionProfile.smartDns / smartDnsServers / smartDnsDirect`, persisted
-  (`ProfileStore`) and transported (`ProfileCodec`).
+- `ConnectionProfile.smartDns / smartDnsServers / smartDnsDirect /
+  smartDnsProxies`, persisted (`ProfileStore`) and transported (`ProfileCodec`).
 - Active only on the Aether-only chain with at least one valid server
-  (`usesSmartDns`). Servers: IPv4, port 53 only, up to 8
-  (`sanitizedSmartDns`); `addDnsServer` takes no port.
+  (`usesSmartDns`). Servers: unicast IPv4, port 53 only, up to 8
+  (`sanitizedSmartDns`); `addDnsServer` takes no port. `0/8`, loopback,
+  link-local `169.254/16`, multicast / reserved (`224+`) and
+  `255.255.255.255` are rejected. Parsed once per profile instance.
 - The TUN advertises the Smart DNS servers (`TunnelConfig.dnsServersFor`).
-- `--dns` uses the same servers, so engine-side lookups agree with the device.
+- `--dns` uses the same servers, so engine-side lookups agree with the device
+  (`engineUsesSmartDns`) - except in direct mode, see below.
 - The TUN carries no IPv6 address while active (`::/0` still routed), so apps
   get no AAAA answers that would reach a covered site over IPv6 and skip the
-  proxy.
-- Optional *direct* mode appends the servers to `--route-direct`, for providers
-  that only answer registered / Iranian source IPs.
+  proxy. A ROM that refuses that interface gets the addressed one back; the
+  session then flags it (`SmartDnsRuntime.ipv6Fallback`) and the Routing page
+  shows a warning, since the feature is bypassed for covered sites with an
+  AAAA record.
 - UI: a Smart DNS card on the Routing page (EN + FA).
+
+## Direct mode
+
+For providers that only accept registered / Iranian source addresses. Such a
+provider checks the source on its SNI proxy as well as on its resolver, so
+direct mode sends BOTH straight out of the phone:
+
+- the Smart DNS servers, and
+- the provider's proxy addresses (`smartDnsProxies`: IPv4 or CIDR no wider
+  than /16, up to 32). Only covered names resolve to them, so uncovered
+  (filtered) sites never leave the WARP exit.
+
+These go FIRST in `--route-direct` (`routeDirectRules`), so a user list at the
+256-rule cap can no longer silently push them out; if the cap cuts user rules
+instead, the connect log says how many (`droppedRouteDirectRules`).
+
+The device's queries reach the direct path because the engine's UDP ASSOCIATE
+(`socks.rs`, `handle_udp_associate`) runs the routing rules on every datagram
+hev relays, and a bare address is a /32 rule there. TCP to the proxy address
+goes through `handle_connect`, which applies the same rules.
+
+In direct mode the engine's own `--dns` stays on the ordinary resolvers: the
+engine always resolves through the tunnel, where a whitelisting provider is
+silent, and that would fail every socks5h request and the self-test.
 
 ## Limits
 
@@ -58,8 +86,8 @@ changed the device's resolver.
 - Apps or browsers with their own DoH resolver bypass it.
 - Services with account/phone-region or multi-step checks (e.g. Google Flow)
   may still refuse.
-- Some providers whitelist source IPs; the WARP exit may not be registered with
-  them. That is what direct mode is for.
+- In direct mode the proxy addresses have to be entered by hand; resolve a
+  covered site with the provider's DNS to find them.
 - With a Psiphon or Tor entry the exit is already abroad; the setting is kept
   but ignored.
 
@@ -69,5 +97,6 @@ changed the device's resolver.
 2. Enable Smart DNS, enter the provider's servers, connect.
 3. Log shows `Smart DNS active: resolvers=[...]` and `dns=[...] (smart)`.
 4. gemini.google.com opens; youtube.com still opens.
-5. If covered sites do not open: try *direct* mode; if they still fail, the
-   provider does not accept the source IP or does not cover that name.
+5. If covered sites do not open with a whitelisting provider: turn on direct
+   mode AND enter its proxy addresses; the log then lists `proxies=[...]` and
+   `engineDns=ordinary`.

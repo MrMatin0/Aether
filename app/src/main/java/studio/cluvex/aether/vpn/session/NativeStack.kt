@@ -7,6 +7,7 @@ import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
+import studio.cluvex.aether.core.SmartDnsRuntime
 import studio.cluvex.aether.core.SocksTunBridge
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
@@ -84,6 +85,18 @@ internal class NativeStack(private val service: VpnService) {
     // ---------------------------------------------------------------- engine
 
     fun startEngine(profile: ConnectionProfile) {
+        // The Smart DNS addresses go in FRONT of the user's direct rules, so a
+        // list at the cap loses its own tail instead of the addresses direct
+        // mode depends on. That must never happen silently.
+        val dropped = profile.droppedRouteDirectRules()
+        if (dropped > 0) {
+            DiagnosticsLog.w(
+                TAG,
+                "Direct routing list is over the ${ConnectionProfile.MAX_ROUTE_RULES}-rule cap: " +
+                    "the last $dropped of your own direct rules were dropped to make room for " +
+                    "the Smart DNS addresses, which always come first.",
+            )
+        }
         engine = AetherProcess(service.applicationInfo.nativeLibraryDir, service.filesDir)
             .also { it.start(profile) }
     }
@@ -261,5 +274,7 @@ internal class NativeStack(private val service: VpnService) {
     private fun closeTunLocked() {
         runCatching { tun?.close() }
         tun = null
+        // The session TUN is gone, and with it anything it had to report.
+        SmartDnsRuntime.reset()
     }
 }
