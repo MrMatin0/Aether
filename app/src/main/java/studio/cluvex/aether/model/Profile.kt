@@ -353,19 +353,19 @@ data class ConnectionProfile(
     // ---- Added in 1.2.3 (engine v1.5.0 feature parity) ----
 
     /**
-     * Resolvers used INSIDE the tunnel (engine `--dns`). Blank = engine default
-     * (1.1.1.1, 1.0.0.1). Comma separated; a bare IP implies port 53.
+     * RETIRED: the old "custom DNS" field (engine `--dns`).
      *
-     * Also used by the chained-core path: with a Psiphon entry these are the
-     * resolvers the DNS-over-TCP shim queries through the tunnel (see
-     * [studio.cluvex.aether.core.SocksFront]).
+     * It never did what its label promised. On a VPN session the device
+     * resolves through the TUN's own servers and hev relays those queries
+     * as-is, so this list only ever changed the names the ENGINE resolved for
+     * itself - which is why "custom DNS does not work" was the report. It is
+     * gone from the UI and is no longer applied anywhere: the engine keeps its
+     * own default resolvers, and the chained-core DNS shim uses the app
+     * defaults. Changing which resolver the device uses is what Smart DNS
+     * ([smartDns]) is for.
      *
-     * NOTE: on an Aether-only VPN session this does NOT change the resolver
-     * the device itself uses. The TUN advertises its own servers
-     * ([studio.cluvex.aether.core.TunnelConfig.dnsServersFor]) and hev relays
-     * those UDP queries to their destination as-is; the engine only applies
-     * `--dns` to names it resolves itself (SOCKS5 domain requests). Smart DNS
-     * ([smartDns]) is the setting that changes both.
+     * The field stays so an existing profile, payload or saved setup still
+     * decodes to the same object; [sanitizedDns] still validates it.
      */
     val dnsServers: String = "",
 
@@ -649,14 +649,26 @@ data class ConnectionProfile(
      * refuses the session even though Aether itself is working. A Smart DNS
      * provider answers the names it covers with the address of its OWN
      * TLS-passthrough (SNI) proxy abroad. The device then opens its HTTPS
-     * connection to that proxy - still through the tunnel - and the proxy
-     * relays it by SNI, so the site sees the proxy's country. Names the
-     * provider does not cover resolve normally and keep the WARP exit, which
-     * is what still opens the filtered sites.
+     * connection to that proxy and the proxy relays it by SNI, so the site
+     * sees the proxy's country. Names the provider does not cover resolve
+     * normally and keep the WARP exit, which is what still opens the filtered
+     * sites.
      *
-     * The proxy relays TLS untouched: it can see WHICH site, never what is
-     * inside, and cannot impersonate the site without a certificate it has no
-     * way to obtain. It does see every name the device resolves.
+     * ### How it is wired
+     *
+     * The TUN advertises a VIRTUAL resolver
+     * ([studio.cluvex.aether.core.TunnelConfig.SMART_DNS_RESOLVER]) and the
+     * chain entry becomes the Smart DNS front
+     * ([studio.cluvex.aether.core.SmartDnsFront]), which answers it in-process
+     * over [smartDnsProtocol]: plain DNS, DNS over HTTPS or DNS over TLS.
+     *
+     * The provider is reached THROUGH THE TUNNEL first. When it only answers
+     * registered / Iranian source addresses, the front notices by itself and
+     * reaches it straight out of the phone instead - the resolver, and the SNI
+     * proxy ranges it answers with - and goes back to the tunnel when that
+     * works again. There is no setting for this any more: the old "direct"
+     * switch and its hand-typed proxy list were one decision the app can make
+     * better at runtime.
      *
      * ### When it applies
      *
@@ -665,69 +677,35 @@ data class ConnectionProfile(
      * own, so the setting is kept but has nothing to do.
      *
      * While it is active the TUN carries no IPv6 address (see
-     * `TunFactory.isIpv4OnlyExit`), so apps are not handed AAAA answers they
-     * could use to reach a covered site over IPv6 and skip the proxy. A ROM
-     * that refuses such an interface gets the addressed one back, and the
-     * Routing page then says so for that session
-     * ([studio.cluvex.aether.core.SmartDnsRuntime]).
+     * `TunFactory.isIpv4OnlyExit`), and the front answers AAAA / HTTPS / SVCB
+     * with NODATA, so apps are never handed an address that skips the proxy.
      */
     val smartDns: Boolean = false,
 
     /**
-     * The Smart DNS resolvers: IPv4 addresses, comma / space / newline
-     * separated, port 53 only - Android's VpnService.Builder.addDnsServer has
-     * no port, so a resolver on any other port cannot serve the device. See
+     * How the Smart DNS servers are spoken to. [SmartDnsProtocol.PLAIN] is
+     * what every build before this did, and stays the default.
+     */
+    val smartDnsProtocol: SmartDnsProtocol = SmartDnsProtocol.PLAIN,
+
+    /**
+     * The Smart DNS servers, comma / space / newline separated, in the form
+     * [smartDnsProtocol] expects: IPv4 (optionally `:port`) for plain DNS,
+     * `https://host/path` for DoH, `host` or `host:port` for DoT. See
      * [sanitizedSmartDns].
      */
     val smartDnsServers: String = "",
 
-    /**
-     * Reach the Smart DNS provider straight out of the phone instead of
-     * through WARP: the resolvers in [smartDnsServers] AND the provider's
-     * SNI-proxy addresses in [smartDnsProxies] are put FIRST in
-     * `--route-direct` (see [routeDirectRules]).
-     *
-     * For providers that only accept registered / Iranian source addresses.
-     * Such a provider checks the source on its SNI proxy as well as on its
-     * resolver, so sending only the queries direct is not enough: the TLS
-     * connection to the proxy address would still leave through WARP and be
-     * refused. Hence the second list.
-     *
-     * While it is on, the ENGINE's own lookups (`--dns`) keep the ordinary
-     * resolvers ([engineUsesSmartDns]): the engine always resolves through
-     * the tunnel, where a whitelisting provider does not answer, and a silent
-     * `--dns` fails every socks5h request - and the self-test with it. The
-     * device's own queries are not affected by that: hev relays them as UDP
-     * datagrams, and the engine's UDP ASSOCIATE runs `--route-direct` on every
-     * one of them (socks.rs, handle_udp_associate).
-     *
-     * Off by default: a query through the tunnel reaches the provider from a
-     * Cloudflare address, which is the configuration it was reported working
-     * with, and direct traffic is visible to the local network.
-     */
-    val smartDnsDirect: Boolean = false,
-
-    /**
-     * The provider's SNI-proxy addresses - what its resolvers answer covered
-     * names with: IPv4 addresses or IPv4 CIDRs no wider than /16, comma /
-     * space / newline separated. Only used with [smartDnsDirect]; see
-     * [sanitizedSmartDnsProxies].
-     *
-     * Only COVERED names resolve to these, so sending them direct can never
-     * move an uncovered - possibly filtered - site off the WARP exit.
-     */
-    val smartDnsProxies: String = "",
-
 ) {
     /**
-     * The Smart DNS lists, parsed ONCE per instance. The profile is immutable,
-     * and these used to be re-parsed with a regex on every [usesSmartDns]
-     * read (several per connect), in [toArgs] and on every recomposition of
-     * the Routing page. `copy()` builds a new instance, so an edit re-parses
-     * exactly once. Body properties are not part of equals / hashCode.
+     * The Smart DNS servers, parsed ONCE per instance. The profile is
+     * immutable, and [usesSmartDns] is read several times per connect and on
+     * every recomposition of the Routing page. `copy()` builds a new instance,
+     * so an edit re-parses exactly once. Body properties are not part of
+     * equals / hashCode.
      */
-    private val smartDnsResolvers: List<String> = parseSmartDns(smartDnsServers)
-    private val smartDnsProxyRules: List<String> = parseSmartDnsProxies(smartDnsProxies)
+    private val parsedSmartDns: List<SmartDnsServer> =
+        SmartDnsServers.parse(smartDnsServers, smartDnsProtocol)
 
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -757,20 +735,23 @@ data class ConnectionProfile(
 
     /**
      * True when Smart DNS actually shapes this session: switched on, on the
-     * Aether-only chain, and with at least one usable resolver. Anything less
-     * and the session runs exactly as it would with the switch off - a Smart
-     * DNS with no valid server must never leave the device with no resolver.
+     * Aether-only chain, and with at least one usable server for the selected
+     * protocol. Anything less and the session runs exactly as it would with
+     * the switch off - a Smart DNS with no valid server must never leave the
+     * device with no resolver.
      */
     val usesSmartDns: Boolean
-        get() = smartDns && chain == ChainMode.AETHER && smartDnsResolvers.isNotEmpty()
+        get() = smartDns && chain == ChainMode.AETHER && parsedSmartDns.isNotEmpty()
 
     /**
-     * True when the ENGINE's own resolver (`--dns`) is the Smart DNS one too.
-     * Not in direct mode: see [smartDnsDirect] for why the engine keeps the
-     * ordinary resolvers there.
+     * True when a routing rule names something other than an address: a
+     * domain, `full:`, `keyword:` or `regexp:`. The Smart DNS front then leaves
+     * domain CONNECTs (proxy mode, LAN sharing) as domains, so the engine can
+     * still match those rules - rewriting them to an address would silently
+     * route around them.
      */
-    val engineUsesSmartDns: Boolean
-        get() = usesSmartDns && !smartDnsDirect
+    val hasDomainRoutingRules: Boolean
+        get() = (sanitizedRules(routeBlock) + sanitizedRules(routeDirect)).any { !ADDRESS_RULE.matches(it) }
 
     /**
      * True when [ech] actually reaches the engine as `--ech auto`.
@@ -890,21 +871,10 @@ data class ConnectionProfile(
 
         // ---- engine v1.5.0 ----
 
-        // In-tunnel resolvers. Sanitised so a malformed entry can never inject
-        // a second CLI token (the engine itself also re-validates each entry).
-        //
-        // Smart DNS takes this slot when it is active, so every name the ENGINE
-        // resolves (proxy mode, LAN sharing, the self-test's socks5h probes)
-        // goes through the same resolver as the device's own queries, and a
-        // covered site cannot come out of the WARP exit on one path and the
-        // Smart DNS proxy on the other. Except in direct mode: the engine can
-        // only resolve through the tunnel, where a provider that whitelists
-        // source addresses stays silent (see [smartDnsDirect]).
-        val resolvers = if (engineUsesSmartDns) sanitizedSmartDns() else sanitizedDns()
-        resolvers.takeIf { it.isNotEmpty() }?.let {
-            args += "--dns"
-            args += it.joinToString(",")
-        }
+        // Deliberately NO --dns. The retired custom-DNS field only ever changed
+        // the names the engine resolved for itself (see [dnsServers]), and Smart
+        // DNS resolves in the app's own front, before a request reaches the
+        // engine. The engine keeps its default resolvers.
 
         // Zero Trust: only the non-secret team name travels via argv. The id,
         // secret, token and e-mail go through the environment (see toEnv).
@@ -919,9 +889,9 @@ data class ConnectionProfile(
             args += "--route-block"
             args += it.joinToString(",")
         }
-        // The user's direct rules, with the Smart DNS addresses in FRONT of
-        // them when direct mode asks for it; see [routeDirectRules].
-        routeDirectRules().takeIf { it.isNotEmpty() }?.let {
+        // The user's own direct rules only. Smart DNS reaches its provider
+        // directly from the app's front when it has to, not through the engine.
+        sanitizedRules(routeDirect).takeIf { it.isNotEmpty() }?.let {
             args += "--route-direct"
             args += it.joinToString(",")
         }
@@ -1054,9 +1024,9 @@ data class ConnectionProfile(
     }
 
     /**
-     * Validated resolver list for `--dns`. Accepts `1.1.1.1` or `1.1.1.1:53`
-     * and drops anything else, so a stray space or shell metacharacter in the
-     * settings field can never become a separate engine argument.
+     * Validated entries of the retired [dnsServers] field. Accepts `1.1.1.1`
+     * or `1.1.1.1:53` and drops anything else. No longer emitted anywhere;
+     * kept so the field keeps a single, tested notion of what is valid.
      */
     fun sanitizedDns(): List<String> = dnsServers
         .split(',', ' ', ';', '\n')
@@ -1066,66 +1036,11 @@ data class ConnectionProfile(
         .take(MAX_DNS_SERVERS)
 
     /**
-     * Validated Smart DNS resolvers, as bare IPv4 addresses.
-     *
-     * Stricter than [sanitizedDns] because the same list is handed to
-     * `VpnService.Builder.addDnsServer`, which takes an address and nothing
-     * else: `1.2.3.4` and `1.2.3.4:53` are accepted (and both become
-     * `1.2.3.4`), any other port is dropped rather than silently queried on
-     * 53, and so are IPv6 (the TUN carries no IPv6 address while Smart DNS is
-     * active), hostnames, and every address that cannot be a unicast resolver
-     * ([isUsableUnicast]): `0.x`, loopback, link-local, multicast, reserved
-     * and the limited broadcast. Order is kept: Android tries the resolvers in
-     * the order they were added.
-     *
-     * Parsed once per instance; this returns the cached list.
+     * Validated Smart DNS servers for [smartDnsProtocol], in the order they
+     * will be tried; see [SmartDnsServers.parse] for the grammar. Parsed once
+     * per instance; this returns the cached list.
      */
-    fun sanitizedSmartDns(): List<String> = smartDnsResolvers
-
-    /**
-     * Validated provider proxy addresses ([smartDnsProxies]): bare IPv4
-     * addresses or IPv4 CIDRs no wider than [MIN_SMART_DNS_PROXY_PREFIX], with
-     * the same unicast rule as the resolvers, at most [MAX_SMART_DNS_PROXIES].
-     * A wider range is dropped rather than accepted: a pasted `/8` would send
-     * a sixteenth of the internet around the tunnel. Parsed once per instance.
-     */
-    fun sanitizedSmartDnsProxies(): List<String> = smartDnsProxyRules
-
-    /**
-     * The Smart DNS addresses as `--route-direct` rules, when asked for: the
-     * resolvers, then the proxies. Bare addresses and CIDRs are rules the
-     * engine already understands (routing.rs reads a bare address as a /32).
-     */
-    private fun smartDnsDirectRules(): List<String> =
-        if (usesSmartDns && smartDnsDirect) {
-            (smartDnsResolvers + smartDnsProxyRules).distinct()
-        } else {
-            emptyList()
-        }
-
-    /** Every direct rule before the cap: Smart DNS first, then the user's own. */
-    private fun uncappedRouteDirectRules(): List<String> =
-        (smartDnsDirectRules() + sanitizedRules(routeDirect)).distinct()
-
-    /**
-     * The `--route-direct` list the engine is given.
-     *
-     * The Smart DNS addresses go FIRST. They used to be appended after the
-     * user's rules and the merged list capped at [MAX_ROUTE_RULES], so a user
-     * list at the cap silently cut every one of them - direct mode switched
-     * itself off with nothing in the log. At most a handful of addresses, and
-     * without them direct mode does nothing at all, so they are the ones that
-     * must survive; what the cap cuts instead is reported by
-     * [droppedRouteDirectRules] and logged at connect.
-     */
-    fun routeDirectRules(): List<String> = uncappedRouteDirectRules().take(MAX_ROUTE_RULES)
-
-    /**
-     * How many of the user's own direct rules the cap cut because the Smart
-     * DNS addresses were put in front of them. Zero in every normal setup.
-     */
-    fun droppedRouteDirectRules(): Int =
-        (uncappedRouteDirectRules().size - MAX_ROUTE_RULES).coerceAtLeast(0)
+    fun sanitizedSmartDns(): List<SmartDnsServer> = parsedSmartDns
 
     /**
      * Validated routing-rule list. Mirrors the grammar documented by the
@@ -1250,12 +1165,6 @@ data class ConnectionProfile(
         const val MAX_DNS_SERVERS = 8
         const val MAX_ROUTE_RULES = 256
 
-        /** Most Smart DNS proxy entries kept ([sanitizedSmartDnsProxies]). */
-        const val MAX_SMART_DNS_PROXIES = 32
-
-        /** Widest CIDR accepted as a Smart DNS proxy range. */
-        const val MIN_SMART_DNS_PROXY_PREFIX = 16
-
         /**
          * What a MASQUE attempt with quick reconnect waits on top of its scan
          * budget (see [connectTimeoutMs]): engine 2.1.0 re-verifies up to
@@ -1274,20 +1183,6 @@ data class ConnectionProfile(
         private val DNS_ENTRY =
             Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+])(?::$PORT)?$")
 
-        /**
-         * A Smart DNS resolver: an IPv4 address, optionally with `:53` - and
-         * only 53, see [sanitizedSmartDns]. Group 1 is the bare address.
-         */
-        private val SMART_DNS_ENTRY = Regex("^($OCTET(?:\\.$OCTET){3})(?::53)?$")
-
-        /**
-         * A Smart DNS proxy: an IPv4 address, optionally with a `/prefix`.
-         * Group 1 is the address, group 2 the prefix (empty when absent); the
-         * prefix bound is checked in [parseSmartDnsProxies].
-         */
-        private val SMART_DNS_PROXY_ENTRY =
-            Regex("^($OCTET(?:\\.$OCTET){3})(?:/(3[0-2]|[12]?\\d))?$")
-
         /** The same address, but the port is required (see [sanitizedEndpoint]). */
         private val ENDPOINT_ENTRY =
             Regex("^(?:$OCTET(?:\\.$OCTET){3}|\\[[0-9A-Fa-f:]+]):$PORT$")
@@ -1297,6 +1192,15 @@ data class ConnectionProfile(
 
         /** One routing-rule token: no comma, no whitespace, no shell metacharacters. */
         private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^$+?()|{}\\\\]{1,200}$")
+
+        /**
+         * A routing rule that names addresses rather than names: an IPv4
+         * address or CIDR, an IPv6 one, `port:...` or `private`. Everything
+         * else is a domain rule; see [hasDomainRoutingRules].
+         */
+        private val ADDRESS_RULE = Regex(
+            "^(?:\\d{1,3}(?:\\.\\d{1,3}){3}(?:/\\d{1,2})?|\\[?[0-9A-Fa-f]*:[0-9A-Fa-f:]*]?(?:/\\d{1,3})?|port:.*|private)$",
+        )
 
         /** Decimal or `0x` hex; range checked in [sanitizedMark]. */
         private val MARK_ENTRY = Regex("^(?:0[xX][0-9A-Fa-f]{1,8}|\\d{1,10})$")
@@ -1309,51 +1213,5 @@ data class ConnectionProfile(
          */
         private val SNI_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
         private val SNI_ENTRY = Regex("^$SNI_LABEL(?:\\.$SNI_LABEL)+$")
-
-        /** The separators every Smart DNS list accepts. */
-        private fun splitSmartDnsList(raw: String): List<String> =
-            raw.split(',', ' ', ';', '\n', '\t').map { it.trim() }.filter { it.isNotEmpty() }
-
-        /** See [sanitizedSmartDns]. */
-        private fun parseSmartDns(raw: String): List<String> = splitSmartDnsList(raw)
-            .mapNotNull { SMART_DNS_ENTRY.matchEntire(it)?.groupValues?.get(1) }
-            .filter { isUsableUnicast(it) }
-            .distinct()
-            .take(MAX_DNS_SERVERS)
-
-        /** See [sanitizedSmartDnsProxies]. */
-        private fun parseSmartDnsProxies(raw: String): List<String> = splitSmartDnsList(raw)
-            .mapNotNull { entry ->
-                val match = SMART_DNS_PROXY_ENTRY.matchEntire(entry) ?: return@mapNotNull null
-                val address = match.groupValues[1]
-                val prefix = match.groupValues[2]
-                when {
-                    !isUsableUnicast(address) -> null
-                    prefix.isEmpty() -> address
-                    prefix.toInt() < MIN_SMART_DNS_PROXY_PREFIX -> null
-                    else -> "$address/$prefix"
-                }
-            }
-            .distinct()
-            .take(MAX_SMART_DNS_PROXIES)
-
-        /**
-         * True for an IPv4 address (already matched by an [OCTET] regex) that
-         * can be a unicast host on the internet or a LAN: not `0.0.0.0/8`,
-         * loopback `127/8`, link-local `169.254/16`, or anything from `224`
-         * up - multicast `224/4`, reserved `240/4` and the limited broadcast
-         * `255.255.255.255`, none of which a resolver or a proxy can be.
-         */
-        private fun isUsableUnicast(address: String): Boolean {
-            val octets = address.split('.').map { it.toInt() }
-            val first = octets[0]
-            return when {
-                first == 0 -> false
-                first == 127 -> false
-                first == 169 && octets[1] == 254 -> false
-                first >= 224 -> false
-                else -> true
-            }
-        }
     }
 }

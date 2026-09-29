@@ -33,6 +33,13 @@ object TunnelConfig {
     const val FRONT_SOCKS_PORT = 1820
 
     /**
+     * The Smart DNS front ([SmartDnsFront]): the chain entry of an Aether-only
+     * session while Smart DNS is active. It answers [SMART_DNS_RESOLVER] itself
+     * and relays everything else to the engine on [ENGINE_SOCKS_PORT].
+     */
+    const val SMART_DNS_FRONT_PORT = 1821
+
+    /**
      * Psiphon's local SOCKS5 (`LocalSocksProxyPort`).
      *
      * NOT 1080: that is psiphon-tunnel-core's own default and therefore what a
@@ -76,6 +83,15 @@ object TunnelConfig {
     const val TUN_IPV6_PREFIX = 126
 
     /**
+     * The virtual resolver the TUN advertises while Smart DNS is active: the
+     * peer address of the point-to-point /30, so it is always routed into the
+     * TUN and can never be a real host. Queries to it (UDP or TCP, port 53)
+     * never leave the phone - [SmartDnsFront] answers them in-process, over
+     * plain DNS, DoH or DoT, through the tunnel or directly.
+     */
+    const val SMART_DNS_RESOLVER = "10.10.14.2"
+
+    /**
      * DNS resolvers advertised on the TUN interface by default.
      *
      * NOTE: there is deliberately no MTU constant here any more. The one source
@@ -87,16 +103,15 @@ object TunnelConfig {
     val DNS_SERVERS = listOf("1.1.1.1", "8.8.8.8")
 
     /**
-     * The resolvers the TUN advertises for [profile]: the Smart DNS servers
-     * when Smart DNS is active ([ConnectionProfile.usesSmartDns]), otherwise
-     * [DNS_SERVERS].
+     * The resolvers the TUN advertises for [profile]: the virtual Smart DNS
+     * resolver when Smart DNS is active ([ConnectionProfile.usesSmartDns]),
+     * otherwise [DNS_SERVERS].
      *
      * This is the ONLY setting that changes which resolver the device's own
-     * apps query on a VPN session: hev relays their UDP queries to whatever
-     * address the TUN advertised, as-is, through the engine's UDP ASSOCIATE.
-     * `usesSmartDns` already guarantees a non-empty list, so a session can
-     * never come up with no resolver at all.
+     * apps query on a VPN session. `usesSmartDns` already guarantees at least
+     * one usable server behind the virtual one, so a session can never come up
+     * with no resolver at all.
      */
     fun dnsServersFor(profile: ConnectionProfile): List<String> =
-        if (profile.usesSmartDns) profile.sanitizedSmartDns() else DNS_SERVERS
+        if (profile.usesSmartDns) listOf(SMART_DNS_RESOLVER) else DNS_SERVERS
 }

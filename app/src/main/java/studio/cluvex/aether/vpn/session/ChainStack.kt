@@ -9,6 +9,7 @@ import studio.cluvex.aether.core.DnsRoute
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.PsiphonCore
 import studio.cluvex.aether.core.PsiphonRegions
+import studio.cluvex.aether.core.SmartDnsFront
 import studio.cluvex.aether.core.SocksFront
 import studio.cluvex.aether.core.TorCore
 import studio.cluvex.aether.core.TunnelConfig
@@ -54,7 +55,7 @@ internal enum class ChainFailure {
     /** Tor never finished bootstrapping inside its budget. */
     TOR_TIMEOUT,
 
-    /** The DNS-capable SOCKS front could not bind its port. */
+    /** The DNS-capable SOCKS front (or the Smart DNS front) could not bind its port. */
     FRONT_BIND,
 }
 
@@ -93,6 +94,10 @@ internal class ChainStack(
 
     @Volatile
     private var front: SocksFront? = null
+
+    /** The Smart DNS front, when this session runs one (Aether-only chain). */
+    @Volatile
+    private var smartFront: SmartDnsFront? = null
 
     private val lock = Any()
 
@@ -141,9 +146,15 @@ internal class ChainStack(
 
         val entry = when (mode.entryHop) {
             // Aether's own SOCKS5 speaks UDP ASSOCIATE, so the forwarder can
-            // talk to it directly and no front is needed.
-            Hop.AETHER -> TunnelConfig.ENGINE_SOCKS_PORT
-            Hop.PSIPHON, Hop.TOR -> startFront(profile, mode, requireNotNull(upstream))
+            // talk to it directly and no front is needed - unless Smart DNS is
+            // on, in which case its front answers the virtual resolver and
+            // relays everything else to the engine untouched.
+            Hop.AETHER -> if (profile.usesSmartDns) {
+                startSmartDnsFront(profile)
+            } else {
+                TunnelConfig.ENGINE_SOCKS_PORT
+            }
+            Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
         }
 
         ChainRuntime.publish(mode, entry)
@@ -167,14 +178,16 @@ internal class ChainStack(
     }
 
     /**
-     * Stops everything, front first.
+     * Stops everything, fronts first.
      *
-     * Order is load-bearing: the front holds live sockets INTO tor/Psiphon, so
-     * closing it first means the cores see clean disconnects instead of a
-     * process dying under them, and nothing is left holding a port the next
-     * connect has to bind.
+     * Order is load-bearing: the fronts hold live sockets INTO the engine,
+     * tor or Psiphon, so closing them first means the cores see clean
+     * disconnects instead of a process dying under them, and nothing is left
+     * holding a port the next connect has to bind.
      */
     fun stop() = synchronized(lock) {
+        runCatching { smartFront?.stop() }
+        smartFront = null
         runCatching { front?.stop() }
         front = null
         runCatching { tor?.stop() }
@@ -332,15 +345,15 @@ internal class ChainStack(
      *
      * Tor gets its own DNSPort (resolution happens inside the Tor network, so
      * names never leave the device in the clear); anything else gets DNS over
-     * TCP through the tunnel, to the resolvers the user configured or the
-     * app defaults.
+     * TCP through the tunnel, to the app's default resolvers. (A user-set
+     * resolver list used to be honoured here; that setting was retired
+     * together with the engine's --dns, see ConnectionProfile.dnsServers.)
      */
-    private fun startFront(profile: ConnectionProfile, mode: ChainMode, upstream: Int): Int {
+    private fun startFront(mode: ChainMode, upstream: Int): Int {
         val route = if (mode.usesTor) {
             DnsRoute.LocalUdp(TunnelConfig.SOCKS_HOST, TunnelConfig.TOR_DNS_PORT)
         } else {
-            val configured = profile.sanitizedDns()
-            DnsRoute.OverSocksTcp(configured.ifEmpty { TunnelConfig.DNS_SERVERS })
+            DnsRoute.OverSocksTcp(TunnelConfig.DNS_SERVERS)
         }
         val socksFront = SocksFront(
             listenPort = TunnelConfig.FRONT_SOCKS_PORT,
@@ -351,5 +364,31 @@ internal class ChainStack(
         if (!socksFront.start()) throw ChainException(ChainFailure.FRONT_BIND)
         synchronized(lock) { front = socksFront }
         return TunnelConfig.FRONT_SOCKS_PORT
+    }
+
+    /**
+     * Brings up the Smart DNS front in front of the engine and returns its
+     * port, which becomes the chain entry.
+     *
+     * It answers the virtual resolver the TUN advertises
+     * ([TunnelConfig.SMART_DNS_RESOLVER]) over plain DNS, DoH or DoT - through
+     * the tunnel first, and straight out of the phone automatically when the
+     * provider only answers local addresses - and relays every other flow to
+     * the engine verbatim. Domain targets are only rewritten through Smart DNS
+     * when the profile has no domain routing rules, because the engine can only
+     * match those against a name.
+     */
+    private fun startSmartDnsFront(profile: ConnectionProfile): Int {
+        val smart = SmartDnsFront(
+            listenPort = TunnelConfig.SMART_DNS_FRONT_PORT,
+            upstreamHost = TunnelConfig.SOCKS_HOST,
+            upstreamPort = TunnelConfig.ENGINE_SOCKS_PORT,
+            protocol = profile.smartDnsProtocol,
+            servers = profile.sanitizedSmartDns(),
+            rewriteDomains = !profile.hasDomainRoutingRules,
+        )
+        if (!smart.start()) throw ChainException(ChainFailure.FRONT_BIND)
+        synchronized(lock) { smartFront = smart }
+        return TunnelConfig.SMART_DNS_FRONT_PORT
     }
 }

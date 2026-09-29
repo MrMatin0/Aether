@@ -19,6 +19,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
@@ -126,11 +127,10 @@ class ProfileStore(private val context: Context) {
         val spoofMode = stringPreferencesKey("spoofMode")
         val spoofSni = stringPreferencesKey("spoofSni")
         // Smart DNS. Same key names as ProfileCodec; all of them read with the
-        // profile's own defaults, so an older profile means "off".
+        // profile's own defaults, so an older profile means "off, plain DNS".
         val smartDns = booleanPreferencesKey("smartDns")
+        val smartDnsProtocol = stringPreferencesKey("smartDnsProtocol")
         val smartDnsServers = stringPreferencesKey("smartDnsServers")
-        val smartDnsDirect = booleanPreferencesKey("smartDnsDirect")
-        val smartDnsProxies = stringPreferencesKey("smartDnsProxies")
 
         // ---- RETIRED keys: read once for migration, removed on save ----
 
@@ -152,6 +152,14 @@ class ProfileStore(private val context: Context) {
             stringPreferencesKey("engineTorCountry"),
         )
         val retiredEngineTorBind = intPreferencesKey("engineTorBind")
+
+        /**
+         * Smart DNS's manual direct switch and proxy list. The direct path is
+         * chosen automatically now and the proxy ranges are detected per
+         * session, so these are never read, only deleted.
+         */
+        val retiredSmartDnsDirect = booleanPreferencesKey("smartDnsDirect")
+        val retiredSmartDnsProxies = stringPreferencesKey("smartDnsProxies")
     }
 
     /**
@@ -319,9 +327,9 @@ class ProfileStore(private val context: Context) {
             spoofSni = prefs[Keys.spoofSni] ?: "",
             // ---- Smart DNS ----
             smartDns = prefs[Keys.smartDns] ?: d.smartDns,
+            smartDnsProtocol = SmartDnsProtocol.fromStored(prefs[Keys.smartDnsProtocol])
+                ?: d.smartDnsProtocol,
             smartDnsServers = prefs[Keys.smartDnsServers] ?: d.smartDnsServers,
-            smartDnsDirect = prefs[Keys.smartDnsDirect] ?: d.smartDnsDirect,
-            smartDnsProxies = prefs[Keys.smartDnsProxies] ?: d.smartDnsProxies,
         )
     }
 
@@ -401,15 +409,17 @@ class ProfileStore(private val context: Context) {
             // ---- Smart DNS. Stored verbatim on every chain, like spoofing:
             // usesSmartDns decides per connect whether it applies.
             prefs[Keys.smartDns] = profile.smartDns
+            prefs[Keys.smartDnsProtocol] = profile.smartDnsProtocol.name
             prefs[Keys.smartDnsServers] = profile.smartDnsServers
-            prefs[Keys.smartDnsDirect] = profile.smartDnsDirect
-            prefs[Keys.smartDnsProxies] = profile.smartDnsProxies
             // Retired keys. The protocol written above already carries the
-            // MIM choice, so the old switch has nothing left to say, and the
-            // engine-Tor keys describe a Tor this app no longer runs.
+            // MIM choice, so the old switch has nothing left to say, the
+            // engine-Tor keys describe a Tor this app no longer runs, and
+            // Smart DNS picks its path and proxies by itself now.
             prefs.remove(Keys.legacyMim)
             Keys.retiredEngineTor.forEach { prefs.remove(it) }
             prefs.remove(Keys.retiredEngineTorBind)
+            prefs.remove(Keys.retiredSmartDnsDirect)
+            prefs.remove(Keys.retiredSmartDnsProxies)
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which

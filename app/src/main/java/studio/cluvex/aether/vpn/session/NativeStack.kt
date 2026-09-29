@@ -17,9 +17,9 @@ private const val TAG = "vpn"
 
 /**
  * Owns every native moving part of a session: the engine process, the chained
- * overlay cores (Psiphon, Tor and the SOCKS front), the TUN fd, the in-process
- * hev-socks5-tunnel core, the userspace filter bridge and the LAN share
- * listeners.
+ * overlay cores (Psiphon, Tor, the SOCKS front and the Smart DNS front), the
+ * TUN fd, the in-process hev-socks5-tunnel core, the userspace filter bridge
+ * and the LAN share listeners.
  *
  * This is the whole reason the service used to be 1,000 lines: five pieces of
  * process-wide state, each with its own teardown order, all as loose `var`s on
@@ -39,7 +39,7 @@ private const val TAG = "vpn"
  * happen from a session call, never from an initializer.
  *
  * Teardown ORDER is load-bearing and lives in exactly one place
- * ([stopForwarding]): sharing, then the bridge, then hev, then the chain (front
+ * ([stopForwarding]): sharing, then the bridge, then hev, then the chain (fronts
  * first, then Tor, then Psiphon), then the engine, and the TUN last of all.
  */
 internal class NativeStack(private val service: VpnService) {
@@ -85,18 +85,6 @@ internal class NativeStack(private val service: VpnService) {
     // ---------------------------------------------------------------- engine
 
     fun startEngine(profile: ConnectionProfile) {
-        // The Smart DNS addresses go in FRONT of the user's direct rules, so a
-        // list at the cap loses its own tail instead of the addresses direct
-        // mode depends on. That must never happen silently.
-        val dropped = profile.droppedRouteDirectRules()
-        if (dropped > 0) {
-            DiagnosticsLog.w(
-                TAG,
-                "Direct routing list is over the ${ConnectionProfile.MAX_ROUTE_RULES}-rule cap: " +
-                    "the last $dropped of your own direct rules were dropped to make room for " +
-                    "the Smart DNS addresses, which always come first.",
-            )
-        }
         engine = AetherProcess(service.applicationInfo.nativeLibraryDir, service.filesDir)
             .also { it.start(profile) }
     }

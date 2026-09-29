@@ -114,7 +114,6 @@ private fun transportStateLine(profile: ConnectionProfile): String {
         if (spoofSni.isNotEmpty()) stringResource(R.string.hub_state_spoof_sni, spoofSni) else null,
         if (profile.mtu != ConnectionProfile.DEFAULT_MTU) stringResource(R.string.hub_state_mtu, profile.mtu) else null,
         if (profile.keepalive > 0) stringResource(R.string.hub_state_keepalive, profile.keepalive) else null,
-        if (profile.dnsServers.isNotBlank()) stringResource(R.string.hub_state_dns) else null,
     )
     return if (parts.isEmpty()) stringResource(R.string.hub_state_default) else parts.joinToString(HUB_DOT)
 }
