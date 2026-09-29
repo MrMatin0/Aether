@@ -19,6 +19,7 @@ import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
 import studio.cluvex.aether.model.TeamAuth
@@ -145,6 +146,8 @@ object AetherController {
  * alongside `protocol=MASQUE` is how a pre-MIM build said "MASQUE-in-MASQUE",
  * and decodes as [Protocol.MIM]. The engine-Tor keys are ignored like any other
  * unknown key - the app has one Tor, and it is configured by the chain fields.
+ * So are `smartDnsDirect` / `smartDnsProxies`: the direct path is chosen
+ * automatically now, and the proxy ranges are detected per session.
  *
  * The two Zero Trust SECRETS ([ConnectionProfile.accessClientSecret],
  * [ConnectionProfile.accessToken]) are deliberately NOT part of the payload:
@@ -225,12 +228,11 @@ object ProfileCodec {
         // codec keeps carrying every non-secret field (ProfileCodecTest).
         add("spoofMode=${p.spoofMode.name}")
         add("spoofSni=${flatten(p.spoofSni)}")
-        // Smart DNS. Same keys as ProfileStore. The server and proxy lists are
-        // comma / space / newline separated, so the comma fold is exactly right.
+        // Smart DNS. Same keys as ProfileStore. The server list is comma /
+        // space / newline separated, so the comma fold is exactly right.
         add("smartDns=${p.smartDns}")
+        add("smartDnsProtocol=${p.smartDnsProtocol.name}")
         add("smartDnsServers=${flatten(p.smartDnsServers)}")
-        add("smartDnsDirect=${p.smartDnsDirect}")
-        add("smartDnsProxies=${flatten(p.smartDnsProxies)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -335,11 +337,12 @@ object ProfileCodec {
                 spoofSni = map["spoofSni"] ?: d.spoofSni,
                 // ---- Smart DNS ----
                 // A payload from a build that predates these keys decodes to
-                // the model defaults: off, no servers, through the tunnel.
+                // the model defaults: off, plain DNS, no servers. The retired
+                // smartDnsDirect / smartDnsProxies keys are ignored.
                 smartDns = map["smartDns"]?.toBooleanStrictOrNull() ?: d.smartDns,
+                smartDnsProtocol = SmartDnsProtocol.fromStored(map["smartDnsProtocol"])
+                    ?: d.smartDnsProtocol,
                 smartDnsServers = map["smartDnsServers"] ?: d.smartDnsServers,
-                smartDnsDirect = map["smartDnsDirect"]?.toBooleanStrictOrNull() ?: d.smartDnsDirect,
-                smartDnsProxies = map["smartDnsProxies"] ?: d.smartDnsProxies,
             )
         }.getOrDefault(d)
     }
