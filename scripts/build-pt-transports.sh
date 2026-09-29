@@ -200,14 +200,15 @@ verify_elf() {
 build_go_transport() {
   local name="$1" repo="$2" ref="$3" pkg="$4" out_name="$5"
   local src="${NATIVE_DIR}/${name}"
+  local clone_url="${GITLAB}/${repo}"
 
   if [ ! -d "${src}/.git" ]; then
     rm -rf "${src}"
     echo "==> [${name}] cloning ${repo} @ ${ref}"
-    if ! git clone --depth 1 --branch "${ref}" "${GITLAB}/${repo}.git" "${src}" 2>/dev/null; then
+    if ! git clone --depth 1 --branch "${ref}" "${clone_url}" "${src}" 2>/dev/null; then
       echo "    ref '${ref}' not found; using the default branch"
       rm -rf "${src}"
-      git clone --depth 1 "${GITLAB}/${repo}.git" "${src}"
+      git clone --depth 1 "${clone_url}" "${src}"
     fi
   else
     echo "==> [${name}] reusing the checkout in ${src}"
