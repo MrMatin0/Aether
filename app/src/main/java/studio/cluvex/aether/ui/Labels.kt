@@ -123,6 +123,8 @@ internal fun chainLabel(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether)
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all)
+    ChainMode.PROTEUS -> stringResource(R.string.chain_proteus)
+    ChainMode.TOR_OVER_PROTEUS -> stringResource(R.string.chain_tor_over_proteus)
 }
 
 /**
@@ -137,6 +139,8 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_AETHER -> stringResource(R.string.chain_tor_over_aether_desc)
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
+    ChainMode.PROTEUS -> stringResource(R.string.chain_proteus_desc)
+    ChainMode.TOR_OVER_PROTEUS -> stringResource(R.string.chain_tor_over_proteus_desc)
 }
 
 @Composable

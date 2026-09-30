@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- EXPERIMENTAL Proteus core. See docs/PROTEUS.md. -->
+<resources>
+    <string name="chain_proteus">Proteus (experimental)</string>
+    <string name="chain_proteus_desc">Your own Proteus server, speaking a protocol you define in a PSF file. Needs a server you run. TCP only.</string>
+    <string name="chain_tor_over_proteus">Tor over Proteus (experimental)</string>
+    <string name="chain_tor_over_proteus_desc">Tor dials out through your Proteus server, so the network only sees your custom protocol.</string>
+
+    <string name="err_proteus_config">Proteus could not start: check the server address and the PSF on the Chain page (they must match the server).</string>
+    <string name="err_proteus_timeout">Proteus did not reach the server in time. Check that the server is running and reachable, and that mode and persist match it.</string>
+
+    <string name="proteus_experimental">Experimental. Proteus is a research tool: it needs your own server running the same PSF, and it carries TCP only (DNS goes over TCP through it; UDP apps and QUIC will not work).</string>
+    <string name="proteus_server_label">Proteus server</string>
+    <string name="proteus_server_hint">1.2.3.4:8443 or example.com:8443</string>
+    <string name="proteus_server_invalid">Use host:port, or [IPv6]:port.</string>
+    <string name="proteus_psf_label">Protocol specification (PSF)</string>
+    <string name="proteus_psf_hint">Paste the content of the .psf file</string>
+    <string name="proteus_psf_help">Must be exactly the PSF the server runs with, including any password it defines.</string>
+    <string name="proteus_mode_label">Client mode</string>
+    <string name="proteus_mode_tunnel">Tunnel</string>
+    <string name="proteus_mode_stream">Stream</string>
+    <string name="proteus_mode_tunnel_desc">One long-lived connection to the server, every app stream inside it (VPN-like).</string>
+    <string name="proteus_mode_stream_desc">A separate connection to the server for every app stream (Shadowsocks-like).</string>
+    <string name="proteus_persist_label">Session persistence</string>
+    <string name="proteus_persist_off">Off</string>
+    <string name="proteus_persist_on">On</string>
+    <string name="proteus_persist_help">Recovers broken tunnels. Must match the server (proteus server --persist).</string>
+    <string name="proteus_ready">Proteus is configured. These settings are stored on this device only and are not part of a profile export.</string>
+    <string name="proteus_not_configured">Enter a server address and a PSF to use this mode.</string>
+</resources>

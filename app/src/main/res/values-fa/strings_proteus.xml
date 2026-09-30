@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- EXPERIMENTAL Proteus core. See docs/PROTEUS.md. -->
+<resources>
+    <string name="chain_proteus">Proteus (آزمایشی)</string>
+    <string name="chain_proteus_desc">سرور Proteus خودتان، با پروتکلی که در فایل PSF تعریف می‌کنید. به سروری نیاز دارد که خودتان اجرا کنید. فقط TCP.</string>
+    <string name="chain_tor_over_proteus">Tor روی Proteus (آزمایشی)</string>
+    <string name="chain_tor_over_proteus_desc">Tor از طریق سرور Proteus شما بیرون می‌رود، پس شبکه فقط پروتکل سفارشی شما را می‌بیند.</string>
+
+    <string name="err_proteus_config">Proteus اجرا نشد: نشانی سرور و PSF را در صفحهٔ زنجیره بررسی کنید (باید با سرور یکی باشند).</string>
+    <string name="err_proteus_timeout">Proteus به‌موقع به سرور نرسید. بررسی کنید سرور روشن و در دسترس باشد و حالت و persist با سرور یکی باشد.</string>
+
+    <string name="proteus_experimental">آزمایشی. Proteus یک ابزار پژوهشی است: به سرور خودتان با همان PSF نیاز دارد و فقط TCP را منتقل می‌کند (DNS از طریق TCP درون آن می‌رود؛ برنامه‌های UDP و QUIC کار نمی‌کنند).</string>
+    <string name="proteus_server_label">سرور Proteus</string>
+    <string name="proteus_server_hint">1.2.3.4:8443 یا example.com:8443</string>
+    <string name="proteus_server_invalid">به شکل host:port یا [IPv6]:port وارد کنید.</string>
+    <string name="proteus_psf_label">مشخصات پروتکل (PSF)</string>
+    <string name="proteus_psf_hint">محتوای فایل ‎.psf را اینجا بچسبانید</string>
+    <string name="proteus_psf_help">باید دقیقاً همان PSF سرور باشد، از جمله رمزی که در آن تعریف شده.</string>
+    <string name="proteus_mode_label">حالت کلاینت</string>
+    <string name="proteus_mode_tunnel">تونل (Tunnel)</string>
+    <string name="proteus_mode_stream">جریان (Stream)</string>
+    <string name="proteus_mode_tunnel_desc">یک اتصال ماندگار به سرور و همهٔ جریان‌های برنامه‌ها درون آن (شبیه VPN).</string>
+    <string name="proteus_mode_stream_desc">یک اتصال جدا به سرور برای هر جریان برنامه (شبیه Shadowsocks).</string>
+    <string name="proteus_persist_label">پایداری نشست (persist)</string>
+    <string name="proteus_persist_off">خاموش</string>
+    <string name="proteus_persist_on">روشن</string>
+    <string name="proteus_persist_help">تونل‌های قطع‌شده را بازیابی می‌کند. باید با تنظیم سرور یکی باشد (proteus server --persist).</string>
+    <string name="proteus_ready">Proteus پیکربندی شده است. این تنظیمات فقط روی همین دستگاه ذخیره می‌شوند و در خروجی پروفایل نیستند.</string>
+    <string name="proteus_not_configured">برای استفاده از این حالت، نشانی سرور و PSF را وارد کنید.</string>
+</resources>

@@ -28,6 +28,20 @@ class ChainModeTest {
     }
 
     @Test
+    fun `proteus is always the internet-facing hop`() {
+        ChainMode.entries.filter { it.usesProteus }.forEach { mode ->
+            assertEquals(
+                Hop.PROTEUS,
+                mode.hops.first(),
+                "${mode.name} must dial out through Proteus, not into it",
+            )
+            assertNull(mode.upstreamOf(Hop.PROTEUS))
+            // Both have no upstream option, so they can never share a chain.
+            assertFalse(mode.usesAether, "${mode.name} stacks two internet-facing cores")
+        }
+    }
+
+    @Test
     fun `tor is always the entry hop when it is used`() {
         ChainMode.entries.filter { it.usesTor }.forEach { mode ->
             assertEquals(Hop.TOR, mode.entryHop, "${mode.name} must enter through Tor")
@@ -61,6 +75,8 @@ class ChainModeTest {
         assertNull(ChainMode.PSIPHON.upstreamOf(Hop.PSIPHON))
         assertFalse(ChainMode.PSIPHON.isChained)
         assertTrue(ChainMode.TOR_OVER_PSIPHON.isChained)
+        assertFalse(ChainMode.PROTEUS.isChained)
+        assertTrue(ChainMode.TOR_OVER_PROTEUS.isChained)
     }
 
     @Test
@@ -70,6 +86,9 @@ class ChainModeTest {
             ChainMode.TOR_OVER_PSIPHON_OVER_AETHER.pathLabel(),
         )
         assertEquals("Aether \u2192 internet", ChainMode.AETHER.pathLabel())
+        assertEquals("Proteus \u2192 internet", ChainMode.PROTEUS.pathLabel())
+        assertEquals("Tor \u2192 Proteus \u2192 internet", ChainMode.TOR_OVER_PROTEUS.pathLabel())
+        assertEquals(Hop.PROTEUS, ChainMode.TOR_OVER_PROTEUS.upstreamOf(Hop.TOR))
     }
 
     @Test
@@ -86,6 +105,9 @@ class ChainModeTest {
         assertEquals(ChainMode.TOR_OVER_PSIPHON, ChainMode.fromStored("psiphon_tor"))
         assertEquals(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER, ChainMode.fromStored("ALL"))
         assertEquals(ChainMode.AETHER, ChainMode.fromStored("off"))
+        assertEquals(ChainMode.PROTEUS, ChainMode.fromStored("proteus"))
+        assertEquals(ChainMode.TOR_OVER_PROTEUS, ChainMode.fromStored("proteus+tor"))
+        assertEquals(ChainMode.TOR_OVER_PROTEUS, ChainMode.fromStored("tor-proteus"))
     }
 
     @Test

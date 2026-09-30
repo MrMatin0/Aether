@@ -14,16 +14,18 @@ import kotlin.test.assertTrue
  */
 class CoreAvailabilityTest {
 
-    private fun snapshot(psiphon: Boolean, tor: Boolean) = CoreAvailability.Snapshot(
-        psiphonBinary = psiphon,
-        torBinary = tor,
-        psiphonConfigBundled = false,
-        torGeoipBundled = false,
-    )
+    private fun snapshot(psiphon: Boolean, tor: Boolean, proteus: Boolean = true) =
+        CoreAvailability.Snapshot(
+            psiphonBinary = psiphon,
+            torBinary = tor,
+            psiphonConfigBundled = false,
+            torGeoipBundled = false,
+            proteusBinary = proteus,
+        )
 
     @Test
     fun `the engine is always available and Aether-only always runs`() {
-        val bare = snapshot(psiphon = false, tor = false)
+        val bare = snapshot(psiphon = false, tor = false, proteus = false)
         assertTrue(bare.has(Hop.AETHER))
         assertTrue(bare.canRun(ChainMode.AETHER))
         assertEquals(emptyList(), bare.missing(ChainMode.AETHER))
@@ -47,10 +49,33 @@ class CoreAvailabilityTest {
     }
 
     @Test
-    fun `a full build can run all seven modes`() {
-        val full = snapshot(psiphon = true, tor = true)
+    fun `a full build can run every mode`() {
+        val full = snapshot(psiphon = true, tor = true, proteus = true)
         ChainMode.entries.forEach { mode ->
             assertTrue(full.canRun(mode), "$mode must be runnable on a complete build")
         }
+    }
+
+    @Test
+    fun `a build without the experimental proteus core names it`() {
+        val noProteus = snapshot(psiphon = true, tor = true, proteus = false)
+        assertFalse(noProteus.has(Hop.PROTEUS))
+        assertEquals(listOf(Hop.PROTEUS), noProteus.missing(ChainMode.PROTEUS))
+        assertEquals(listOf(Hop.PROTEUS), noProteus.missing(ChainMode.TOR_OVER_PROTEUS))
+        // ...and costs nothing else.
+        ChainMode.entries.filterNot { it.usesProteus }.forEach { mode ->
+            assertTrue(noProteus.canRun(mode), "$mode must not depend on Proteus")
+        }
+    }
+
+    @Test
+    fun `proteus defaults to absent for call sites that predate it`() {
+        val legacy = CoreAvailability.Snapshot(
+            psiphonBinary = true,
+            torBinary = true,
+            psiphonConfigBundled = false,
+            torGeoipBundled = false,
+        )
+        assertFalse(legacy.canRun(ChainMode.PROTEUS))
     }
 }
