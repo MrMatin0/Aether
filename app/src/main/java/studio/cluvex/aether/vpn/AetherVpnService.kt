@@ -395,6 +395,8 @@ class AetherVpnService : VpnService() {
         ChainFailure.PSIPHON_TIMEOUT -> getString(R.string.err_psiphon_timeout)
         ChainFailure.TOR_MISSING -> getString(R.string.err_core_missing, "Tor")
         ChainFailure.TOR_TIMEOUT -> getString(R.string.err_tor_timeout)
+        ChainFailure.UNBOUNDED_MISSING -> getString(R.string.err_core_missing, "Unbounded")
+        ChainFailure.UNBOUNDED_TIMEOUT -> getString(R.string.err_unbounded_timeout)
         ChainFailure.FRONT_BIND -> getString(R.string.err_front_bind)
     }
 
