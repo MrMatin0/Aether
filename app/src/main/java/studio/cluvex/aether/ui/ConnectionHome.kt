@@ -727,6 +727,8 @@ private fun hopIcon(hop: Hop): ImageVector = when (hop) {
     Hop.AETHER -> Icons.Rounded.Bolt
     Hop.PSIPHON -> Icons.Rounded.Cloud
     Hop.TOR -> Icons.Rounded.Layers
+    // Volunteer peers: the whole point of Unbounded is "other people".
+    Hop.UNBOUNDED -> Icons.Rounded.People
 }
 
 /** You -> the hops in the order traffic enters them -> Internet. */
@@ -1093,6 +1095,11 @@ private fun TierBadge(mode: ChainMode) {
             tone = accents.failed
         }
         mode.usesPsiphon -> {
+            label = stringResource(R.string.chain_tier_moderate)
+            tone = accents.working
+        }
+        // Volunteer-run WebRTC peers: speed depends on whoever is sharing.
+        mode.usesUnbounded -> {
             label = stringResource(R.string.chain_tier_moderate)
             tone = accents.working
         }
