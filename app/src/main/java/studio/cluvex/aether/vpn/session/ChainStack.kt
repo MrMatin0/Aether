@@ -7,6 +7,8 @@ import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.DnsRoute
 import studio.cluvex.aether.core.PortProbe
+import studio.cluvex.aether.core.ProteusCore
+import studio.cluvex.aether.core.ProteusSettingsStore
 import studio.cluvex.aether.core.PsiphonCore
 import studio.cluvex.aether.core.PsiphonRegions
 import studio.cluvex.aether.core.SmartDnsFront
@@ -29,6 +31,9 @@ private const val PSIPHON_PORT_RELEASE_MS = 1_500L
 /** Same, for a tor being replaced between two rungs of the bridge ladder. */
 private const val TOR_STOP_WAIT_MS = 5_000L
 private const val TOR_PORT_RELEASE_MS = 1_500L
+
+/** Lets the drain thread record proteus's last words before they are read. */
+private const val PROTEUS_EXIT_GRACE_MS = 300L
 
 /** Why a chain could not be brought up. Mapped to a user-facing string by the service. */
 internal enum class ChainFailure {
@@ -57,6 +62,18 @@ internal enum class ChainFailure {
 
     /** The DNS-capable SOCKS front (or the Smart DNS front) could not bind its port. */
     FRONT_BIND,
+
+    /** EXPERIMENTAL. This build does not bundle libproteus.so. */
+    PROTEUS_MISSING,
+
+    /**
+     * EXPERIMENTAL. No usable server / PSF on the Chain page, the server name
+     * did not resolve, or proteus rejected the PSF.
+     */
+    PROTEUS_CONFIG,
+
+    /** EXPERIMENTAL. proteus never carried a test connection inside its budget. */
+    PROTEUS_TIMEOUT,
 }
 
 internal class ChainException(val failure: ChainFailure) : Exception(failure.name)
@@ -92,6 +109,10 @@ internal class ChainStack(
     @Volatile
     private var tor: TorCore? = null
 
+    /** EXPERIMENTAL: the Proteus client, when this chain uses one. */
+    @Volatile
+    private var proteus: ProteusCore? = null
+
     @Volatile
     private var front: SocksFront? = null
 
@@ -103,7 +124,7 @@ internal class ChainStack(
 
     /** True while every core this chain started is still running. */
     val alive: Boolean
-        get() = (psiphon?.isAlive ?: true) && (tor?.isAlive ?: true)
+        get() = (psiphon?.isAlive ?: true) && (tor?.isAlive ?: true) && (proteus?.isAlive ?: true)
 
     /**
      * Cores [mode] needs that this build does not ship.
@@ -137,6 +158,11 @@ internal class ChainStack(
         // Every hop dials through the one before it; null means "straight out".
         var upstream: Int? = if (mode.usesAether) TunnelConfig.ENGINE_SOCKS_PORT else null
 
+        // Proteus has no upstream option, so it is always internet-facing and
+        // always comes up first.
+        if (mode.usesProteus) {
+            upstream = startProteus()
+        }
         if (mode.usesPsiphon) {
             upstream = startPsiphon(profile, upstream)
         }
@@ -154,7 +180,7 @@ internal class ChainStack(
             } else {
                 TunnelConfig.ENGINE_SOCKS_PORT
             }
-            Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
+            Hop.PSIPHON, Hop.TOR, Hop.PROTEUS -> startFront(mode, requireNotNull(upstream))
         }
 
         ChainRuntime.publish(mode, entry)
@@ -174,6 +200,7 @@ internal class ChainStack(
     suspend fun awaitExit(timeoutMs: Long): Boolean = when {
         tor != null -> tor?.awaitExit(timeoutMs) ?: true
         psiphon != null -> psiphon?.awaitExit(timeoutMs) ?: true
+        proteus != null -> proteus?.awaitExit(timeoutMs) ?: true
         else -> true
     }
 
@@ -181,7 +208,7 @@ internal class ChainStack(
      * Stops everything, fronts first.
      *
      * Order is load-bearing: the fronts hold live sockets INTO the engine,
-     * tor or Psiphon, so closing them first means the cores see clean
+     * tor, Psiphon or Proteus, so closing them first means the cores see clean
      * disconnects instead of a process dying under them, and nothing is left
      * holding a port the next connect has to bind.
      */
@@ -194,9 +221,65 @@ internal class ChainStack(
         tor = null
         runCatching { psiphon?.stop() }
         psiphon = null
+        runCatching { proteus?.stop() }
+        proteus = null
     }
 
     // ------------------------------------------------------------------ hops
+
+    /**
+     * EXPERIMENTAL. Brings the Proteus client up with the settings from the
+     * Chain page and returns its local SOCKS5 port.
+     *
+     * One attempt, no ladder: there is nothing to vary. The server, the PSF,
+     * the mode and persist all have to match what the user's server runs, and
+     * guessing at any of them would only hide the mismatch.
+     */
+    private suspend fun startProteus(): Int {
+        val core = ProteusCore(context, filesDir)
+        if (!core.isAvailable) {
+            ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.FAILED, "not bundled")
+            throw ChainException(ChainFailure.PROTEUS_MISSING)
+        }
+        val settings = ProteusSettingsStore.load(context)
+        synchronized(lock) { proteus = core }
+
+        ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.STARTING, settings.mode.wire)
+        when (core.start(settings)) {
+            ProteusCore.StartResult.STARTED -> Unit
+            ProteusCore.StartResult.NOT_CONFIGURED -> {
+                DiagnosticsLog.w(TAG, "Proteus has no valid server address or PSF configured.")
+                ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.FAILED, "not configured")
+                throw ChainException(ChainFailure.PROTEUS_CONFIG)
+            }
+            ProteusCore.StartResult.UNRESOLVED -> {
+                ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.FAILED, "server not resolved")
+                throw ChainException(ChainFailure.PROTEUS_CONFIG)
+            }
+        }
+
+        val listening = PortProbe.awaitOpen(
+            TunnelConfig.SOCKS_HOST,
+            ProteusCore.SOCKS_PORT,
+            VpnTunables.PROTEUS_PORT_WAIT_MS,
+        ) { core.isAlive }
+        if (listening && core.awaitReady(VpnTunables.PROTEUS_READY_WAIT_MS)) {
+            ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.READY, settings.mode.wire)
+            return ProteusCore.SOCKS_PORT
+        }
+
+        if (!core.isAlive) delay(PROTEUS_EXIT_GRACE_MS)
+        val reason = core.lastError
+        DiagnosticsLog.w(
+            TAG,
+            "Proteus did not come up (listening=$listening, alive=${core.isAlive})" +
+                (reason?.let { ": $it" } ?: "."),
+        )
+        ChainRuntime.update(Hop.PROTEUS, ChainRuntime.HopState.FAILED, reason?.take(80))
+        throw ChainException(
+            if (core.configRejected) ChainFailure.PROTEUS_CONFIG else ChainFailure.PROTEUS_TIMEOUT,
+        )
+    }
 
     /**
      * Brings Psiphon up, and does not let one unlucky country be the end of it.

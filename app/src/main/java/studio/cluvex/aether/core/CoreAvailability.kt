@@ -82,6 +82,12 @@ object CoreAvailability {
          * this build shipped something fresher.
          */
         val torBridgeListBundled: Boolean = false,
+        /**
+         * EXPERIMENTAL: `libproteus.so` is in the APK for this device's ABI
+         * (built by `scripts/build-proteus.sh`). Appended last with a default,
+         * for the same positional-call-site reason as [psiphonServerList].
+         */
+        val proteusBinary: Boolean = false,
     ) {
         /**
          * The Aether engine is mandatory, so it is available by construction.
@@ -96,6 +102,7 @@ object CoreAvailability {
             Hop.AETHER -> true
             Hop.PSIPHON -> psiphonBinary
             Hop.TOR -> torBinary
+            Hop.PROTEUS -> proteusBinary
         }
 
         /** Cores [mode] needs that this build does not ship. */
@@ -123,10 +130,12 @@ object CoreAvailability {
             torGeoipBundled = hasAsset(context, "${TorCore.ASSET_DIR}/geoip"),
             psiphonServerList = hasAsset(context, PsiphonCore.ASSET_SERVER_LIST),
             torBridgeListBundled = hasAsset(context, BridgeCatalog.ASSET),
+            proteusBinary = hasBinary(nativeDir, ProteusCore.BINARY),
         )
         DiagnosticsLog.i(
             TAG,
             "Build payload: psiphon=${snapshot.psiphonBinary} tor=${snapshot.torBinary} " +
+                "proteus=${snapshot.proteusBinary} " +
                 "psiphonServers=${snapshot.psiphonServerList} " +
                 "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled} " +
                 "bridgeList=${snapshot.torBridgeListBundled}",

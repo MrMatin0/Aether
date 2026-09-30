@@ -131,6 +131,20 @@ internal object VpnTunables {
     const val TOR_BRIDGE_ATTEMPT_WAIT_MS = 90_000L
 
     /**
+     * EXPERIMENTAL. How long proteus's local SOCKS5 listener gets to appear.
+     * It binds as soon as the PSF compiles, so a miss means a broken process
+     * or a rejected PSF, not a slow network.
+     */
+    const val PROTEUS_PORT_WAIT_MS = 15_000L
+
+    /**
+     * EXPERIMENTAL. How long proteus gets to carry a first test connection to
+     * the user's own server. There is no discovery involved (the server is a
+     * fixed address), so this only has to cover a slow or lossy path.
+     */
+    const val PROTEUS_READY_WAIT_MS = 45_000L
+
+    /**
      * Total budget for a chain-only attempt (no Aether hop, so no endpoint
      * scan): the sum of what each core is allowed, plus a little slack for the
      * front to bind and the self-test to run.
@@ -143,6 +157,7 @@ internal object VpnTunables {
     fun chainBudgetMs(mode: ChainMode): Long {
         var budget = 15_000L
         if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
+        if (mode.usesProteus) budget += PROTEUS_PORT_WAIT_MS + PROTEUS_READY_WAIT_MS
         if (mode.usesTor) {
             budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS
             budget += (BridgePlan.MAX_ATTEMPTS - 1) *

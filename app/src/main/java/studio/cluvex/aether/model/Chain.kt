@@ -1,7 +1,7 @@
 package studio.cluvex.aether.model
 
 /**
- * One circumvention core the app can run. Each of the three exposes a local
+ * One circumvention core the app can run. Each of them exposes a local
  * SOCKS5 proxy on loopback, which is the ONLY thing that makes chaining them
  * possible at all.
  */
@@ -14,6 +14,13 @@ enum class Hop(val label: String) {
 
     /** tor, as built for Android by the Tor Project / Guardian Project (libtor.so). */
     TOR("Tor"),
+
+    /**
+     * EXPERIMENTAL. unblockable/proteus in standalone client mode
+     * (libproteus.so): a programmable-protocol tunnel to a server the user
+     * runs. See docs/PROTEUS.md.
+     */
+    PROTEUS("Proteus"),
 }
 
 /**
@@ -39,13 +46,17 @@ enum class Hop(val label: String) {
  *  - Tor has `Socks5Proxy` (torrc), which routes every OR connection through it.
  *  - The Aether engine has NO upstream-proxy option — it dials WARP endpoints
  *    itself.
+ *  - Proteus has none either: `proteus client` dials its server directly.
  *
- * Aether therefore can only ever be the internet-facing hop, and Tor — the
- * slowest and the only one that also anonymises — is always the entry, because
- * putting anything after Tor would hand a single fixed proxy every stream that
- * left the Tor network and defeat the point of using it. That leaves exactly
- * the seven combinations below; anything else is either impossible or
- * pointless, which is why this is an enum and not three checkboxes.
+ * Aether and Proteus can therefore only ever be the internet-facing hop, and
+ * Tor — the slowest and the only one that also anonymises — is always the
+ * entry, because putting anything after Tor would hand a single fixed proxy
+ * every stream that left the Tor network and defeat the point of using it.
+ * That leaves exactly the combinations below; anything else is either
+ * impossible or pointless, which is why this is an enum and not checkboxes.
+ *
+ * New modes are appended at the END so the ordinal of every existing mode (and
+ * the order the pickers show them in) stays put.
  */
 enum class ChainMode(val hops: List<Hop>) {
     /** Aether alone. The behaviour of every build before chaining existed. */
@@ -68,11 +79,18 @@ enum class ChainMode(val hops: List<Hop>) {
 
     /** All three. Slowest and most expensive; the last thing left to try. */
     TOR_OVER_PSIPHON_OVER_AETHER(listOf(Hop.AETHER, Hop.PSIPHON, Hop.TOR)),
+
+    /** EXPERIMENTAL. Proteus alone, to the user's own Proteus server. */
+    PROTEUS(listOf(Hop.PROTEUS)),
+
+    /** EXPERIMENTAL. Tor dials out through the user's Proteus server. */
+    TOR_OVER_PROTEUS(listOf(Hop.PROTEUS, Hop.TOR)),
     ;
 
     val usesAether: Boolean get() = Hop.AETHER in hops
     val usesPsiphon: Boolean get() = Hop.PSIPHON in hops
     val usesTor: Boolean get() = Hop.TOR in hops
+    val usesProteus: Boolean get() = Hop.PROTEUS in hops
 
     /** The hop the device's traffic ENTERS. Its local port is the chain entry. */
     val entryHop: Hop get() = hops.last()
@@ -114,6 +132,7 @@ enum class ChainMode(val hops: List<Hop>) {
                 "AETHER_TOR", "TOR_AETHER" -> TOR_OVER_AETHER
                 "PSIPHON_TOR", "TOR_PSIPHON" -> TOR_OVER_PSIPHON
                 "AETHER_PSIPHON_TOR", "ALL" -> TOR_OVER_PSIPHON_OVER_AETHER
+                "PROTEUS_TOR", "TOR_PROTEUS" -> TOR_OVER_PROTEUS
                 else -> null
             }
         }
