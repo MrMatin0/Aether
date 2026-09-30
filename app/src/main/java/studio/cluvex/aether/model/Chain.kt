@@ -1,9 +1,9 @@
 package studio.cluvex.aether.model
 
 /**
- * One circumvention core the app can run. Each of the three exposes a local
- * SOCKS5 proxy on loopback, which is the ONLY thing that makes chaining them
- * possible at all.
+ * One circumvention core the app can run. Each of them exposes a local SOCKS5
+ * proxy on loopback, which is the ONLY thing that makes chaining them possible
+ * at all.
  */
 enum class Hop(val label: String) {
     /** The bundled Rust engine (libaether.so): MASQUE / WireGuard / Gool over WARP. */
@@ -14,6 +14,17 @@ enum class Hop(val label: String) {
 
     /** tor, as built for Android by the Tor Project / Guardian Project (libtor.so). */
     TOR("Tor"),
+
+    /**
+     * EXPERIMENTAL. getlantern/unbounded's desktop consumer (libunbounded.so):
+     * traffic rides WebRTC to a volunteer browser peer, which relays it to
+     * Lantern's egress. See docs/UNBOUNDED.md.
+     *
+     * Appended last on purpose: [Hop] and [ChainMode] are persisted by name,
+     * so order does not matter for storage, but keeping the existing entries
+     * where they were keeps every diff that touches them small.
+     */
+    UNBOUNDED("Unbounded"),
 }
 
 /**
@@ -37,15 +48,18 @@ enum class Hop(val label: String) {
  *
  *  - Psiphon has `UpstreamProxyUrl` (psiphon/config.go).
  *  - Tor has `Socks5Proxy` (torrc), which routes every OR connection through it.
- *  - The Aether engine has NO upstream-proxy option — it dials WARP endpoints
+ *  - The Aether engine has NO upstream-proxy option - it dials WARP endpoints
  *    itself.
+ *  - Unbounded has none either, and could not use one: its transport is
+ *    WebRTC, i.e. UDP, and a SOCKS5 CONNECT hop cannot carry that.
  *
- * Aether therefore can only ever be the internet-facing hop, and Tor — the
- * slowest and the only one that also anonymises — is always the entry, because
+ * Aether therefore can only ever be the internet-facing hop, and Tor - the
+ * slowest and the only one that also anonymises - is always the entry, because
  * putting anything after Tor would hand a single fixed proxy every stream that
- * left the Tor network and defeat the point of using it. That leaves exactly
- * the seven combinations below; anything else is either impossible or
- * pointless, which is why this is an enum and not three checkboxes.
+ * left the Tor network and defeat the point of using it. Unbounded, for now,
+ * only runs on its own. That leaves exactly the combinations below; anything
+ * else is either impossible or pointless, which is why this is an enum and not
+ * a set of checkboxes.
  */
 enum class ChainMode(val hops: List<Hop>) {
     /** Aether alone. The behaviour of every build before chaining existed. */
@@ -68,11 +82,20 @@ enum class ChainMode(val hops: List<Hop>) {
 
     /** All three. Slowest and most expensive; the last thing left to try. */
     TOR_OVER_PSIPHON_OVER_AETHER(listOf(Hop.AETHER, Hop.PSIPHON, Hop.TOR)),
+
+    /**
+     * EXPERIMENTAL: Lantern's Unbounded volunteer P2P network, alone.
+     *
+     * Single-core by necessity, not by choice: see the class KDoc for why it
+     * cannot dial through another hop.
+     */
+    UNBOUNDED(listOf(Hop.UNBOUNDED)),
     ;
 
     val usesAether: Boolean get() = Hop.AETHER in hops
     val usesPsiphon: Boolean get() = Hop.PSIPHON in hops
     val usesTor: Boolean get() = Hop.TOR in hops
+    val usesUnbounded: Boolean get() = Hop.UNBOUNDED in hops
 
     /** The hop the device's traffic ENTERS. Its local port is the chain entry. */
     val entryHop: Hop get() = hops.last()
@@ -114,6 +137,7 @@ enum class ChainMode(val hops: List<Hop>) {
                 "AETHER_TOR", "TOR_AETHER" -> TOR_OVER_AETHER
                 "PSIPHON_TOR", "TOR_PSIPHON" -> TOR_OVER_PSIPHON
                 "AETHER_PSIPHON_TOR", "ALL" -> TOR_OVER_PSIPHON_OVER_AETHER
+                "LANTERN", "BROFLAKE" -> UNBOUNDED
                 else -> null
             }
         }

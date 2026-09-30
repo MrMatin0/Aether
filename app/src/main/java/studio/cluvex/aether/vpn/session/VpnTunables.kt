@@ -131,6 +131,21 @@ internal object VpnTunables {
     const val TOR_BRIDGE_ATTEMPT_WAIT_MS = 90_000L
 
     /**
+     * How long the Unbounded consumer's SOCKS5 listener gets to appear. It is
+     * opened on a fixed two-second timer after launch (upstream's cmd/proxy.go),
+     * so as with Psiphon a miss here means a broken process, not a slow one.
+     */
+    const val UNBOUNDED_PORT_WAIT_MS = 20_000L
+
+    /**
+     * How long Unbounded gets to find a volunteer and bring its QUIC connection
+     * up. Discovery depends on how many volunteers happen to be online, which
+     * no retry of ours can change, so this is as patient as Psiphon's budget
+     * and no more.
+     */
+    const val UNBOUNDED_READY_WAIT_MS = 180_000L
+
+    /**
      * Total budget for a chain-only attempt (no Aether hop, so no endpoint
      * scan): the sum of what each core is allowed, plus a little slack for the
      * front to bind and the self-test to run.
@@ -142,6 +157,7 @@ internal object VpnTunables {
      */
     fun chainBudgetMs(mode: ChainMode): Long {
         var budget = 15_000L
+        if (mode.usesUnbounded) budget += UNBOUNDED_PORT_WAIT_MS + UNBOUNDED_READY_WAIT_MS
         if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
         if (mode.usesTor) {
             budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS

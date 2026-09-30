@@ -49,6 +49,16 @@ object TunnelConfig {
     const val PSIPHON_SOCKS_PORT = 1891
 
     /**
+     * The EXPERIMENTAL Unbounded consumer's local SOCKS5 (its `PORT`).
+     *
+     * NOT 1080 either, for the same reason as [PSIPHON_SOCKS_PORT]: 1080 is
+     * upstream's default and what a separately running Lantern client owns.
+     * Like Psiphon's and Tor's, it has no UDP ASSOCIATE, so the device's
+     * traffic enters through [FRONT_SOCKS_PORT].
+     */
+    const val UNBOUNDED_SOCKS_PORT = 1892
+
+    /**
      * Tor's `SocksPort` and `DNSPort`.
      *
      * NOT 9050 / 9051 / 5400: those belong to Orbot, and Orbot is exactly the

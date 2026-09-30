@@ -82,6 +82,14 @@ object CoreAvailability {
          * this build shipped something fresher.
          */
         val torBridgeListBundled: Boolean = false,
+        /**
+         * `libunbounded.so` (EXPERIMENTAL, `scripts/build-unbounded.sh`) is in
+         * the APK for this device's ABI.
+         *
+         * Appended last with a default for the same positional-binding reason
+         * as [psiphonServerList].
+         */
+        val unboundedBinary: Boolean = false,
     ) {
         /**
          * The Aether engine is mandatory, so it is available by construction.
@@ -96,6 +104,7 @@ object CoreAvailability {
             Hop.AETHER -> true
             Hop.PSIPHON -> psiphonBinary
             Hop.TOR -> torBinary
+            Hop.UNBOUNDED -> unboundedBinary
         }
 
         /** Cores [mode] needs that this build does not ship. */
@@ -123,10 +132,12 @@ object CoreAvailability {
             torGeoipBundled = hasAsset(context, "${TorCore.ASSET_DIR}/geoip"),
             psiphonServerList = hasAsset(context, PsiphonCore.ASSET_SERVER_LIST),
             torBridgeListBundled = hasAsset(context, BridgeCatalog.ASSET),
+            unboundedBinary = hasBinary(nativeDir, UnboundedCore.BINARY),
         )
         DiagnosticsLog.i(
             TAG,
             "Build payload: psiphon=${snapshot.psiphonBinary} tor=${snapshot.torBinary} " +
+                "unbounded=${snapshot.unboundedBinary} " +
                 "psiphonServers=${snapshot.psiphonServerList} " +
                 "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled} " +
                 "bridgeList=${snapshot.torBridgeListBundled}",

@@ -64,18 +64,19 @@ object ChainRuntime {
      * to know which ports to wait on before anything is started.
      *
      * Aether's own SOCKS5 speaks UDP ASSOCIATE, so an Aether-entry chain needs
-     * no front and the entry is the engine itself. Psiphon and Tor do not, so
-     * their traffic enters through [SocksFront] instead (see its KDoc for the
-     * DNS argument).
+     * no front and the entry is the engine itself. Psiphon, Tor and Unbounded
+     * do not, so their traffic enters through [SocksFront] instead (see its
+     * KDoc for the DNS argument).
      */
     fun entryPortFor(mode: ChainMode): Int = when (mode.entryHop) {
         Hop.AETHER -> TunnelConfig.ENGINE_SOCKS_PORT
-        Hop.PSIPHON, Hop.TOR -> TunnelConfig.FRONT_SOCKS_PORT
+        Hop.PSIPHON, Hop.TOR, Hop.UNBOUNDED -> TunnelConfig.FRONT_SOCKS_PORT
     }
 
     /** Every local port [mode] binds, so teardown can prove they were released. */
     fun portsFor(mode: ChainMode): List<Int> = buildList {
         if (mode.usesAether) add(TunnelConfig.ENGINE_SOCKS_PORT)
+        if (mode.usesUnbounded) add(TunnelConfig.UNBOUNDED_SOCKS_PORT)
         if (mode.usesPsiphon) add(TunnelConfig.PSIPHON_SOCKS_PORT)
         if (mode.usesTor) {
             add(TunnelConfig.TOR_SOCKS_PORT)
