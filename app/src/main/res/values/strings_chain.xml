@@ -37,6 +37,10 @@
     <string name="chain_tor_over_all">Tor over Psiphon over Aether</string>
     <string name="chain_tor_over_all_desc">All three, stacked. The slowest option in the app and the last thing left to try.</string>
 
+    <!-- EXPERIMENTAL: getlantern/unbounded, see docs/UNBOUNDED.md. -->
+    <string name="chain_unbounded">Unbounded (experimental)</string>
+    <string name="chain_unbounded_desc">Lantern\'s volunteer P2P network over WebRTC. For testing only: TCP only, and speed depends on who is volunteering right now.</string>
+
     <!-- ========================================================= Psiphon == -->
     <!--
       The nine psiphon_config_* strings that used to live here are gone with the
@@ -72,6 +76,7 @@
     <string name="err_psiphon_config">This build is missing the Psiphon server list, so Psiphon has nowhere to start dialling. Rebuild with scripts/fetch-psiphon-serverlist.sh.</string>
     <string name="err_psiphon_timeout">Psiphon could not find a server. Try Psiphon over Aether, or another network.</string>
     <string name="err_tor_timeout">Tor could not finish connecting. Your network is likely blocking Tor itself — try Tor over Aether or Tor over Psiphon.</string>
+    <string name="err_unbounded_timeout">Unbounded could not reach a volunteer peer. The network may be blocking WebRTC or Lantern\'s discovery server; try again later or pick another core.</string>
     <string name="err_front_bind">The local proxy port is busy. Close the other tunnel app using it and reconnect.</string>
     <string name="err_chain_failed">The chain could not be brought up. Check the log for which core failed.</string>
 

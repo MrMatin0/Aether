@@ -31,6 +31,10 @@
     <string name="chain_tor_over_all">تور روی سایفون روی اتر</string>
     <string name="chain_tor_over_all_desc">هر سه، روی هم. کندترین حالت برنامه و آخرین چیزی که می‌ماند برای امتحان کردن.</string>
 
+    <!-- EXPERIMENTAL: getlantern/unbounded, see docs/UNBOUNDED.md. -->
+    <string name="chain_unbounded">آنباندد (آزمایشی)</string>
+    <string name="chain_unbounded_desc">شبکه داوطلبانه همتا‌به‌همتای لنترن روی WebRTC. فقط برای تست؛ فقط TCP، و سرعتش بستگی دارد به اینکه همین حالا چه کسی داوطلب است.</string>
+
     <!-- ========================================================= Psiphon == -->
     <string name="psiphon_ready">سایفون آماده است. چیزی برای تنظیم کردن ندارید.</string>
     <string name="psiphon_serverlist_missing">این نسخه لیست سرورهای سایفون را ندارد، پس سایفون اجرا نمی‌شود. اسکریپت scripts/fetch-psiphon-serverlist.sh را اجرا کنید و دوباره بیلد بگیرید.</string>
@@ -55,6 +59,7 @@
     <string name="err_psiphon_config">لیست سرورهای سایفون در این نسخه نیست، پس سایفون جایی برای شروع اتصال ندارد. با scripts/fetch-psiphon-serverlist.sh دوباره بیلد بگیرید.</string>
     <string name="err_psiphon_timeout">سایفون سروری پیدا نکرد. «سایفون روی اتر» یا شبکه دیگری را امتحان کنید.</string>
     <string name="err_tor_timeout">تور نتوانست اتصالش را کامل کند. احتمالاً شبکه خودِ تور را بسته است — «تور روی اتر» یا «تور روی سایفون» را امتحان کنید.</string>
+    <string name="err_unbounded_timeout">آنباندد نتوانست به یک همتای داوطلب برسد. شاید شبکه WebRTC یا سرور کشف لنترن را بسته باشد؛ بعداً دوباره امتحان کنید یا هسته دیگری انتخاب کنید.</string>
     <string name="err_front_bind">پورت پروکسی محلی مشغول است. برنامه تانل دیگری که آن را گرفته ببندید و دوباره وصل شوید.</string>
     <string name="err_chain_failed">زنجیره بالا نیامد. برای دیدن اینکه کدام هسته شکست خورد، لاگ را ببینید.</string>
 

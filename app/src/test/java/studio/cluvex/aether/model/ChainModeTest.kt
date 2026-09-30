@@ -1,5 +1,6 @@
 package studio.cluvex.aether.model
 
+import studio.cluvex.aether.core.CoreAvailability
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -86,6 +87,7 @@ class ChainModeTest {
         assertEquals(ChainMode.TOR_OVER_PSIPHON, ChainMode.fromStored("psiphon_tor"))
         assertEquals(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER, ChainMode.fromStored("ALL"))
         assertEquals(ChainMode.AETHER, ChainMode.fromStored("off"))
+        assertEquals(ChainMode.UNBOUNDED, ChainMode.fromStored("lantern"))
     }
 
     @Test
@@ -94,5 +96,36 @@ class ChainModeTest {
         assertNull(ChainMode.fromStored(""))
         assertNull(ChainMode.fromStored("   "))
         assertNull(ChainMode.fromStored("wireguard"))
+    }
+
+    @Test
+    fun `unbounded runs alone and faces the internet`() {
+        val mode = ChainMode.UNBOUNDED
+        assertEquals(listOf(Hop.UNBOUNDED), mode.hops)
+        assertEquals(Hop.UNBOUNDED, mode.entryHop)
+        assertNull(mode.upstreamOf(Hop.UNBOUNDED))
+        assertFalse(mode.isChained)
+        assertTrue(mode.usesUnbounded)
+        assertFalse(mode.usesAether)
+        assertFalse(mode.usesPsiphon)
+        assertFalse(mode.usesTor)
+        assertEquals("Unbounded \u2192 internet", mode.pathLabel())
+        // No other mode may pull the Unbounded core in by accident.
+        ChainMode.entries.filter { it != ChainMode.UNBOUNDED }.forEach {
+            assertFalse(it.usesUnbounded, "${it.name} must not start Unbounded")
+        }
+    }
+
+    @Test
+    fun `a build without libunbounded reports exactly that core as missing`() {
+        val snapshot = CoreAvailability.Snapshot(
+            psiphonBinary = true,
+            torBinary = true,
+            psiphonConfigBundled = false,
+            torGeoipBundled = false,
+        )
+        assertEquals(listOf(Hop.UNBOUNDED), snapshot.missing(ChainMode.UNBOUNDED))
+        assertTrue(snapshot.canRun(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER))
+        assertTrue(snapshot.copy(unboundedBinary = true).canRun(ChainMode.UNBOUNDED))
     }
 }

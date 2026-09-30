@@ -13,6 +13,7 @@ import studio.cluvex.aether.core.SmartDnsFront
 import studio.cluvex.aether.core.SocksFront
 import studio.cluvex.aether.core.TorCore
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.core.UnboundedCore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Hop
@@ -57,6 +58,12 @@ internal enum class ChainFailure {
 
     /** The DNS-capable SOCKS front (or the Smart DNS front) could not bind its port. */
     FRONT_BIND,
+
+    /** This build does not bundle libunbounded.so (EXPERIMENTAL). */
+    UNBOUNDED_MISSING,
+
+    /** Unbounded never found a volunteer / never brought QUIC up inside its budget. */
+    UNBOUNDED_TIMEOUT,
 }
 
 internal class ChainException(val failure: ChainFailure) : Exception(failure.name)
@@ -80,7 +87,8 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  *
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
  * both bind their listener seconds to minutes before they can carry traffic
- * (see [PsiphonCore.awaitReady] and [TorCore.awaitReady]).
+ * (see [PsiphonCore.awaitReady] and [TorCore.awaitReady]). The experimental
+ * Unbounded core follows the same rule ([UnboundedCore.awaitReady]).
  */
 internal class ChainStack(
     private val context: Context,
@@ -91,6 +99,10 @@ internal class ChainStack(
 
     @Volatile
     private var tor: TorCore? = null
+
+    /** The experimental Unbounded consumer, when this session runs one. */
+    @Volatile
+    private var unbounded: UnboundedCore? = null
 
     @Volatile
     private var front: SocksFront? = null
@@ -103,7 +115,9 @@ internal class ChainStack(
 
     /** True while every core this chain started is still running. */
     val alive: Boolean
-        get() = (psiphon?.isAlive ?: true) && (tor?.isAlive ?: true)
+        get() = (psiphon?.isAlive ?: true) &&
+            (tor?.isAlive ?: true) &&
+            (unbounded?.isAlive ?: true)
 
     /**
      * Cores [mode] needs that this build does not ship.
@@ -137,6 +151,11 @@ internal class ChainStack(
         // Every hop dials through the one before it; null means "straight out".
         var upstream: Int? = if (mode.usesAether) TunnelConfig.ENGINE_SOCKS_PORT else null
 
+        // Unbounded is always internet-facing (WebRTC cannot ride a SOCKS5
+        // hop), so it comes up first when a mode uses it.
+        if (mode.usesUnbounded) {
+            upstream = startUnbounded()
+        }
         if (mode.usesPsiphon) {
             upstream = startPsiphon(profile, upstream)
         }
@@ -154,7 +173,7 @@ internal class ChainStack(
             } else {
                 TunnelConfig.ENGINE_SOCKS_PORT
             }
-            Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
+            Hop.PSIPHON, Hop.TOR, Hop.UNBOUNDED -> startFront(mode, requireNotNull(upstream))
         }
 
         ChainRuntime.publish(mode, entry)
@@ -174,6 +193,7 @@ internal class ChainStack(
     suspend fun awaitExit(timeoutMs: Long): Boolean = when {
         tor != null -> tor?.awaitExit(timeoutMs) ?: true
         psiphon != null -> psiphon?.awaitExit(timeoutMs) ?: true
+        unbounded != null -> unbounded?.awaitExit(timeoutMs) ?: true
         else -> true
     }
 
@@ -194,9 +214,45 @@ internal class ChainStack(
         tor = null
         runCatching { psiphon?.stop() }
         psiphon = null
+        runCatching { unbounded?.stop() }
+        unbounded = null
     }
 
     // ------------------------------------------------------------------ hops
+
+    /**
+     * Brings the EXPERIMENTAL Unbounded consumer up.
+     *
+     * One attempt, no ladder: the only thing that varies between attempts is
+     * which volunteers happen to be online, and the consumer already keeps
+     * asking the discovery server for new ones on its own. Ready means its
+     * QUIC connection to the egress is up, never just the open port - see
+     * [UnboundedCore].
+     */
+    private suspend fun startUnbounded(): Int {
+        val core = UnboundedCore(context, filesDir)
+        if (!core.isAvailable) {
+            ChainRuntime.update(Hop.UNBOUNDED, ChainRuntime.HopState.FAILED, "not bundled")
+            throw ChainException(ChainFailure.UNBOUNDED_MISSING)
+        }
+        synchronized(lock) { unbounded = core }
+
+        ChainRuntime.update(Hop.UNBOUNDED, ChainRuntime.HopState.STARTING, core.phase)
+        core.start()
+
+        val listening = PortProbe.awaitOpen(
+            TunnelConfig.SOCKS_HOST,
+            TunnelConfig.UNBOUNDED_SOCKS_PORT,
+            VpnTunables.UNBOUNDED_PORT_WAIT_MS,
+        ) { core.isAlive }
+        if (listening && core.awaitReady(VpnTunables.UNBOUNDED_READY_WAIT_MS)) {
+            ChainRuntime.update(Hop.UNBOUNDED, ChainRuntime.HopState.READY, core.phase)
+            return TunnelConfig.UNBOUNDED_SOCKS_PORT
+        }
+
+        ChainRuntime.update(Hop.UNBOUNDED, ChainRuntime.HopState.FAILED)
+        throw ChainException(ChainFailure.UNBOUNDED_TIMEOUT)
+    }
 
     /**
      * Brings Psiphon up, and does not let one unlucky country be the end of it.
