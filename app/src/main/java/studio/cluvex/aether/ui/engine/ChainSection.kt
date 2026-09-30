@@ -82,7 +82,8 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * with seven cards in between a block at the bottom was easy to never see. Only
  * the SELECTED card opens it, so the page never shows two pickers for one
  * setting. The Psiphon protocol / CDN fronting options live there too, for the
- * same reason.
+ * same reason. The EXPERIMENTAL Proteus options (server, PSF, mode, persist)
+ * follow the same rule, see [ProteusOptions].
  *
  * ### What the Psiphon block used to be
  *
@@ -128,6 +129,7 @@ internal fun ChainSection(
         val absent = buildList {
             if (!cores.psiphonBinary) add(Hop.PSIPHON.label)
             if (!cores.torBinary) add(Hop.TOR.label)
+            if (!cores.proteusBinary) add(Hop.PROTEUS.label)
         }
         if (absent.isNotEmpty()) {
             NoticeBar(
@@ -213,6 +215,11 @@ private fun ColumnScope.ChainModeEntry(
                 enabled = enabled,
                 edit = edit,
             )
+        }
+    }
+    if (mode.usesProteus) {
+        DependentBlock(visible = mode == selected) {
+            ProteusOptions(enabled = enabled)
         }
     }
 }
