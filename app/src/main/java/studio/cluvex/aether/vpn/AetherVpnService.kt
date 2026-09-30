@@ -396,6 +396,10 @@ class AetherVpnService : VpnService() {
         ChainFailure.TOR_MISSING -> getString(R.string.err_core_missing, "Tor")
         ChainFailure.TOR_TIMEOUT -> getString(R.string.err_tor_timeout)
         ChainFailure.FRONT_BIND -> getString(R.string.err_front_bind)
+        // EXPERIMENTAL: the Proteus hop (see core/ProteusCore.kt, docs/PROTEUS.md).
+        ChainFailure.PROTEUS_MISSING -> getString(R.string.err_core_missing, "Proteus")
+        ChainFailure.PROTEUS_CONFIG -> getString(R.string.err_proteus_config)
+        ChainFailure.PROTEUS_TIMEOUT -> getString(R.string.err_proteus_timeout)
     }
 
     /**
