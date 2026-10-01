@@ -12,104 +12,104 @@
 <resources>
 
     <string name="section_bridges">پل‌های Tor</string>
-    <string name="section_bridges_note">راه ورود به شبکه Tor وقتی خود شبکه بسته است. یک پل آماده انتخاب کنید، ببینید در محل شما چه چیزی کار می‌کند، یا یک پل شخصی بگیرید.</string>
+    <string name="section_bridges_note">وقتی شبکه Tor را می‌بندد، از پل استفاده کنید. پل آماده بگیرید، یکی درخواست کنید، یا پل خودتان را وارد کنید.</string>
 
-    <string name="bridges_no_tor_core">این نسخه هسته Tor را ندارد، پس پل چیزی برای تنظیم کردن ندارد. با scripts/build-overlay-cores.sh tor ساخته می‌شود.</string>
-    <string name="bridges_chain_has_no_tor">زنجیره فعلی شما از Tor استفاده نمی‌کند، پس این پل‌ها ذخیره می‌شوند ولی هنوز به کار نمی‌آیند. در صفحه زنجیره یکی از حالت‌های Tor را انتخاب کنید.</string>
+    <string name="bridges_no_tor_core">این نسخه هستهٔ Tor را ندارد، پس پل‌ها قابل تنظیم نیستند. با scripts/build-overlay-cores.sh tor بیلد بگیرید.</string>
+    <string name="bridges_chain_has_no_tor">زنجیرهٔ شما از Tor استفاده نمی‌کند. پل‌ها تا انتخاب یک حالت Tor ذخیره و غیرفعال می‌مانند.</string>
 
     <string name="bridges_status_off">پل‌ها خاموش‌اند</string>
-    <string name="bridges_status_off_note">Tor مستقیم به رله‌های عمومی می‌رود. پل را فقط وقتی روشن کنید که Tor به هیچ وجه وصل نمی‌شود.</string>
+    <string name="bridges_status_off_note">Tor مستقیم به رله‌های عمومی وصل می‌شود. پل را فقط وقتی روشن کنید که Tor وصل نمی‌شود.</string>
     <string name="bridges_status_empty">هنوز پلی انتخاب نشده</string>
-    <string name="bridges_status_empty_note">از پایین یکی را تیک بزنید یا یک دسته بگیرید. تا آن موقع Tor مثل همیشه وصل می‌شود.</string>
+    <string name="bridges_status_empty_note">یک پل انتخاب کنید یا فهرست بگیرید. تا آن زمان Tor از رله‌های عمومی وصل می‌شود.</string>
     <string name="bridges_status_ready">%1$d پل آماده است</string>
-    <string name="bridges_status_ready_note">Tor دفعه بعد که شروع شود همین‌ها را به ترتیب امتحان می‌کند.</string>
+    <string name="bridges_status_ready_note">Tor هنگام شروع، پل‌ها را به همین ترتیب امتحان می‌کند.</string>
     <string name="bridges_tag_unusable">%1$d مورد بی‌استفاده</string>
     <string name="bridges_tag_no_tor">در زنجیره فعلی به کار نمی‌آید</string>
 
-    <string name="bridges_mode_label">پل از کجا بیاید</string>
+    <string name="bridges_mode_label">منبع پل</string>
 
     <string name="bridge_mode_off">بدون پل</string>
-    <string name="bridge_mode_off_desc">Tor مستقیم به رله‌های عمومی وصل می‌شود. سریع‌ترین حالت، و درست‌ترین انتخاب مگر اینکه شبکه شما Tor را بسته باشد.</string>
+    <string name="bridge_mode_off_desc">Tor مستقیم به رله‌های عمومی وصل می‌شود؛ سریع‌ترین حالت است مگر اینکه شبکه Tor را مسدود کرده باشد.</string>
     <string name="bridge_mode_off_tag">سریع‌ترین، تا وقتی Tor بسته نشده</string>
 
     <string name="bridge_mode_builtin">پل‌های آماده</string>
-    <string name="bridge_mode_builtin_desc">همان فهرست عمومی که Tor Browser دارد. همیشه در دسترس است و چون دست همه است، اول از همه بسته می‌شود.</string>
+    <string name="bridge_mode_builtin_desc">فهرست عمومی همراه Tor Browser. همیشه در دسترس است، اما چون همه آن را دارند زودتر مسدود می‌شود.</string>
     <string name="bridge_mode_builtin_tag">فهرست عمومی، اول از همه بسته می‌شود</string>
 
     <string name="bridge_mode_requested">پل شخصی</string>
-    <string name="bridge_mode_requested_desc">آدرس‌هایی که تور پروجکت فقط به همین دستگاه می‌دهد. در هیچ فهرست عمومی نیست، اما برای گرفتنش به یک مسیر باز تا سرور پل نیاز دارید.</string>
+    <string name="bridge_mode_requested_desc">آدرس‌هایی که تور پروجکت فقط برای این دستگاه صادر می‌کند. برای درخواستشان هنوز به یک مسیر باز نیاز دارید.</string>
     <string name="bridge_mode_requested_tag">فقط برای شما، اول به یک راه باز نیاز دارد</string>
 
     <string name="bridge_mode_custom">وارد کردن دستی</string>
-    <string name="bridge_mode_custom_desc">خط‌هایی که از قبل دارید: از ایمیل، از تلگرام، یا از کسی که به او اعتماد دارید. اعتبارش به اندازه منبعش است.</string>
+    <string name="bridge_mode_custom_desc">خط‌های پلی که از ایمیل، تلگرام یا فردی قابل اعتماد دارید. اعتبارشان به منبعشان بستگی دارد.</string>
     <string name="bridge_mode_custom_tag">خط‌هایی که از قبل دارید</string>
 
     <string name="bridges_type_title">نوع پل</string>
-    <string name="bridges_type_hint">با obfs4 شروع کنید. اگر شبکه آدرس‌های ثابت را می‌بندد، Snowflake یا WebTunnel را امتحان کنید.</string>
+    <string name="bridges_type_hint">با obfs4 شروع کنید. اگر آدرس‌های ثابت پل بسته‌اند، Snowflake یا WebTunnel را امتحان کنید.</string>
     <string name="bridges_plugins_missing">این نسخه این مبدل‌ها را ندارد: %1$s. با scripts/build-pt-transports.sh ساخته می‌شوند.</string>
-    <string name="bridges_type_unavailable">در دسترس نیست: این نسخه فایل %1$s را ندارد.</string>
+    <string name="bridges_type_unavailable">در دسترس نیست: فایل %1$s در این بیلد وجود ندارد.</string>
     <string name="bridges_needs">نیازمند %1$s</string>
     <string name="bridges_builtin_count">%1$d پل آماده</string>
 
     <string name="bridge_tr_obfs4">obfs4</string>
-    <string name="bridge_tr_obfs4_desc">ترافیک را شبیه داده تصادفی می‌کند. رایج‌ترین و کم‌هزینه‌ترین انتخاب، و همان چیزی که بیشتر پل‌ها اجرا می‌کنند.</string>
+    <string name="bridge_tr_obfs4_desc">ترافیک را تصادفی‌نما می‌کند؛ رایج، کم‌هزینه و با پشتیبانی گسترده.</string>
 
     <string name="bridge_tr_snowflake">Snowflake</string>
-    <string name="bridge_tr_snowflake_desc">از داوطلب‌های کوتاه‌عمر با WebRTC رد می‌شود. وقتی به کار می‌آید که آدرس‌های ثابت پل بسته شده باشند؛ سرعتش یکنواخت نیست.</string>
+    <string name="bridge_tr_snowflake_desc">از پراکسی‌های داوطلبانهٔ کوتاه‌عمر با WebRTC عبور می‌کند. برای آدرس‌های ثابتِ مسدودشده مفید است، اما سرعت تغییر می‌کند.</string>
 
     <string name="bridge_tr_webtunnel">WebTunnel</string>
-    <string name="bridge_tr_webtunnel_desc">شبیه بازدید معمولی از یک سایت HTTPS است. برای شبکه‌هایی که هر چیز ناشناسی را می‌بندند.</string>
+    <string name="bridge_tr_webtunnel_desc">شبیه بازدید معمولی از یک سایت HTTPS است؛ برای شبکه‌هایی که ترافیک ناشناس را می‌بندند.</string>
 
     <string name="bridge_tr_meek">meek</string>
-    <string name="bridge_tr_meek_desc">اتصال را پشت یک CDN بزرگ پنهان می‌کند. کند و پرمصرف، و سخت‌ترین گزینه برای بسته شدن.</string>
+    <string name="bridge_tr_meek_desc">اتصال را پشت یک CDN بزرگ پنهان می‌کند. کند و پرمصرف است، اما مسدود کردنش دشوارتر است.</string>
 
     <string name="bridge_tr_vanilla">پل ساده</string>
-    <string name="bridge_tr_vanilla_desc">فقط یک آدرس، بدون هیچ پوششی. تنها نوعی که به فایل اضافه نیاز ندارد و در هر نسخه‌ای کار می‌کند.</string>
+    <string name="bridge_tr_vanilla_desc">فقط یک آدرس، بدون پوشش. فایل اضافه نمی‌خواهد و در هر بیلدی کار می‌کند.</string>
 
     <string name="bridges_builtin_title">پل‌های آماده</string>
-    <string name="bridges_builtin_note">این‌ها عمومی هستند و همه از همین‌ها استفاده می‌کنند، پس ممکن است در فهرست سانسورچی باشند. وقتی از کار افتادند، یک پل شخصی بگیرید.</string>
-    <string name="bridges_builtin_none">پل آماده‌ای از این نوع وجود ندارد. فهرست را تازه کنید یا پل شخصی بگیرید.</string>
+    <string name="bridges_builtin_note">این پل‌ها عمومی و مشترک‌اند و ممکن است فهرست و مسدود شوند. اگر کار نکردند، پل شخصی بگیرید.</string>
+    <string name="bridges_builtin_none">پل آماده‌ای از این نوع نیست. فهرست را تازه کنید یا پل شخصی بگیرید.</string>
     <string name="bridges_available">%1$d مورد در دسترس</string>
     <string name="bridges_use_all">انتخاب همه</string>
     <string name="bridges_use_none">برداشتن همه</string>
 
     <string name="bridges_fetch_title">گرفتن از تور پروجکت</string>
-    <string name="bridges_fetch_note">درخواست به bridges.torproject.org می‌رود: اگر اتصالی برقرار باشد از داخل همان تونل، وگرنه مستقیم. روی شبکه‌ای که Tor را بسته، این آدرس هم معمولاً بسته است؛ پس اول با Aether یا Psiphon وصل شوید و بعد پل بگیرید.</string>
+    <string name="bridges_fetch_note">درخواست از طریق تونل فعال یا بدون تونل به bridges.torproject.org می‌رود. اگر Tor بسته است، اول با Aether یا Psiphon وصل شوید.</string>
 
     <string name="bridges_country_label">کشور شما (اختیاری)</string>
     <string name="bridges_country_hint">مثلاً IR</string>
-    <string name="bridges_country_help">دو حرف. خالی بگذارید تا سرور از آدرس شما حدس بزند؛ با تونل روشن آن آدرس، کشور خروجی تونل است نه کشور شما.</string>
+    <string name="bridges_country_help">دو حرف وارد کنید، یا خالی بگذارید تا سرور از روی نشانی درخواست حدس بزند. با تونل، این نشانی مربوط به خروجی تونل است، نه کشور شما.</string>
     <string name="bridges_country_unknown">محل شما</string>
 
     <string name="bridges_working">در حال انجام...</string>
-    <string name="bridges_busy_note">در حال رسیدن به bridges.torproject.org. روی شبکه بسته ممکن است یک دقیقه طول بکشد تا تسلیم شود.</string>
-    <string name="bridges_ask">بپرس اینجا چه چیزی کار می‌کند</string>
+    <string name="bridges_busy_note">در حال اتصال به bridges.torproject.org. در شبکهٔ بسته ممکن است یک دقیقه طول بکشد تا زمان درخواست تمام شود.</string>
+    <string name="bridges_ask">پیدا کردن پل برای این شبکه</string>
     <string name="bridges_refresh">تازه‌سازی فهرست آماده</string>
     <string name="bridges_updated">فهرست در %1$s تازه شد</string>
-    <string name="bridges_updated_never">روی این دستگاه هیچ‌وقت تازه نشده: همان فهرستی که همراه برنامه است استفاده می‌شود.</string>
+    <string name="bridges_updated_never">در این دستگاه تازه نشده؛ فهرست همراه برنامه استفاده می‌شود.</string>
 
     <string name="bridges_personal_title">پل شخصی</string>
-    <string name="bridges_personal_note">هر درخواست دو یا سه آدرس می‌دهد که در هیچ فهرست عمومی نیستند. سهمیه‌اش برای هر شبکه محدود است، پس هر چه گرفتید نگه دارید.</string>
+    <string name="bridges_personal_note">هر درخواست دو یا سه آدرس خارج از فهرست‌های عمومی می‌دهد. درخواست‌ها برای هر شبکه سهمیه دارند؛ آن‌ها را نگه دارید.</string>
     <string name="bridges_request">درخواست پل</string>
-    <string name="bridges_request_vanilla">تور پروجکت پل ساده را از این راه نمی‌دهد. یکی از نوع‌های پوشش‌دار بالا را انتخاب کنید.</string>
+    <string name="bridges_request_vanilla">تور پروجکت از این راه پل ساده نمی‌دهد. یک نوع پوشش‌دار انتخاب کنید.</string>
     <string name="bridges_personal_list">پل‌هایی که گرفته‌اید</string>
-    <string name="bridges_personal_empty">هنوز چیزی اینجا نیست. هر درخواست دو یا سه آدرس اینجا می‌گذارد و با بازنشانی تنظیمات هم پاک نمی‌شوند.</string>
+    <string name="bridges_personal_empty">هنوز پلی نیست. هر درخواست دو یا سه آدرس اضافه می‌کند و با بازنشانی تنظیمات می‌ماند.</string>
 
     <string name="bridges_custom_title">وارد کردن دستی</string>
-    <string name="bridges_custom_note">هر پل در یک خط، دقیقاً همان‌طور که گرفته‌اید. راه‌های دیگر گرفتن پل: ایمیل خالی به bridges@torproject.org از یک نشانی Gmail یا Riseup، یا پیام به @GetBridgesBot در تلگرام.</string>
+    <string name="bridges_custom_note">هر پل را دقیقاً در یک خط وارد کنید. می‌توانید از Gmail یا Riseup ایمیل خالی به bridges@torproject.org بزنید، یا به @GetBridgesBot در تلگرام پیام دهید.</string>
     <string name="bridges_custom_label">خط‌های پل</string>
     <string name="bridges_custom_placeholder">obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0</string>
     <string name="bridges_custom_count">%1$d خط سالم، %2$d خط نادیده گرفته شد</string>
-    <string name="bridges_custom_type_note">هر خط وارد‌شده نوع خودش را همراه دارد، پس اینجا نوعی برای انتخاب نیست.</string>
+    <string name="bridges_custom_type_note">نوع در خود خط واردشده مشخص است؛ اینجا انتخابی لازم نیست.</string>
     <string name="bridges_paste">چسباندن از کلیپ‌بورد</string>
     <string name="bridges_paste_none">کلیپ‌بورد خالی است.</string>
 
     <string name="bridges_active_title">در حال استفاده (%1$d)</string>
-    <string name="bridges_active_empty">چیزی انتخاب نشده، پس Tor مثل همیشه وصل می‌شود. از بالا یک پل را تیک بزنید.</string>
-    <string name="bridges_active_unusable">%1$d مورد از این‌ها به مبدلی نیاز دارد که این نسخه ندارد و نادیده گرفته می‌شود.</string>
+    <string name="bridges_active_empty">پلی انتخاب نشده است؛ Tor از رله‌های عمومی وصل می‌شود.</string>
+    <string name="bridges_active_unusable">مبدل لازم برای %1$d پل در این نسخه وجود ندارد؛ این پل‌ها نادیده گرفته می‌شوند.</string>
     <string name="bridges_copy_all">کپی همه</string>
     <string name="bridges_clear">پاک کردن انتخاب</string>
-    <string name="bridges_privacy_note">پل شخصی را جایی منتشر نکنید. پلی که در اسکرین‌شات عمومی می‌شود، پلی است که گزارش و بسته می‌شود؛ هم برای شما و هم برای هر کس دیگری که آن را گرفته است.</string>
+    <string name="bridges_privacy_note">پل شخصی را منتشر نکنید. اسکرین‌شات ممکن است آن را افشا و برای همهٔ دریافت‌کنندگان مسدود کند.</string>
     <string name="bridges_forget">حذف</string>
     <string name="bridges_remove">برداشتن</string>
 
@@ -123,26 +123,26 @@
     <string name="bridges_route_direct">(مستقیم، بدون تونل)</string>
     <string name="bridges_refreshed">فهرست آماده تازه شد: %1$d پل.</string>
     <string name="bridges_recommended">%1$d پل برای %2$s گرفته و انتخاب شد.</string>
-    <string name="bridges_not_needed">تور پروجکت می‌گوید در %1$s پل لازم نیست: Tor ساده باید وصل شود.</string>
+    <string name="bridges_not_needed">تور پروجکت می‌گوید در %1$s پل لازم نیست؛ Tor ساده باید وصل شود.</string>
     <string name="bridges_received">%1$d پل شخصی گرفته و انتخاب شد.</string>
 
-    <string name="bridges_err_unreachable">به bridges.torproject.org نرسیدیم. اول با Aether یا Psiphon وصل شوید و بعد دوباره درخواست بدهید.</string>
+    <string name="bridges_err_unreachable">به bridges.torproject.org نرسیدیم. با Aether یا Psiphon وصل شوید و دوباره امتحان کنید.</string>
     <string name="bridges_err_captcha">پاسخ کپچا پذیرفته نشد. یکی دیگر بگیرید.</string>
-    <string name="bridges_err_no_transport">برای آن کشور پلی از نوع‌هایی که این نسخه پشتیبانی می‌کند وجود ندارد. Snowflake را امتحان کنید یا کشور را خالی بگذارید.</string>
+    <string name="bridges_err_no_transport">برای آن کشور پل پشتیبانی‌شده‌ای نیست. Snowflake را امتحان کنید یا کشور را خالی بگذارید.</string>
     <string name="bridges_err_server">سرور پل درخواست را نپذیرفت (%1$d). بعداً دوباره امتحان کنید.</string>
-    <string name="bridges_err_malformed">چیزی پاسخ داد، اما سرور پل نبود. شبکه شما اتصال را عوض می‌کند.</string>
+    <string name="bridges_err_malformed">پاسخ از سرور پل نبود؛ شبکه ممکن است اتصال را تغییر دهد.</string>
 
     <string name="bridges_captcha_title">درخواست پل</string>
     <string name="bridges_captcha_image">تصویر کپچا</string>
     <string name="bridges_captcha_prompt">حروف داخل تصویر را بنویسید.</string>
     <string name="bridges_captcha_no_image">تصویر کپچا نمایش داده نشد. باز هم درخواست را بفرستید.</string>
     <string name="bridges_captcha_label">پاسخ</string>
-    <string name="bridges_captcha_note">از وقتی تور پروجکت در سال ۲۰۲۴ سیستم BridgeDB را بازنشسته کرد، این کپچا یک تصویر ثابت است و پاسخش بررسی نمی‌شود. برنامه باز هم همان مسیر مستند را طی می‌کند تا اگر روزی برگشت، کار کند.</string>
+    <string name="bridges_captcha_note">این کپچا تصویر ثابت است؛ پاسخ آن بررسی نمی‌شود.</string>
     <string name="bridges_captcha_send">گرفتن پل‌ها</string>
 
     <string name="bridges_state_none">روشن، بدون انتخاب</string>
     <string name="bridges_state_count">%1$d پل</string>
 
-    <string name="chain_tor_bridges_hint">اگر Tor روی شبکه شما به هیچ وجه وصل نمی‌شود، صفحه پل‌های Tor راه ورود دیگری به آن می‌دهد.</string>
+    <string name="chain_tor_bridges_hint">اگر Tor وصل نمی‌شود، صفحهٔ پل‌های Tor مسیر دیگری برای ورود می‌دهد.</string>
 
 </resources>

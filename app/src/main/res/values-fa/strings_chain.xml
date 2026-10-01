@@ -4,41 +4,41 @@
 
     <!-- ============================================================ page == -->
     <string name="section_chain">زنجیره</string>
-    <string name="section_chain_note">اتر را با سایفون و تور روی هم بچینید. هر لایه راه‌های بیشتری برای عبور از فیلترینگ می‌دهد و سرعت کمتری.</string>
+    <string name="section_chain_note">اتر، سایفون و Tor را ترکیب کنید. لایه‌های بیشتر ممکن است از فیلترهای بیشتری عبور کنند، اما سرعت را کم می‌کنند.</string>
 
     <string name="chain_mode">هسته‌ها</string>
     <string name="chain_path">مسیر: %1$s</string>
 
     <!-- ======================================================== the modes == -->
     <string name="chain_aether">اتر</string>
-    <string name="chain_aether_desc">فقط اتر. سریع‌ترین حالت. از همین شروع کنید و تنها وقتی جواب نداد لایه اضافه کنید.</string>
+    <string name="chain_aether_desc">فقط اتر؛ سریع‌ترین حالت. از همین شروع کنید و فقط اگر وصل نشد لایه اضافه کنید.</string>
 
     <string name="chain_psiphon">سایفون</string>
-    <string name="chain_psiphon_desc">فقط سایفون. وقتی به کار می‌آید که شبکه‌تان خودِ WARP کلادفلر را بسته باشد.</string>
+    <string name="chain_psiphon_desc">فقط سایفون. وقتی شبکه‌تان Cloudflare WARP را می‌بندد، این گزینه را امتحان کنید.</string>
 
     <string name="chain_tor">تور</string>
-    <string name="chain_tor_desc">فقط تور. ناشناس، کند، و روی بسیاری از شبکه‌های ایران کاملاً بسته.</string>
+    <string name="chain_tor_desc">فقط Tor؛ کند و در بسیاری از شبکه‌های ایران مسدود است. ناشناس‌بودن را تضمین نمی‌کند.</string>
 
     <string name="chain_psiphon_over_aether">سایفون روی اتر</string>
-    <string name="chain_psiphon_over_aether_desc">سایفون از داخل اتر بیرون می‌رود. اپراتور فقط ترافیک WARP می‌بیند، نه چیزی شبیه سایفون.</string>
+    <string name="chain_psiphon_over_aether_desc">سایفون از داخل اتر وصل می‌شود. اپراتور به‌جای سایفون، ترافیک WARP می‌بیند.</string>
 
     <string name="chain_tor_over_aether">تور روی اتر</string>
-    <string name="chain_tor_over_aether_desc">تور از داخل اتر به شبکه تور می‌رسد. وقتی تور اصلاً وصل نمی‌شود، یا نمی‌خواهید معلوم شود از تور استفاده می‌کنید.</string>
+    <string name="chain_tor_over_aether_desc">Tor از داخل اتر وصل می‌شود و ممکن است استفاده از Tor را پنهان‌تر کند. وقتی Tor وصل نمی‌شود، این گزینه را امتحان کنید.</string>
 
     <string name="chain_tor_over_psiphon">تور روی سایفون</string>
-    <string name="chain_tor_over_psiphon_desc">تور از داخل سایفون به شبکه تور می‌رسد. وقتی هم تور بسته است و هم WARP.</string>
+    <string name="chain_tor_over_psiphon_desc">Tor از داخل سایفون وصل می‌شود. وقتی Tor و WARP هر دو بسته‌اند، این گزینه را امتحان کنید.</string>
 
     <string name="chain_tor_over_all">تور روی سایفون روی اتر</string>
-    <string name="chain_tor_over_all_desc">هر سه، روی هم. کندترین حالت برنامه و آخرین چیزی که می‌ماند برای امتحان کردن.</string>
+    <string name="chain_tor_over_all_desc">هر سه لایه روی هم؛ کندترین حالت و آخرین راه‌حل.</string>
 
     <!-- ========================================================= Psiphon == -->
-    <string name="psiphon_ready">سایفون آماده است. چیزی برای تنظیم کردن ندارید.</string>
-    <string name="psiphon_serverlist_missing">این نسخه لیست سرورهای سایفون را ندارد، پس سایفون اجرا نمی‌شود. اسکریپت scripts/fetch-psiphon-serverlist.sh را اجرا کنید و دوباره بیلد بگیرید.</string>
+    <string name="psiphon_ready">سایفون آماده است؛ تنظیمی لازم نیست.</string>
+    <string name="psiphon_serverlist_missing">این نسخه فهرست سرورهای سایفون را ندارد و سایفون اجرا نمی‌شود. scripts/fetch-psiphon-serverlist.sh را اجرا و دوباره بیلد کنید.</string>
 
     <string name="psiphon_region_label">کشور خروج سایفون</string>
     <string name="psiphon_region_auto">خودکار (سریع‌ترین سرور)</string>
-    <string name="psiphon_region_help">جایی که ترافیک شما از آن بیرون می‌آید. تا وقتی کشور خاصی لازم ندارید روی «خودکار» بگذارید: سایفون سریع‌ترین سرور در دسترس را انتخاب می‌کند و معمولاً همین درست است.</string>
-    <string name="psiphon_region_fallback">اگر کشوری که انتخاب کرده‌اید همین حالا سرور آزادی نداشته باشد، سایفون جای دیگری وصل می‌شود تا شما بدون اینترنت نمانید.</string>
+    <string name="psiphon_region_help">این کشورِ خروج ترافیک است. مگر کشور خاصی بخواهید، «خودکار» را نگه دارید؛ سایفون سریع‌ترین سرور در دسترس را انتخاب می‌کند.</string>
+    <string name="psiphon_region_fallback">اگر در کشور انتخابی سروری آزاد نباشد، سایفون به کشور دیگری وصل می‌شود.</string>
 
     <!-- ============================================================= Tor == -->
     <string name="tor_note">تور سه رله اضافه می‌کند: تأخیر خیلی بیشتر، و هیچ UDP‌ای؛ پس تماس تصویری و QUIC به TCP برمی‌گردند یا کار نمی‌کنند. اولین اتصال ممکن است چند دقیقه طول بکشد.</string>
@@ -63,9 +63,9 @@
 
     <string name="chain_group_single">یک هسته</string>
     <string name="chain_group_stacked">هسته‌های زنجیره‌ای</string>
-    <string name="chain_group_stacked_note">هر پرش اضافه، تأخیر بیشتری دارد. تنها وقتی سراغ این‌ها بروید که مسیر ساده مسدود شده باشد.</string>
+    <string name="chain_group_stacked_note">هر لایه تأخیر اضافه دارد. حالت‌های زنجیره‌ای را فقط وقتی به کار ببرید که مسیر ساده بسته باشد.</string>
 
-    <string name="chain_mode_unavailable">در دسترس نیست: هستهٔ %1$s در این نسخه وجود ندارد.</string>
+    <string name="chain_mode_unavailable">در دسترس نیست: هستهٔ %1$s در این بیلد وجود ندارد.</string>
 
     <string name="chain_tier_fast">سریع</string>
     <string name="chain_tier_moderate">کندتر</string>
@@ -74,7 +74,7 @@
     <string name="chain_psiphon_options">سایفون</string>
     <string name="chain_tor_options">تور</string>
 
-    <string name="tor_tradeoffs">تور کند است: اتصال اول معمولاً دو دقیقه یا بیشتر طول می‌کشد. همچنین UDP را منتقل نمی‌کند، پس تماس تصویری از طریق آن کار نمی‌کند.</string>
+    <string name="tor_tradeoffs">Tor کند است و اتصال اول اغلب دو دقیقه یا بیشتر طول می‌کشد. UDP را منتقل نمی‌کند؛ تماس تصویری کار نمی‌کند.</string>
     <string name="tor_exit_no_geoip">این نسخه پایگاه دادهٔ کشورهای تور را ندارد، پس نمی‌توان کشور خروج را انتخاب کرد.</string>
 
 </resources>
