@@ -35,7 +35,7 @@
     <string name="ip_both">هر دو</string>
 
     <string name="quick_reconnect">اتصال مجدد سریع</string>
-    <string name="quick_reconnect_desc">بعد از قطعی، سریع‌تر وصل شو</string>
+    <string name="quick_reconnect_desc">پس از قطعی، سریع دوباره وصل شوید</string>
     <string name="masque_http2">MASQUE روی HTTP/2</string>
     <string name="masque_http2_desc">استفاده از HTTP/2 برای انتقال MASQUE</string>
 
@@ -94,15 +94,15 @@
 
     <!-- Share VPN panel -->
     <string name="share_title">اشتراک‌گذاری VPN</string>
-    <string name="share_subtitle">استفاده از این گوشی به‌عنوان پراکسی برای لپ‌تاپ یا گوشی دیگر</string>
+    <string name="share_subtitle">از این گوشی به‌عنوان پراکسی برای دستگاهی دیگر استفاده کنید</string>
     <string name="share_toggle">اشتراک‌گذاری در این شبکه</string>
-    <string name="share_toggle_desc">یک پراکسی محلی باز می‌کند که دستگاه‌های روی همین وای‌فای یا هات‌اسپات می‌توانند استفاده کنند</string>
+    <string name="share_toggle_desc">یک پراکسی محلی برای دستگاه‌های روی همین وای‌فای یا هات‌اسپات باز می‌کند</string>
     <string name="share_http_label">پراکسی HTTP — در تنظیمات پراکسی سیستم وارد کنید</string>
     <string name="share_socks_label">پراکسی SOCKS5 — برای برنامه‌هایی که SOCKS پشتیبانی می‌کنند</string>
     <string name="share_copy">کپی آدرس</string>
     <string name="share_copied">آدرس کپی شد</string>
     <string name="share_need_connect">اول VPN را وصل کنید — اشتراک‌گذاری، دستگاه‌های دیگر را از طریق تونل همین گوشی عبور می‌دهد.</string>
-    <string name="share_starting">در حال راه‌اندازی اشتراک‌گذاری… اگر بیش از چند ثانیه طول کشید، سوییچ را خاموش و دوباره روشن کنید.</string>
+    <string name="share_starting">در حال راه‌اندازی اشتراک‌گذاری… اگر بیش از چند ثانیه طول کشید، اشتراک‌گذاری را خاموش و دوباره روشن کنید.</string>
     <string name="share_need_wifi">برای اشتراک‌گذاری به وای‌فای وصل شوید یا هات‌اسپات را روشن کنید.</string>
     <string name="share_howto">در دستگاه دیگر (روی همان شبکه)، تنظیمات پراکسی را باز کنید و یکی از این آدرس‌ها را وارد کنید:</string>
     <string name="share_warning">تا وقتی اشتراک‌گذاری روشن است، هر کسی در این شبکه می‌تواند از پراکسی استفاده کند. فقط در شبکه‌های مطمئن استفاده کنید.</string>
@@ -113,7 +113,7 @@
 
     <!-- مبهم‌سازی (امنزیا) -->
     <string name="noize_title">مبهم‌سازی (امنزیا)</string>
-    <string name="noize_desc">تزریق بسته‌های زائد و دست‌دادن جعلی ��ا DPI نتواند تونل را شناسایی کند</string>
+    <string name="noize_desc">داده‌های زائد و دست‌دادن‌های جعلی اضافه می‌کند تا شناسایی تونل برای DPI دشوارتر شود.</string>
     <string name="noize_off">خاموش</string>
     <string name="noize_light">سبک</string>
     <string name="noize_firewall">فایروال</string>
@@ -128,15 +128,15 @@
     <string name="endpoint_range">رنج دلخواه</string>
     <string name="manual_peer_label">اندپوینت (ip:port)</string>
     <string name="manual_peer_hint">مثال: 162.159.192.1:443</string>
-    <string name="manual_range_label">رنج(های) آی‌پی برای اسکن</string>
+    <string name="manual_range_label">رنج‌های آی‌پی برای اسکن</string>
     <string name="manual_range_hint">مثال: 8.6.112.0/24, 188.114.96.0/24</string>
-    <string name="manual_range_help">موتور فقط رنجی را که وارد می‌کنید اسکن می‌کند. فرمت‌های 8.6.112.x یا 8.6.112.0/24 یا یک آی‌پی تکی پذیرفته می‌شود. چند رنج را با ویرگول جدا کنید.</string>
+    <string name="manual_range_help">فقط رنج‌های واردشده اسکن می‌شوند: 8.6.112.x، 8.6.112.0/24 یا یک آی‌پی. چند رنج را با ویرگول جدا کنید.</string>
 
     <!-- تنظیم انتقال -->
     <string name="keepalive_label">Keepalive (ثانیه)</string>
     <string name="keepalive_default">پیش‌فرض</string>
     <string name="fragment_title">تکه‌تکه‌سازی TLS</string>
-    <string name="fragment_desc">تقسیم دست‌دادن TLS برای عبور از DPI</string>
+    <string name="fragment_desc">دست‌دادن TLS را برای عبور از DPI تقسیم می‌کند</string>
     <string name="ech_title">Encrypted Client Hello</string>
     <string name="ech_desc">پنهان‌کردن نام مقصد (SNI) از DPI</string>
     <string name="mtu_label">MTU</string>
@@ -144,14 +144,14 @@
 
     <!-- حالت پراکسی + اسپلیت تانل -->
     <string name="proxy_mode_title">حالت پراکسی (بدون VPN سیستمی)</string>
-    <string name="proxy_mode_desc">به‌جای عبور کل دستگاه، یک پراکسی محلی SOCKS5/HTTP اجرا می‌کند</string>
-    <string name="proxy_endpoints_hint">آدرس‌های ثابت — یکی از این‌ها را در تنظیمات پراکسی برنامهٔ موردنظر وارد کنید:</string>
+    <string name="proxy_mode_desc">به‌جای مسیریابی کل دستگاه، یک پراکسی محلی SOCKS5/HTTP اجرا می‌کند</string>
+    <string name="proxy_endpoints_hint">آدرس‌های ثابت ; یکی از آن‌ها را در تنظیمات پراکسی برنامهٔ دیگر وارد کنید:</string>
     <string name="proxy_socks_label">پراکسی SOCKS5</string>
     <string name="proxy_http_label">پراکسی HTTP</string>
     <string name="split_mode">تونل تفکیکی</string>
     <string name="split_off">خاموش</string>
-    <string name="split_include">فقط انتخاب‌شده‌ها</string>
-    <string name="split_exclude">به‌جز انتخاب‌شده‌ها</string>
+    <string name="split_include">فقط برنامه‌های انتخاب‌شده</string>
+    <string name="split_exclude">همهٔ برنامه‌ها به‌جز انتخاب‌شده‌ها</string>
     <string name="split_select_apps">انتخاب برنامه‌ها (%1$d)</string>
     <string name="apps_dialog_title">انتخاب برنامه‌ها</string>
     <string name="apps_search_hint">جستجوی برنامه‌ها</string>
@@ -167,8 +167,8 @@
     <string name="err_protocol_failed">این پروتکل حتی با مبهم‌سازی هم روی این شبکه متصل نشد. حالت هوشمند یا پروتکل دیگری را امتحان کنید.</string>
     <string name="err_selftest">تونل برقرار شد اما تست انتهابهانتها ناموفق بود. دوباره تلاش کنید.</string>
     <string name="section_reset">بازنشانی</string>
-    <string name="reset_settings">بازگرداندن همهٔ تنظیمات به پیش‌فرض</string>
-    <string name="reset_done">تنظیمات به حالت اولیه برگشت</string>
+    <string name="reset_settings">همهٔ تنظیمات را به پیش‌فرض بازنشانی کنید</string>
+    <string name="reset_done">تنظیمات به پیش‌فرض بازنشانی شد</string>
 
     <!-- آپدیت داخل برنامه (v1.2.1) -->
     <!-- ۱.۲.۲: رشته‌های به‌روزرسانی درون‌برنامه‌ای همراه با خود ماژول حذف شدند.
@@ -185,26 +185,26 @@
     <string name="team_auth_label">روش عضویت</string>
     <string name="team_auth_off">خاموش</string>
     <string name="team_auth_service">توکن سرویس</string>
-    <string name="team_auth_email">کد ایمیلی</string>
+    <string name="team_auth_email">کد ایمیل</string>
     <string name="team_auth_token">توکن عضویت</string>
-    <string name="team_auth_desc">اتصال به یک سازمان Cloudflare Zero Trust به‌جای WARP شخصی. برای استفادهٔ معمولی خاموش بماند.</string>
+    <string name="team_auth_desc">به یک سازمان Cloudflare Zero Trust به‌جای WARP شخصی متصل شوید. برای استفادهٔ معمول خاموش بماند.</string>
     <string name="team_label">نام تیم</string>
     <string name="team_hint">acme</string>
-    <string name="team_help">فقط نام؛ مثلاً acme یعنی acme.cloudflareaccess.com</string>
+    <string name="team_help">فقط نام را وارد کنید ; acme یعنی acme.cloudflareaccess.com.</string>
     <string name="access_id_label">شناسهٔ کلاینت</string>
     <string name="access_secret_label">کلید محرمانه</string>
     <string name="access_email_label">ایمیل سازمانی</string>
     <string name="access_token_label">توکن عضویت</string>
     <string name="access_secret_help">رمزنگاری‌شده با کلید سخت‌افزاری ذخیره می‌شود و هرگز به‌صورت آرگومان خط فرمان به هسته داده نمی‌شود.</string>
     <string name="gateway_title">استفاده از Gateway سازمان</string>
-    <string name="gateway_desc">ترافیک HTTP/HTTPS را از پروکسی فیلترینگ سازمان عبور می‌دهد. یک پرش اضافه می‌کند و سازمان می‌تواند مرور شما را ثبت کند؛ جز در صورت نیاز خاموش بماند.</string>
+    <string name="gateway_desc">ترافیک HTTP/HTTPS را از پروکسی فیلترینگ سازمان عبور می‌دهد؛ یک پرش اضافه می‌کند و سازمان می‌تواند مرور شما را ثبت کند. جز در صورت نیاز خاموش باشد.</string>
 
     <string name="section_routes">قواعد مسیریابی</string>
     <string name="route_block_label">هرگز وصل نشو (بلاک)</string>
     <string name="route_block_hint">ads.example.com, port:25</string>
-    <string name="route_direct_label">بدون تونل (مستقیم)</string>
+    <string name="route_direct_label">مستقیم (بدون تونل)</string>
     <string name="route_direct_hint">private, bank.example.com</string>
-    <string name="routes_help">با کاما جدا کنید. پشتیبانی از example.com و full: و keyword: و regexp: و 10.0.0.0/8 و port:25 و private. ابتدا بلاک بررسی می‌شود، سپس مستقیم.</string>
+    <string name="routes_help">با کاما جدا کنید. از example.com، full:، keyword:، regexp:، 10.0.0.0/8، port:25 و private پشتیبانی می‌شود. ابتدا بلاک و سپس مستقیم بررسی می‌شود.</string>
 
     <string name="dns_label">DNS داخل تونل</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
@@ -229,32 +229,32 @@
     <!-- 1.2.4 -->
     <string name="section_security">امنیت و پایداری</string>
     <string name="kill_switch_title">کیل سوییچ</string>
-    <string name="kill_switch_desc">در صورت قطع غیرمنتظره تونل، کل ترافیک مسدود می‌شود تا هیچ نشتی خارج از VPN رخ ندهد</string>
+    <string name="kill_switch_desc">با قطع غیرمنتظرهٔ تونل، کل ترافیک را مسدود می‌کند تا خارج از VPN نشتی رخ ندهد.</string>
     <string name="strict_kill_switch_title">کیل سوییچ سخت‌گیرانه</string>
-    <string name="strict_kill_switch_desc">حتی پس از قطع دستی هم مسدودسازی ادامه می‌یابد تا زمانی که خودتان آن را لغو کنید</string>
+    <string name="strict_kill_switch_desc">پس از قطع دستی، تا زمان خاموش‌کردن آن مسدودسازی ادامه دارد.</string>
     <string name="state_killswitch">کیل سوییچ فعال است - ترافیک مسدود شد</string>
     <string name="ipv6_leak_title">محافظت در برابر نشت IPv6</string>
-    <string name="ipv6_leak_desc">ترافیک IPv6 نیز از داخل تونل عبور می‌کند</string>
+    <string name="ipv6_leak_desc">ترافیک IPv6 را نیز از تونل عبور می‌دهد.</string>
     <string name="smart_reconnect_title">اتصال مجدد هوشمند</string>
-    <string name="smart_reconnect_desc">پس از تعداد مشخصی تلاش ناموفق، متوقف شده و خطا گزارش می‌شود</string>
-    <string name="reconnect_limit_label">حداکثر تلاش‌های اتصال مجدد</string>
+    <string name="smart_reconnect_desc">پس از رسیدن به سقف تلاش‌های ناموفق، متوقف می‌شود و خطا گزارش می‌کند.</string>
+    <string name="reconnect_limit_label">حداکثر تلاش‌هایاتصال مجدد</string>
     <string name="section_engine_tuning">تنظیمات پیشرفته هسته</string>
     <string name="fragment_size_label">بازه اندازه فرگمنت</string>
     <string name="fragment_size_hint">16-32</string>
     <string name="fragment_delay_label">بازه تاخیر فرگمنت (میلی‌ثانیه)</string>
     <string name="fragment_delay_hint">2-10</string>
-    <string name="no_data_check_title">بدون بررسی داده</string>
-    <string name="no_data_check_desc">رد کردن بررسی سرتاسری داده پس از اتصال</string>
+    <string name="no_data_check_title">رد کردن بررسی داده</string>
+    <string name="no_data_check_desc">بررسی سرتاسری دادهٔ هسته را پس از اتصال رد می‌کند.</string>
     <string name="tls_groups_label">گروه‌های TLS</string>
     <string name="tls_groups_hint">X25519:P-256</string>
     <string name="validate_secs_label">ثانیه‌های اعتبارسنجی (0 = پیش‌فرض)</string>
     <string name="reconnect_secs_label">ثانیه‌های اتصال مجدد (0 = پیش‌فرض)</string>
     <string name="secs_hint">0</string>
-    <string name="no_profile_retry_title">بدون تلاش مجدد پروفایل</string>
-    <string name="no_profile_retry_desc">عدم بازگشت به پروفایل‌های جایگزین WireGuard</string>
+    <string name="no_profile_retry_title">رد کردن جایگزینی پروفایل</string>
+    <string name="no_profile_retry_desc">به پروفایل‌های جایگزین WireGuard برنمی‌گردد.</string>
     <string name="core_log_level_label">سطح لاگ هسته</string>
     <string name="blocked_select_apps">اپ‌های مسدودشده (%1$d)</string>
-    <string name="blocked_apps_desc">اپ‌های مسدودشده هنگام روشن بودن VPN هیچ دسترسی به اینترنت ندارند. پل فیلتر داخلی فعال می‌شود.</string>
+    <string name="blocked_apps_desc">برنامه‌های مسدودشده هنگام روشن بودن VPN اینترنت ندارند. پل فیلتر داخلی فعال می‌شود.</string>
     <!-- 1.2.4 -->
     <string name="meta_protocol">پروتکل</string>
     <string name="meta_endpoint">اندپوینت</string>
