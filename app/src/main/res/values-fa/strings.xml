@@ -237,7 +237,7 @@
     <string name="ipv6_leak_desc">ترافیک IPv6 را نیز از تونل عبور می‌دهد.</string>
     <string name="smart_reconnect_title">اتصال مجدد هوشمند</string>
     <string name="smart_reconnect_desc">پس از رسیدن به سقف تلاش‌های ناموفق، متوقف می‌شود و خطا گزارش می‌کند.</string>
-    <string name="reconnect_limit_label">حداکثر تلاش‌هایاتصال مجدد</string>
+    <string name="reconnect_limit_label">حداکثر تلاش‌های اتصال مجدد</string>
     <string name="section_engine_tuning">تنظیمات پیشرفته هسته</string>
     <string name="fragment_size_label">بازه اندازه فرگمنت</string>
     <string name="fragment_size_hint">16-32</string>
