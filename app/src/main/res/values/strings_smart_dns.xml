@@ -2,27 +2,27 @@
 <!-- Smart DNS (sanctions bypass through a proxying resolver). -->
 <resources>
     <string name="section_smart_dns">Smart DNS</string>
-    <string name="section_smart_dns_note">Open sites that block Iran (Gemini, AI tools, developer services) through a DNS provider that proxies them abroad, while Aether keeps opening filtered sites.</string>
+    <string name="section_smart_dns_note">Use a proxying DNS provider for Iran-blocked sites (Gemini, AI tools, developer services); Aether still opens filtered sites.</string>
     <string name="smart_dns_title">Use Smart DNS</string>
-    <string name="smart_dns_desc">The device resolves names through the servers below instead of 1.1.1.1 / 8.8.8.8. Sites the provider covers see the provider\'s country; everything else keeps the WARP exit.</string>
-    <string name="smart_dns_chain_only">Only applies to the Aether-only chain. With Psiphon or Tor in front, the exit is already abroad and this setting is ignored.</string>
+    <string name="smart_dns_desc">Resolves names with these servers instead of 1.1.1.1 / 8.8.8.8. Covered sites see the provider\'s country; other traffic keeps the WARP exit.</string>
+    <string name="smart_dns_chain_only">Only for the Aether-only chain. With Psiphon or Tor in front, the exit is already abroad; this setting is ignored.</string>
     <string name="smart_dns_protocol_title">Protocol</string>
     <string name="smart_dns_protocol_plain">Plain DNS</string>
     <string name="smart_dns_protocol_doh">DNS over HTTPS</string>
     <string name="smart_dns_protocol_dot">DNS over TLS</string>
-    <string name="smart_dns_protocol_plain_desc">Classic DNS over UDP (TCP for large answers). Works with every provider, but it is unencrypted.</string>
-    <string name="smart_dns_protocol_doh_desc">Queries travel inside HTTPS and look like ordinary web traffic. The most robust choice when the provider offers it.</string>
-    <string name="smart_dns_protocol_dot_desc">Queries travel inside TLS on port 853. Encrypted and fast, but port 853 is easier to block.</string>
+    <string name="smart_dns_protocol_plain_desc">DNS over UDP (TCP for large answers). Works with every provider but is unencrypted.</string>
+    <string name="smart_dns_protocol_doh_desc">Queries use HTTPS and resemble web traffic. Use it when the provider supports it.</string>
+    <string name="smart_dns_protocol_dot_desc">Queries use TLS on port 853. Encrypted, but port 853 is easier to block.</string>
     <string name="smart_dns_servers_label">Smart DNS servers</string>
     <string name="smart_dns_servers_hint_plain">e.g. 203.0.113.53, 198.51.100.53</string>
     <string name="smart_dns_servers_hint_doh">e.g. https://dns.example.com/dns-query</string>
     <string name="smart_dns_servers_hint_dot">e.g. dns.example.com</string>
-    <string name="smart_dns_servers_help_plain">IPv4 addresses, optionally with a port (1.2.3.4:5353), separated by commas, spaces or new lines. Up to 8 servers, tried in order.</string>
-    <string name="smart_dns_servers_help_doh">HTTPS URLs or host names (the path defaults to /dns-query). Up to 8 servers, tried in order.</string>
-    <string name="smart_dns_servers_help_dot">Host names or IPv4 addresses, optionally with a port (default 853). Up to 8 servers, tried in order.</string>
-    <string name="smart_dns_servers_invalid">None of these is a usable server for the selected protocol. The default resolvers will be used until one is.</string>
-    <string name="smart_dns_route_auto">Queries go through the tunnel first. If the provider only answers Iranian or registered IPs, Aether switches to reaching it directly by itself, and sends the provider\'s proxies direct too.</string>
+    <string name="smart_dns_servers_help_plain">IPv4 addresses, optionally with port (1.2.3.4:5353), separated by commas, spaces, or new lines. Up to 8 servers, tried in order.</string>
+    <string name="smart_dns_servers_help_doh">HTTPS URLs or host names; path defaults to /dns-query. Up to 8 servers, tried in order.</string>
+    <string name="smart_dns_servers_help_dot">Host names or IPv4 addresses, optionally with port (default 853). Up to 8 servers, tried in order.</string>
+    <string name="smart_dns_servers_invalid">No usable server for this protocol. Default DNS resolvers are used until one is valid.</string>
+    <string name="smart_dns_route_auto">Queries use the tunnel first. If the provider answers only Iranian or registered IPs, Aether reaches it directly and sends its proxies directly too.</string>
     <string name="smart_dns_live_tunnel">Now: through the tunnel.</string>
-    <string name="smart_dns_live_direct">Now: direct (the provider rejected the tunnel). Proxy ranges detected: %1$d.</string>
-    <string name="smart_dns_private_dns_hint">Android\'s Private DNS (Settings, Network, Private DNS) must be Off or Automatic, otherwise the system ignores Smart DNS. IPv6 is not offered to apps while Smart DNS is on. Check a site the provider covers, not an IP checker, to confirm it works.</string>
+    <string name="smart_dns_live_direct">Now: direct (provider rejected the tunnel). Proxy ranges detected: %1$d.</string>
+    <string name="smart_dns_private_dns_hint">Android\'s Private DNS (Settings, Network, Private DNS) must be Off or Automatic; otherwise Smart DNS is ignored. IPv6 is unavailable to apps while it is on. Test with a covered site, not an IP checker.</string>
 </resources>
