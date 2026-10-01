@@ -6,7 +6,7 @@
 
     <string name="hub_lock_badge">Locked while connected</string>
 
-    <string name="hub_search_placeholder">Search MTU, kill switch, Tor…</string>
+    <string name="hub_search_placeholder">Search MTU, kill switch, or Tor…</string>
     <plurals name="hub_search_count">
         <item quantity="one">%d match</item>
         <item quantity="other">%d matches</item>

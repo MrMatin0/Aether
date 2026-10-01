@@ -6,14 +6,14 @@
          There is no decoy mode: its record was an empty ClientHello that a
          TLS 1.3 server cannot ignore (docs/SPOOFING.md). -->
     <string name="spoof_mode_title">ClientHello spoofing (MASQUE)</string>
-    <string name="spoof_mode_desc">Shapes the TLS handshake toward the edge so DPI has a harder time matching it. Off by default; each mode changes the bytes on the wire.</string>
+    <string name="spoof_mode_desc">Shapes the TLS handshake sent to the edge, making DPI matching harder. Off by default; each mode changes wire bytes.</string>
     <string name="spoof_mode_off">Off</string>
     <string name="spoof_mode_sni_split">SNI split</string>
     <string name="spoof_mode_stream_split">Stream split</string>
-    <string name="spoof_mode_needs_h2">Split modes only apply to the HTTP/2 carrier. Turn on "MASQUE over HTTP/2" on the Connection page to use them; on HTTP/3 the ClientHello sits inside QUIC frames the engine does not split. The custom SNI below works on both.</string>
-    <string name="spoof_mode_unsupported">Spoofing shapes a TLS ClientHello, which WireGuard and WARP×2 do not send. Pick a MASQUE transport on the Connection page to use it.</string>
+    <string name="spoof_mode_needs_h2">Split modes require the HTTP/2 carrier. Enable “MASQUE over HTTP/2”; HTTP/3 carries ClientHello in unsplit QUIC frames. Custom SNI works on both.</string>
+    <string name="spoof_mode_unsupported">Shapes TLS ClientHello; WireGuard and WARP×2 do not send one. Choose a MASQUE transport.</string>
     <string name="spoof_sni_label">Custom SNI</string>
     <string name="spoof_sni_hint">e.g. speed.cloudflare.com</string>
-    <string name="spoof_sni_help">Presented to the MASQUE edge instead of the default name, on HTTP/2 and HTTP/3. The edge certificate is pinned, so a wrong name cannot open you to interception - but the edge may also refuse it. Leave empty for the default. Applies from the next connect.</string>
+    <string name="spoof_sni_help">Sends a custom name to the MASQUE edge over HTTP/2 or HTTP/3. The pinned certificate prevents interception by a wrong name, but the edge may reject it. Blank uses the default; applies next connect.</string>
     <string name="hub_state_spoof_sni">SNI %1$s</string>
 </resources>

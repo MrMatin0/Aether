@@ -5,7 +5,7 @@
 
     <string name="hub_lock_badge">در حین اتصال قفل است</string>
 
-    <string name="hub_search_placeholder">جستجو: MTU، قطع اضطراری، Tor…</string>
+    <string name="hub_search_placeholder">جستجو: MTU، قطع اضطراری یا Tor…</string>
     <plurals name="hub_search_count">
         <item quantity="one">%d نتیجه</item>
         <item quantity="other">%d نتیجه</item>
