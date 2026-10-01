@@ -22,8 +22,9 @@ import studio.cluvex.aether.ui.components.LockBadge
  * `page.name` into the saved-state bundle, so renaming an entry here would
  * silently drop a user back to the hub after process death.
  *
- * What changed is how the hub PRESENTS them: four collapsible groups instead of
- * five flat ones, short panels in a sheet, dense editors as a full page.
+ * What changed is how the hub PRESENTS them: five intent-based collapsible
+ * groups (see [SettingsGroup]), short panels in a sheet, dense editors as a
+ * full page.
  */
 enum class SettingsPage {
     CONNECTION, CHAIN, BRIDGES, TRANSPORT,
@@ -88,9 +89,22 @@ enum class SettingsPage {
 internal enum class PagePresentation { PAGE, SHEET }
 
 /**
- * Four groups, named by what they do to your traffic. [summaryPages] are the
- * two destinations whose live values stand in for the whole group on its
- * collapsed card. A page must be in exactly one group (unit-tested).
+ * Five groups, ordered by how often people need them and named by what the
+ * user is trying to do. A page must be in exactly one group (unit-tested).
+ *
+ * - [CORE_TUNNEL]: how you connect, plus the saved setups that switch between
+ *   connection profiles.
+ * - [TRAFFIC]: what goes through the tunnel and who else may use it.
+ * - [SAFETY]: what keeps you protected: leak guards, the kill switch, and
+ *   connecting automatically so the phone is never left unprotected.
+ * - [APP]: the app itself, nothing that touches traffic.
+ * - [ADVANCED]: pages whose own copy says "change only when a connection keeps
+ *   failing", organization-only Zero Trust, and the destructive Reset, which
+ *   is deliberately the very last row of the hub.
+ *
+ * No group holds more than four rows, so every expanded card fits on one
+ * screen. [summaryPages] are the destinations whose live values stand in for
+ * the whole group on its collapsed card.
  */
 internal enum class SettingsGroup(
     val label: Int,
@@ -100,23 +114,28 @@ internal enum class SettingsGroup(
 ) {
     CORE_TUNNEL(
         R.string.hub_group_tunnel, Icons.Rounded.Hub,
-        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.BRIDGES, SettingsPage.TRANSPORT),
+        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.BRIDGES, SettingsPage.SETUPS),
         listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN),
     ),
-    ROUTING_SAFETY(
-        R.string.hub_group_routing_safety, Icons.Rounded.Shield,
-        listOf(SettingsPage.ROUTING, SettingsPage.SHARING, SettingsPage.SECURITY, SettingsPage.ORGANIZATION),
-        listOf(SettingsPage.SECURITY, SettingsPage.ROUTING),
+    TRAFFIC(
+        R.string.hub_group_traffic, Icons.Rounded.Route,
+        listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
+        listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
+    ),
+    SAFETY(
+        R.string.hub_group_safety, Icons.Rounded.VerifiedUser,
+        listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
+        listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
     ),
     APP(
         R.string.hub_group_app, Icons.Rounded.Smartphone,
-        listOf(SettingsPage.APPEARANCE, SettingsPage.AUTOMATION, SettingsPage.HISTORY, SettingsPage.SETUPS),
-        listOf(SettingsPage.APPEARANCE, SettingsPage.SETUPS),
+        listOf(SettingsPage.APPEARANCE, SettingsPage.HISTORY, SettingsPage.ABOUT),
+        listOf(SettingsPage.APPEARANCE, SettingsPage.ABOUT),
     ),
     ADVANCED(
         R.string.hub_group_advanced, Icons.Rounded.Tune,
-        listOf(SettingsPage.TUNING, SettingsPage.RESET, SettingsPage.ABOUT),
-        listOf(SettingsPage.TUNING, SettingsPage.ABOUT),
+        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING, SettingsPage.ORGANIZATION, SettingsPage.RESET),
+        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING),
     ),
 }
 
