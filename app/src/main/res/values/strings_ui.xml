@@ -44,35 +44,35 @@
     <string name="page_engine_title">Connection engine</string>
     <string name="page_engine_sub">Protocol, scanning, routing and anti-DPI</string>
     <string name="page_setups_title">Saved setups</string>
-    <string name="page_setups_sub">Keep what works, and move it between phones</string>
+    <string name="page_setups_sub">Save and transfer connection settings</string>
     <string name="page_automation_title">Automation &amp; history</string>
     <string name="page_automation_sub">Connecting by itself, and what is recorded</string>
     <string name="page_sharing_title">Share VPN</string>
     <string name="page_sharing_sub">Use this phone as a gateway for other devices</string>
     <string name="page_about_title">About</string>
-    <string name="page_about_sub">Versions, credits and links</string>
+    <string name="page_about_sub">Versions, project credits, and links</string>
 
     <!-- Appearance -->
     <string name="theme_title">Theme</string>
-    <string name="theme_subtitle">How the app is painted</string>
+    <string name="theme_subtitle">Choose how the app looks</string>
     <string name="theme_system">System</string>
     <string name="theme_dark">Dark</string>
     <string name="theme_light">Light</string>
-    <string name="theme_hint">System follows your phone. Pin it if your phone is set to something you did not choose, or if a bright screen is not welcome where you are.</string>
+    <string name="theme_hint">System uses your device theme. Choose Light or Dark for a fixed appearance.</string>
     <string name="language_subtitle">Applies immediately, on every screen</string>
 
     <!-- Engine settings -->
     <string name="section_connection">Connection</string>
-    <string name="section_connection_note">These decide whether you connect at all</string>
+    <string name="section_connection_note">Protocol and server selection</string>
     <string name="section_safety">Safety net</string>
     <string name="section_safety_note">What happens when the tunnel drops</string>
     <string name="section_routing_note">What goes through the tunnel, and what does not</string>
-    <string name="section_transport_note">Only touch these when a connection keeps failing</string>
-    <string name="section_routes_note">Per-destination rules. Block is checked first</string>
+    <string name="section_transport_note">Change these only when a connection keeps failing</string>
+    <string name="section_routes_note">Rules by destination. Block is checked first</string>
     <string name="section_zerotrust_note">For organization WARP. Leave off for normal use</string>
     <string name="section_security_note">Leak protection and restart limits</string>
     <string name="section_engine_tuning_note">Raw engine arguments. Defaults are usually right</string>
-    <string name="section_reset_note">The way back to a configuration that works</string>
+    <string name="section_reset_note">Restore default settings</string>
     <string name="settings_mode_basic">Essentials</string>
     <string name="settings_mode_full">Everything</string>
     <string name="settings_locked">Disconnect first to change these settings.</string>
@@ -80,12 +80,12 @@
 
     <!-- Saved setups -->
     <string name="presets_transfer_title">Move to another phone</string>
-    <string name="presets_transfer_sub">One block of text, with no passwords or tokens in it</string>
+    <string name="presets_transfer_sub">Transfer settings without passwords or tokens</string>
 
     <!-- Automation -->
     <string name="automation_system_title">System settings</string>
-    <string name="automation_system_sub">Two switches Android will not let an app touch</string>
-    <string name="history_count">%1$d recorded sessions</string>
+    <string name="automation_system_sub">Two switches Android does not let apps change</string>
+    <string name="history_count">Recorded sessions: %1$d</string>
 
     <!-- About -->
     <string name="about_build_title">This build</string>
