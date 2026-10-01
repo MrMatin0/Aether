@@ -17,7 +17,7 @@
 
     <!-- ======================================================== the modes == -->
     <string name="chain_aether">Aether</string>
-    <string name="chain_aether_desc">Aether alone;the fastest option. Start here; add hops only if it cannot connect.</string>
+    <string name="chain_aether_desc">Aether alone: the fastest option. Start here; add hops only if it cannot connect.</string>
 
     <string name="chain_psiphon">Psiphon</string>
     <string name="chain_psiphon_desc">Psiphon alone. Try it when your network blocks Cloudflare WARP.</string>
