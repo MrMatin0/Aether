@@ -9,7 +9,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,9 +35,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -50,6 +49,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -78,62 +78,59 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
-import studio.cluvex.aether.ui.components.ActionPill
-import studio.cluvex.aether.ui.components.AetherCard
 import studio.cluvex.aether.ui.components.ButtonMode
 import studio.cluvex.aether.ui.components.ConnectButton
-import studio.cluvex.aether.ui.components.ConnectionMeta
-import studio.cluvex.aether.ui.components.NoticeBar
-import studio.cluvex.aether.ui.components.SectionTitle
 import studio.cluvex.aether.ui.components.StatusHint
-import studio.cluvex.aether.ui.components.ValueRow
 import studio.cluvex.aether.ui.components.accentFor
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.AetherNumeral
-import studio.cluvex.aether.ui.theme.AetherNumeralLarge
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB, v2: "hero + route".
+ * THE CONNECTION TAB, v3: "one screen, no scroll".
  *
- * The previous pass got the information architecture right (one control, one
- * answer in words, progress as a track) and this one keeps all of it. What it
- * changes is the thing every modern VPN client puts at the centre of its home
- * screen and this one hid three taps deep: THE ROUTE.
+ * v2 got the pieces right (orbital hero, route card, live traffic) and then
+ * stacked them into a page taller than most phones, so the answer to "am I
+ * protected, and through what" was half below the fold. It also said several
+ * things two or three times. This pass keeps every fact and says each ONCE:
  *
- * WHAT IS NEW
+ *   REMOVED (each was a repeat of something still on screen)
+ *     - the state badge: the same word the orb carries, a third time with the
+ *       title. Its live region moved to the title, which is more specific.
+ *     - the phase card: its progress is the orb's ring AND the route path, its
+ *       step name is the title, and its clock is the orb's readout.
+ *     - the session bento: uptime is the orb's readout, protocol and exit
+ *       country are the route card's footer.
+ *     - the disconnected meta card: four tiles that could only ever read "-".
+ *     - the scan note and the "route locked" caption: the hint and the lock
+ *       glyph already say them (the caption is now the glyph's description).
  *
- *   1. ORBITAL HERO. The orb now sits inside a dashed orbit carrying one
- *      satellite per hop of the selected chain. Idle: parked and grey. Busy:
- *      fast orbit in the working tone. Connected: a slow, lit orbit. Error:
- *      frozen in the failure tone. It is drawn in one Canvas driven by one
- *      [Animatable] read in the draw phase - no recomposition per frame - and
- *      under reduced motion it is a still picture that still carries the state.
- *   2. ROUTE CARD. The chain drawn as nodes: You -> hops -> Internet. Nodes
- *      light up as the attempt earns phases (same arithmetic as the orb, see
- *      [litRouteNodes]), the segment being reached carries a travelling band,
- *      and once verified packets flow along the lit path. Under it: exit
- *      country, scan mode and protocol, in one line.
- *   3. ROUTE PICKER, IN PLACE. Tapping the card opens a bottom sheet with the
- *      seven chain modes, cost tiers, and unavailable cores disabled - the same
- *      rules as the Chain settings page. Only while Idle or Error: changing the
- *      route under a live tunnel is a trap, not a control.
- *   4. LIVE TRAFFIC. Two tiles, one per direction: the current rate, a
- *      log-scale level meter ([rateLevel]) and the session total. Read from
- *      [TrafficMonitor], which the service owns - no polling loop here.
- *   5. ONE CONTROL. The dock that duplicated the orb is gone from this tab
- *      (see HomeScreen); the orb is the control.
+ *   WHAT IS LEFT
+ *     hero (the orb in its orbit, smaller: 192dp at most, was 256dp)
+ *     title + hint
+ *     error strip            only on failure
+ *     route card             always
+ *     live traffic           only while verified
+ *     IP strip               the one IP readout, with latency once verified
+ *     privacy line           idle, Aether only, when there is room
+ *
+ * NO SCROLL. The tab measures the height it is given and picks a [HomeDensity];
+ * the hero takes whatever is left, and the orb sizes itself from the hero
+ * ([heroGeometry]). Landscape and wide windows split into two panes
+ * ([useTwoPane]), so a phone on its side or a tablet never stacks a column
+ * taller than the window. Font scale counts against the height budget, so
+ * large text trades decoration for room instead of clipping.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
- * [phaseProgress] and [formatSessionUptime] keep their exact contracts, because
- * the presentation tests own them; the state machine, the live-region
- * semantics, the battery contract of the latency probe and the reduced-motion
- * rules are the same ones the rest of the app obeys.
+ * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail]
+ * and [formatSessionUptime] keep their exact contracts; the state machine,
+ * the battery contract of the latency probe and the reduced-motion rules are
+ * the same ones the rest of the app obeys.
  */
 
 /** Engine, tunnel, verify, ready. */
@@ -142,10 +139,60 @@ private const val PHASE_COUNT = 4
 /** Twelve o'clock, like the orb's own arc. */
 private const val ORBIT_START = -90f
 
-private val HERO_HEIGHT = 300.dp
+/** The orbit (with its satellites) never grows past this, however tall the slot. */
+internal val HERO_ORBIT_MAX = 260.dp
+
+/** The orb on the home tab. Was 256dp, which crowded every other element off a phone. */
+internal val ORB_HOME_MAX = 192.dp
+
+/** Below this the word inside the orb stops fitting on one line. */
+internal val ORB_HOME_MIN = 96.dp
+
 private val NODE_SIZE = 34.dp
+private val NODE_SIZE_DENSE = 28.dp
 private val HOP_CHIP = 28.dp
 private val HOP_STEP = 16.dp
+
+/**
+ * How much the tab can show at once, from the height it is given.
+ *
+ *   ROOMY    everything, at full padding
+ *   COMPACT  everything but the privacy line, tighter padding
+ *   TIGHT    route card collapses to one row, the hint goes
+ *   MINIMAL  as TIGHT, and the traffic tiles go (the orb still says verified)
+ */
+internal enum class HomeDensity { ROOMY, COMPACT, TIGHT, MINIMAL }
+
+/**
+ * Larger text needs more height for the same content, so the budget shrinks
+ * with the font scale rather than letting a 1.3x user lose the bottom card.
+ */
+internal fun homeDensity(height: Dp, fontScale: Float = 1f): HomeDensity {
+    val budget = height / fontScale.coerceAtLeast(1f)
+    return when {
+        budget >= 600.dp -> HomeDensity.ROOMY
+        budget >= 480.dp -> HomeDensity.COMPACT
+        budget >= 380.dp -> HomeDensity.TIGHT
+        else -> HomeDensity.MINIMAL
+    }
+}
+
+/** Landscape phones and wide tablet windows: hero on one side, details on the other. */
+internal fun useTwoPane(width: Dp, height: Dp): Boolean = width >= 480.dp && width > height
+
+/**
+ * The orbit's box and the orb's diameter for a hero slot of [width] x [height].
+ *
+ * The orb is ~78% of the orbit so the satellites always ride OUTSIDE it, and
+ * both are clamped so a tablet does not get a dinner plate and a split-screen
+ * window still gets a tappable control.
+ */
+internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
+    val side = minOf(width, height).coerceAtLeast(0.dp)
+    val orbit = side.coerceAtMost(HERO_ORBIT_MAX)
+    val orb = (orbit * 0.78f).coerceIn(ORB_HOME_MIN, ORB_HOME_MAX)
+    return maxOf(orbit, orb) to orb
+}
 
 /**
  * Controller state -> the orb's four visual modes.
@@ -165,10 +212,7 @@ internal fun buttonMode(state: ConnectionState): ButtonMode = when {
  * Whether the orb takes a tap at all.
  *
  * Everything but teardown: busy stages must stay cancellable, and Error is a
- * retry. During Disconnecting the action label already refuses to offer connect
- * or cancel (see connectionActionLabel), but the orb itself still squeezed,
- * buzzed and fired a second disconnect - a control that said one thing and did
- * another.
+ * retry.
  */
 internal fun connectControlEnabled(state: ConnectionState): Boolean =
     state !is ConnectionState.Disconnecting
@@ -182,20 +226,15 @@ internal fun connectionStep(state: ConnectionState): Int? = when (state) {
 }
 
 /**
- * The fraction of the orb's ring a phase has earned.
- *
- * A completed phase is a completed segment, so the ring and the track below it
- * can never disagree about how far along the attempt is.
+ * The fraction of the orb's ring a phase has earned. A completed phase is a
+ * completed segment, so the ring and the route can never disagree.
  */
 internal fun phaseProgress(step: Int?): Float =
     if (step == null) 0f else ((step + 1).toFloat() / PHASE_COUNT).coerceIn(0f, 1f)
 
 /**
- * How many nodes of the route (You, every hop, Internet) are lit.
- *
- * Derived from [phaseProgress], so the route, the orb's ring and the phase
- * track all agree on how far the attempt got. "You" is always lit: the device
- * end of the route exists whether or not anything else does.
+ * How many nodes of the route (You, every hop, Internet) are lit. Derived from
+ * [phaseProgress]. "You" is always lit.
  */
 internal fun litRouteNodes(state: ConnectionState, step: Int?, count: Int): Int {
     if (count <= 0) return 0
@@ -206,12 +245,7 @@ internal fun litRouteNodes(state: ConnectionState, step: Int?, count: Int): Int 
     }
 }
 
-/**
- * A byte rate as a 0..1 level on a log scale from 1 KB/s to 50 MB/s.
- *
- * Log, not linear: on a linear scale a page load and an idle tunnel are both
- * "empty", and the meter would only ever move for a large download.
- */
+/** A byte rate as a 0..1 level on a log scale from 1 KB/s to 50 MB/s. */
 internal fun rateLevel(bytesPerSecond: Long): Float {
     if (bytesPerSecond <= 1024L) return 0f
     val level = log10(bytesPerSecond.toDouble() / 1024.0) / log10(51_200.0)
@@ -221,17 +255,8 @@ internal fun rateLevel(bytesPerSecond: Long): Float {
 /**
  * Where a travelling band of light starts, in a track that runs from [left] to
  * [left] + [width], [phase] (0..1) of the way through one sweep of a [band]-wide
- * light.
- *
- * The band travels the way PROGRESS travels: rightwards in English, leftwards in
- * Persian. The phase track used to mirror its segments for RTL but not the band
- * running inside the current one, so in Persian the light ran backwards - from
- * the phases still to come toward the finished ones - and "Establishing tunnel"
- * looked like it was unwinding. The route card's reaching link had its own,
- * correct, copy of this arithmetic; both now ask this one function.
- *
- * At phase 0 the band sits just outside the leading edge and at phase 1 just
- * past the trailing edge, so every sweep enters and leaves cleanly.
+ * light. Travels the way PROGRESS travels: rightwards in English, leftwards in
+ * Persian.
  */
 internal fun shimmerBandStart(
     left: Float,
@@ -247,10 +272,7 @@ internal fun shimmerBandStart(
 /**
  * The readout under the word inside the orb: the attempt clock while an attempt
  * is in flight, the session clock once the tunnel is verified, nothing at rest.
- *
- * The session clock used to live only in the session section, below the fold,
- * which is not where anyone looks to check that a tunnel is still up. No stamp
- * yet means no readout, rather than a placeholder in the hero.
+ * Now the ONLY clock on the tab.
  */
 internal fun orbDetail(
     state: ConnectionState,
@@ -270,7 +292,6 @@ internal fun ConnectionHome(
     connectedSince: Long?,
     ipInfo: IpEndpoint?,
     ipLoading: Boolean,
-    scrollState: ScrollState,
     editable: Boolean,
     onProfileChange: (ConnectionProfile) -> Unit,
     onToggleConnection: () -> Unit,
@@ -281,6 +302,7 @@ internal fun ConnectionHome(
     val tone = accentFor(mode)
     val step = connectionStep(state)
     val working = step != null
+    val fontScale = LocalDensity.current.fontScale
 
     // Restarted whenever the attempt starts or ends, and saved, so a rotation
     // mid-connect does not reset the clock the user is timing the wait with.
@@ -292,127 +314,85 @@ internal fun ConnectionHome(
     // the choice is no longer the user's to make, so the sheet goes away.
     LaunchedEffect(editable) { if (!editable) routeSheet = false }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .auroraWash(tone, accents.brand, breathing = state.isBusy)
-            .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp),
-    ) {
-        Spacer(Modifier.height(12.dp))
-        StatusRail(state, tone, connectedSince)
+    // Manual-only latency: a stale reading must not survive the session. The
+    // old disconnected meta card did this; it is gone, the contract is not.
+    val verified = state is ConnectionState.Connected
+    LaunchedEffect(verified) { if (!verified) PingMonitor.reset() }
 
-        OrbitalHero(mode = mode, chain = profile.chain, tone = tone) {
-            // Read here, in the hero's own scope: once the tunnel is verified
-            // this ticks every second, and the tick should recompose the orb -
-            // not the whole tab around it.
-            val sessionClock = tickingElapsed(connectedSince, state is ConnectionState.Connected)
-            // THE CONTROL. Not a status graphic with a button somewhere else.
-            ConnectButton(
-                mode = mode,
-                onClick = onToggleConnection,
-                stateLabel = stateWord(state),
-                actionLabel = stringResource(connectionActionLabel(state)),
-                detail = orbDetail(state, connectedSince, elapsed, sessionClock),
-                progress = phaseProgress(step),
-                enabled = connectControlEnabled(state),
-            )
-        }
-
-        Text(
-            connectionTitle(state),
-            Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(8.dp))
-        // StatusHint, not a bare Text: it cross-fades between states and already
-        // collapses to an instant swap under reduced motion.
-        StatusHint(connectionHint(state, profile))
-        Spacer(Modifier.height(24.dp))
-
-        if (step != null) {
-            PhaseWave(step, tone, elapsed)
-            // Only while an endpoint is still being found, and only when there
-            // IS an endpoint scan - a Psiphon or Tor-only chain has none.
-            if (step <= 1 && profile.chain.usesAether && !profile.hasManualPeer) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    stringResource(R.string.passage_scan_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        if (state is ConnectionState.Error) {
-            // The engine's own words, not a paraphrase, and one route to the log
-            // line that produced them.
-            NoticeBar(
-                text = state.message,
-                tone = accents.failed,
-                icon = Icons.Rounded.Warning,
-            )
-            Spacer(Modifier.height(12.dp))
-            ActionPill(
-                label = stringResource(R.string.passage_see_error),
-                onClick = onOpenDiagnostics,
-                modifier = Modifier.fillMaxWidth(),
-                icon = Icons.Rounded.Terminal,
-            )
-            Spacer(Modifier.height(16.dp))
-        }
-
-        RouteCard(
-            profile = profile,
+    val hero: @Composable (Modifier) -> Unit = { slot ->
+        HomeHero(
             state = state,
-            step = step,
-            ipInfo = ipInfo,
+            mode = mode,
+            chain = profile.chain,
             tone = tone,
-            editable = editable,
-            onOpen = { routeSheet = true },
+            connectedSince = connectedSince,
+            elapsed = elapsed,
+            step = step,
+            onToggleConnection = onToggleConnection,
+            modifier = slot,
         )
-        Spacer(Modifier.height(16.dp))
+    }
 
-        if (state is ConnectionState.Connected) {
-            LiveTraffic(connectedSince)
-            Spacer(Modifier.height(24.dp))
-            SectionTitle(stringResource(R.string.passage_session))
-            SessionBento(
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = homeDensity(maxHeight, fontScale)
+        val twoPane = useTwoPane(maxWidth, maxHeight)
+        val details: @Composable (Modifier) -> Unit = { slot ->
+            HomeDetails(
+                state = state,
+                profile = profile,
+                step = step,
+                ipInfo = ipInfo,
+                ipLoading = ipLoading,
                 connectedSince = connectedSince,
-                ipInfo = ipInfo,
-                ipLoading = ipLoading,
                 tone = tone,
+                editable = editable,
+                density = density,
+                onOpenRoute = { routeSheet = true },
+                onOpenDiagnostics = onOpenDiagnostics,
+                modifier = slot,
             )
-            Spacer(Modifier.height(16.dp))
-        } else if (step == null && state !is ConnectionState.Disconnecting) {
-            // Disconnected or failed: the same question, answered the other way
-            // round - where the internet currently thinks you are.
-            //
-            // Not while tearing down: the IP probe is parked in that window
-            // (ipInfo null, not loading), so the card flashed "unavailable" for
-            // exactly the moment the user is waiting to see their own IP come
-            // back.
-            ConnectionMeta(
-                connected = false,
-                connectedSince = null,
-                ipInfo = ipInfo,
-                ipLoading = ipLoading,
-            )
-            Spacer(Modifier.height(16.dp))
         }
 
-        // The WARP disclosure is about the WARP exit network. With Psiphon or Tor
-        // in the chain it would be describing somebody else's network.
-        if (state is ConnectionState.Idle && profile.chain == ChainMode.AETHER) {
-            NoticeBar(
-                text = stringResource(R.string.passage_privacy),
-                tone = accents.neutral,
-                icon = Icons.Rounded.Lock,
-            )
+        if (twoPane) {
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .auroraWash(tone, accents.brand, breathing = state.isBusy, focusX = 0.27f, focusY = 0.45f)
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    Modifier.weight(1f).fillMaxHeight(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    hero(Modifier.weight(1f).fillMaxWidth())
+                    HomeHeadline(state, profile, showHint = density != HomeDensity.MINIMAL)
+                    Spacer(Modifier.height(12.dp))
+                }
+                Spacer(Modifier.width(24.dp))
+                Box(
+                    Modifier.weight(1f).fillMaxHeight(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    details(Modifier.widthIn(max = 520.dp).fillMaxWidth())
+                }
+            }
+        } else {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .auroraWash(tone, accents.brand, breathing = state.isBusy, focusX = 0.5f, focusY = 0.28f)
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                hero(Modifier.weight(1f).fillMaxWidth())
+                HomeHeadline(state, profile, showHint = density <= HomeDensity.COMPACT)
+                Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 20.dp else 12.dp))
+                // Capped so a portrait tablet gets cards, not banners.
+                details(Modifier.widthIn(max = 560.dp).fillMaxWidth())
+                Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 16.dp else 10.dp))
+            }
         }
-        Spacer(Modifier.height(36.dp))
     }
 
     if (routeSheet) {
@@ -427,20 +407,286 @@ internal fun ConnectionHome(
     }
 }
 
+/** The orb in its orbit, sized from whatever height the layout left for it. */
+@Composable
+private fun HomeHero(
+    state: ConnectionState,
+    mode: ButtonMode,
+    chain: ChainMode,
+    tone: Color,
+    connectedSince: Long?,
+    elapsed: String,
+    step: Int?,
+    onToggleConnection: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val (orbit, orb) = heroGeometry(maxWidth, maxHeight)
+        OrbitalHero(
+            mode = mode,
+            chain = chain,
+            tone = tone,
+            orb = orb,
+            modifier = Modifier.size(orbit),
+        ) {
+            // Read here, in the hero's own scope: once the tunnel is verified
+            // this ticks every second, and the tick should recompose the orb -
+            // not the whole tab around it.
+            val sessionClock = tickingElapsed(connectedSince, state is ConnectionState.Connected)
+            ConnectButton(
+                mode = mode,
+                onClick = onToggleConnection,
+                stateLabel = stateWord(state),
+                actionLabel = stringResource(connectionActionLabel(state)),
+                detail = orbDetail(state, connectedSince, elapsed, sessionClock),
+                progress = phaseProgress(step),
+                enabled = connectControlEnabled(state),
+                diameter = orb,
+            )
+        }
+    }
+}
+
 /**
- * THE ATMOSPHERE: a pool of the state colour behind the hero, and a faint pool
- * of the brand colour low on the page so the surface has depth rather than a
- * single spotlight.
- *
- * Applied BEFORE [verticalScroll] on purpose, so it is painted in viewport
- * coordinates and stays put while the content moves over it.
- *
- * Cost: one [Animatable] read inside [drawBehind], which invalidates the draw
- * phase and nothing else. Reduced motion pins it half-lit and steady rather than
- * removing it, because the colour itself is information.
+ * The title and the sentence under it. The title carries the live region the
+ * state badge used to: it is the most specific words on screen for the state.
  */
 @Composable
-private fun Modifier.auroraWash(tone: Color, secondary: Color, breathing: Boolean): Modifier {
+private fun HomeHeadline(state: ConnectionState, profile: ConnectionProfile, showHint: Boolean) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            connectionTitle(state),
+            Modifier
+                .fillMaxWidth()
+                .semantics { liveRegion = LiveRegionMode.Polite },
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (showHint) {
+            Spacer(Modifier.height(4.dp))
+            StatusHint(connectionHint(state, profile))
+        }
+    }
+}
+
+/** Everything below the hero, in one column, each fact once. */
+@Composable
+private fun HomeDetails(
+    state: ConnectionState,
+    profile: ConnectionProfile,
+    step: Int?,
+    ipInfo: IpEndpoint?,
+    ipLoading: Boolean,
+    connectedSince: Long?,
+    tone: Color,
+    editable: Boolean,
+    density: HomeDensity,
+    onOpenRoute: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accents = LocalAetherAccents.current
+    val gap = if (density == HomeDensity.ROOMY) 12.dp else 8.dp
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(gap)) {
+        if (state is ConnectionState.Error) {
+            // The engine's own words, and one route to the log line behind them.
+            ErrorStrip(state.message, accents.failed, onOpenDiagnostics)
+        }
+
+        RouteCard(
+            profile = profile,
+            state = state,
+            step = step,
+            ipInfo = ipInfo,
+            tone = tone,
+            editable = editable,
+            expanded = density <= HomeDensity.COMPACT,
+            dense = density != HomeDensity.ROOMY,
+            onOpen = onOpenRoute,
+        )
+
+        if (state is ConnectionState.Connected) {
+            if (density != HomeDensity.MINIMAL) LiveTraffic(connectedSince)
+            IpStrip(
+                connected = true,
+                connectedSince = connectedSince,
+                ipInfo = ipInfo,
+                ipLoading = ipLoading,
+                tone = tone,
+            )
+        } else if (step == null && state !is ConnectionState.Disconnecting) {
+            // Disconnected or failed: where the internet currently thinks you
+            // are. Not while tearing down: the IP probe is parked in that window
+            // and the strip would flash "unavailable".
+            IpStrip(
+                connected = false,
+                connectedSince = null,
+                ipInfo = ipInfo,
+                ipLoading = ipLoading,
+                tone = tone,
+            )
+        }
+
+        // The WARP disclosure is about the WARP exit network; with Psiphon or
+        // Tor in the chain it would describe somebody else's network.
+        if (density == HomeDensity.ROOMY && state is ConnectionState.Idle && profile.chain == ChainMode.AETHER) {
+            PrivacyLine()
+        }
+    }
+}
+
+/** A failure in one row: the engine's message, and the way to its log line. */
+@Composable
+private fun ErrorStrip(message: String, tone: Color, onOpenDiagnostics: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = tone.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, tone.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Warning, null, Modifier.size(18.dp), tone)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                message,
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(4.dp))
+            TextButton(
+                onClick = onOpenDiagnostics,
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Icon(Icons.Rounded.Terminal, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    stringResource(R.string.passage_see_error),
+                    Modifier.widthIn(max = 140.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** The privacy disclosure as one quiet line instead of a full notice card. */
+@Composable
+private fun PrivacyLine() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Rounded.Lock,
+            null,
+            Modifier.size(14.dp),
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            stringResource(R.string.passage_privacy),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * THE ONE IP READOUT. Your own IP at rest, the exit IP once verified - with the
+ * latency chip at its end, because latency is a property of that same exit.
+ * Monospaced and pinned LTR: in Persian an IP otherwise renders reordered.
+ */
+@Composable
+private fun IpStrip(
+    connected: Boolean,
+    connectedSince: Long?,
+    ipInfo: IpEndpoint?,
+    ipLoading: Boolean,
+    tone: Color,
+) {
+    val accents = LocalAetherAccents.current
+    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
+    val value = when {
+        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
+        ipInfo != null -> ipInfo.ip
+        else -> stringResource(R.string.ip_unavailable)
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = accents.card,
+        border = BorderStroke(1.dp, accents.cardBorder),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconChip(
+                Icons.Rounded.Public,
+                if (connected) tone else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .semantics(mergeDescendants = true) { },
+            ) {
+                Text(
+                    stringResource(if (connected) R.string.ip_server_label else R.string.ip_your_label),
+                    style = AetherMetaLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (flag.isNotBlank()) {
+                        Text(flag, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        value,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = AetherMono,
+                            textDirection = TextDirection.Ltr,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (connected) {
+                Spacer(Modifier.width(8.dp))
+                LatencyChip(connectedSince)
+            }
+        }
+    }
+}
+
+/**
+ * THE ATMOSPHERE: a pool of the state colour behind the hero ([focusX],
+ * [focusY] as fractions of the tab), and a faint pool of the brand colour low
+ * on the page. One [Animatable] read inside [drawBehind]: draw phase only.
+ */
+@Composable
+private fun Modifier.auroraWash(
+    tone: Color,
+    secondary: Color,
+    breathing: Boolean,
+    focusX: Float,
+    focusY: Float,
+): Modifier {
     val reduced = LocalReducedMotion.current
     val pulse = remember { Animatable(0.5f) }
     LaunchedEffect(breathing, reduced) {
@@ -459,8 +705,8 @@ private fun Modifier.auroraWash(tone: Color, secondary: Color, breathing: Boolea
     }
     return this.drawBehind {
         val t = pulse.value
-        val center = Offset(size.width / 2f, size.height * 0.22f)
-        val radius = (size.width * (0.95f + 0.08f * t)).coerceAtLeast(1f)
+        val center = Offset(size.width * focusX, size.height * focusY)
+        val radius = (size.minDimension * (0.95f + 0.08f * t)).coerceAtLeast(1f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(tone.copy(alpha = 0.12f + 0.07f * t), Color.Transparent),
@@ -471,7 +717,7 @@ private fun Modifier.auroraWash(tone: Color, secondary: Color, breathing: Boolea
             center = center,
         )
         val low = Offset(size.width * 0.88f, size.height * 0.92f)
-        val lowRadius = (size.width * 0.75f).coerceAtLeast(1f)
+        val lowRadius = (size.minDimension * 0.75f).coerceAtLeast(1f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(secondary.copy(alpha = 0.06f), Color.Transparent),
@@ -485,18 +731,17 @@ private fun Modifier.auroraWash(tone: Color, secondary: Color, breathing: Boolea
 }
 
 /**
- * The orb, in orbit.
- *
- * One satellite per hop of the selected chain, so the hero already says how
- * many cores this session is built from before anything is read. Decorative to
- * a screen reader: the orb carries the state description, the route card the
- * path.
+ * The orb, in orbit. One satellite per hop of the selected chain. Decorative to
+ * a screen reader. When the slot is so small the orbit would cut through the
+ * orb, the orbit is simply not drawn.
  */
 @Composable
 private fun OrbitalHero(
     mode: ButtonMode,
     chain: ChainMode,
     tone: Color,
+    orb: Dp,
+    modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val reduced = LocalReducedMotion.current
@@ -518,12 +763,7 @@ private fun OrbitalHero(
     val satellites = chain.hops.size.coerceAtLeast(1)
     val live = mode == ButtonMode.CONNECTED || mode == ButtonMode.BUSY || mode == ButtonMode.ERROR
 
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(HERO_HEIGHT),
-        contentAlignment = Alignment.Center,
-    ) {
+    Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(
             Modifier
                 .matchParentSize()
@@ -531,7 +771,7 @@ private fun OrbitalHero(
         ) {
             val centre = Offset(size.width / 2f, size.height / 2f)
             val radius = size.minDimension / 2f - 8.dp.toPx()
-            if (radius <= 0f) return@Canvas
+            if (radius < orb.toPx() / 2f + 6.dp.toPx()) return@Canvas
             drawCircle(
                 color = (if (live) tone else track).copy(alpha = if (live) 0.28f else 0.35f),
                 radius = radius,
@@ -552,8 +792,8 @@ private fun OrbitalHero(
                     centre.y + radius * sin(radians).toFloat(),
                 )
                 val dot = if (live) tone else track
-                drawCircle(dot.copy(alpha = 0.20f), radius = 8.dp.toPx(), center = point)
-                drawCircle(dot, radius = 3.5.dp.toPx(), center = point)
+                drawCircle(dot.copy(alpha = 0.20f), radius = 7.dp.toPx(), center = point)
+                drawCircle(dot, radius = 3.dp.toPx(), center = point)
             }
         }
         content()
@@ -561,87 +801,10 @@ private fun OrbitalHero(
 }
 
 /**
- * The top rail: what the connection IS, and how good it is.
- *
- * The badge is still the first thing a screen reader reaches and still the only
- * element announced on every state change. The latency chip is a separate node
- * on purpose - it changes on its own schedule, and it must not make the state
- * badge re-announce itself every time a probe lands.
- */
-@Composable
-private fun StatusRail(state: ConnectionState, tone: Color, connectedSince: Long?) {
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        StateBadge(state, tone)
-        Spacer(Modifier.weight(1f))
-        if (state is ConnectionState.Connected) LatencyChip(connectedSince)
-    }
-}
-
-/** The state badge: a breathing dot while work is in flight, steady otherwise. */
-@Composable
-private fun StateBadge(state: ConnectionState, tone: Color) {
-    val reduced = LocalReducedMotion.current
-    val busy = state.isBusy
-    val blink = remember { Animatable(1f) }
-    LaunchedEffect(busy, reduced) {
-        if (reduced || !busy) {
-            blink.snapTo(1f)
-            return@LaunchedEffect
-        }
-        blink.snapTo(0.30f)
-        blink.animateTo(
-            1f,
-            infiniteRepeatable(
-                animation = tween(900, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse,
-            ),
-        )
-    }
-    Surface(
-        color = stateWash(state),
-        contentColor = tone,
-        shape = MaterialTheme.shapes.small,
-        border = BorderStroke(1.dp, tone.copy(alpha = 0.22f)),
-    ) {
-        Row(
-            Modifier
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .drawBehind {
-                        val alpha = blink.value
-                        drawCircle(
-                            color = tone.copy(alpha = alpha * 0.28f),
-                            radius = size.minDimension / 2f,
-                        )
-                        drawCircle(
-                            color = tone.copy(alpha = alpha),
-                            radius = size.minDimension / 3.2f,
-                        )
-                    },
-            )
-            Spacer(Modifier.width(9.dp))
-            Text(
-                stringResource(connectionStatusLabel(state)),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-    }
-}
-
-/**
- * Live latency, where the state is.
+ * Live latency, at the end of the IP strip.
  *
  * BATTERY CONTRACT: no polling loop. A session gets ONE automatic measurement a
- * second and a bit after it comes up, and one more per tap. Said three ways: a
- * number, a colour, and signal bars.
+ * second and a bit after it comes up, and one more per tap.
  */
 @Composable
 private fun LatencyChip(connectedSince: Long?) {
@@ -687,6 +850,7 @@ private fun LatencyChip(connectedSince: Long?) {
                     onClickLabel = stringResource(R.string.meta_latency_test),
                     role = Role.Button,
                 ) { scope.launch { PingMonitor.pingOnce(viaTunnel = true) } }
+                .heightIn(min = 36.dp)
                 .padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -742,11 +906,8 @@ private fun routeNodes(chain: ChainMode): List<RouteNode> {
 }
 
 /**
- * The exit, as a flag and a code.
- *
- * Live country once verified; otherwise the country the user asked Tor or
- * Psiphon for; otherwise what actually happens - Cloudflare's edge for Aether
- * alone, the core's own choice for everything else.
+ * The exit, as a flag and a code: live country once verified; otherwise the
+ * country asked of Tor or Psiphon; otherwise Cloudflare's edge / auto.
  */
 @Composable
 private fun exitReadout(
@@ -771,12 +932,13 @@ private fun exitReadout(
 }
 
 /**
- * THE ROUTE CARD: which cores carry this session, drawn as a path, plus the
- * three facts that explain a wait (exit, scan mode, protocol).
+ * THE ROUTE CARD: which cores carry this session, plus exit, scan mode and
+ * protocol - the only place those three appear on the tab.
  *
- * The whole card is the button that opens the route picker, and it is only a
- * button while the profile is editable. Locked, it says why instead of
- * silently ignoring the tap.
+ * [expanded] draws the path as nodes; collapsed it is one row with the exit
+ * and protocol as its subtitle, for short windows. [dense] tightens padding.
+ * The whole card opens the route picker, only while the profile is editable;
+ * locked, the lock glyph carries the reason for TalkBack.
  */
 @Composable
 private fun RouteCard(
@@ -786,6 +948,8 @@ private fun RouteCard(
     ipInfo: IpEndpoint?,
     tone: Color,
     editable: Boolean,
+    expanded: Boolean,
+    dense: Boolean,
     onOpen: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
@@ -794,6 +958,7 @@ private fun RouteCard(
     val nodes = routeNodes(chain)
     val lit = litRouteNodes(state, step, nodes.size)
     val (flag, exit) = exitReadout(profile, state, ipInfo)
+    val pad = if (dense) 14.dp else 18.dp
 
     val tech = buildList {
         if (chain.usesAether) {
@@ -826,100 +991,99 @@ private fun RouteCard(
                 .background(
                     Brush.verticalGradient(listOf(tone.copy(alpha = 0.09f), Color.Transparent)),
                 )
-                .padding(18.dp),
+                .padding(horizontal = pad, vertical = if (expanded) pad else 10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconChip(Icons.Rounded.Layers, tone)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.conn_route_title),
-                        style = AetherMetaLabel,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
+                    if (expanded) {
+                        Text(
+                            stringResource(R.string.conn_route_title),
+                            style = AetherMetaLabel,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                     Text(
                         chainLabel(chain),
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (!expanded) {
+                        // Collapsed: the footer becomes the subtitle.
+                        Text(
+                            listOf("$flag $exit", tech).filter { it.isNotBlank() }.joinToString(" \u00B7 "),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(8.dp))
                 TierBadge(chain)
                 Spacer(Modifier.width(8.dp))
                 Icon(
                     if (editable) Icons.Rounded.KeyboardArrowDown else Icons.Rounded.Lock,
-                    contentDescription = null,
+                    contentDescription = if (editable) null else stringResource(R.string.conn_route_locked),
                     modifier = Modifier.size(if (editable) 22.dp else 16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            Spacer(Modifier.height(18.dp))
-            RoutePath(
-                nodes = nodes,
-                lit = lit,
-                tone = tone,
-                flowing = state.isConnected,
-                reaching = step != null,
-                broken = state is ConnectionState.Error,
-            )
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider(color = accents.cardBorder)
-            Spacer(Modifier.height(12.dp))
+            if (expanded) {
+                Spacer(Modifier.height(if (dense) 12.dp else 18.dp))
+                RoutePath(
+                    nodes = nodes,
+                    lit = lit,
+                    tone = tone,
+                    flowing = state.isConnected,
+                    reaching = step != null,
+                    broken = state is ConnectionState.Error,
+                    nodeSize = if (dense) NODE_SIZE_DENSE else NODE_SIZE,
+                )
+                Spacer(Modifier.height(if (dense) 10.dp else 14.dp))
+                HorizontalDivider(color = accents.cardBorder)
+                Spacer(Modifier.height(if (dense) 8.dp else 12.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    stringResource(R.string.conn_exit_label),
-                    style = AetherMetaLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(flag, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    exit,
-                    style = MaterialTheme.typography.labelLarge.copy(textDirection = TextDirection.Ltr),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    tech,
-                    Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.End,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            if (!editable) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.conn_route_locked),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(R.string.conn_exit_label),
+                        style = AetherMetaLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(flag, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        exit,
+                        style = MaterialTheme.typography.labelLarge.copy(textDirection = TextDirection.Ltr),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        tech,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * The route as nodes and links.
- *
- *   done link      solid, and once verified two packets travel along it
- *   reaching link  dashed, with a band of light moving toward the next node
- *   broken link    dashed in the failure tone, where the attempt stopped
- *   future link    dashed and dim
- *
- * RTL: the Row already mirrors the nodes, and each link mirrors its own motion
- * from the draw scope's layout direction, so in Persian traffic flows right to
- * left toward the Internet node. One content description reads the whole path.
+ * The route as nodes and links: done (solid, packets flow once verified),
+ * reaching (dashed, travelling band), broken (dashed, failure tone), future
+ * (dashed, dim). RTL mirrors from the draw scope's layout direction.
  */
 @Composable
 private fun RoutePath(
@@ -929,6 +1093,7 @@ private fun RoutePath(
     flowing: Boolean,
     reaching: Boolean,
     broken: Boolean,
+    nodeSize: Dp,
 ) {
     val reduced = LocalReducedMotion.current
     val accents = LocalAetherAccents.current
@@ -960,7 +1125,7 @@ private fun RoutePath(
             ) {
                 Box(
                     Modifier
-                        .size(NODE_SIZE)
+                        .size(nodeSize)
                         .clip(CircleShape)
                         .background(if (on) tone.copy(alpha = 0.16f) else accents.card)
                         .border(
@@ -973,11 +1138,11 @@ private fun RoutePath(
                     Icon(
                         node.icon,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(nodeSize * 0.47f),
                         tint = if (on) tone else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(
                     node.label,
                     Modifier.fillMaxWidth(),
@@ -999,7 +1164,7 @@ private fun RoutePath(
                 Canvas(
                     Modifier
                         .weight(1f)
-                        .height(NODE_SIZE),
+                        .height(nodeSize),
                 ) {
                     val y = size.height / 2f
                     val rtl = layoutDirection == LayoutDirection.Rtl
@@ -1026,8 +1191,6 @@ private fun RoutePath(
                             )
                             if (!reduced) {
                                 val band = size.width * 0.5f
-                                // Same arithmetic, and so the same direction,
-                                // as the phase track's band.
                                 val left = shimmerBandStart(0f, size.width, band, flow.value, rtl)
                                 drawLine(
                                     brush = Brush.horizontalGradient(
@@ -1041,8 +1204,6 @@ private fun RoutePath(
                                     cap = StrokeCap.Round,
                                 )
                             } else {
-                                // No motion: half a link in the tone says "this
-                                // one is being reached" just as clearly.
                                 val half = size.width / 2f
                                 drawLine(
                                     tone,
@@ -1078,10 +1239,7 @@ private fun IconChip(icon: ImageVector, tint: Color) {
     }
 }
 
-/**
- * Fast / slower / slowest, from the hops themselves - the same ordering the
- * Chain settings page uses, so a mode never has two different price tags.
- */
+/** Fast / slower / slowest, from the hops themselves - same as the Chain page. */
 @Composable
 private fun TierBadge(mode: ChainMode) {
     val accents = LocalAetherAccents.current
@@ -1115,13 +1273,8 @@ private fun TierBadge(mode: ChainMode) {
 // --------------------------------------------------------------- route sheet --
 
 /**
- * The route picker, where the route is.
- *
- * Same rules as the Chain settings page: one radio group for all seven modes,
- * modes whose core is missing from this build are dimmed AND unselectable with
- * the missing core named, and every mode carries its cost tier. Per-core
- * options (exit countries, bridges) stay on the settings page - this sheet
- * answers "which path", not "how is each hop tuned".
+ * The route picker, where the route is. Same rules as the Chain settings page.
+ * The sheet itself still scrolls: it is a modal list, not the home tab.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1289,10 +1442,9 @@ private fun HopStack(mode: ChainMode, tint: Color, alpha: Float) {
 // -------------------------------------------------------------- live traffic --
 
 /**
- * Live traffic, one tile per direction: rate now, a level meter, session total.
- *
- * A fresh session never shows the previous one's last reading, not even for
- * the frame between Connected and the monitor's first tick.
+ * Live traffic, one compact tile per direction: rate now, a level meter and
+ * the session total on the meter's line. A fresh session never shows the
+ * previous one's last reading.
  */
 @Composable
 private fun LiveTraffic(connectedSince: Long?) {
@@ -1300,7 +1452,7 @@ private fun LiveTraffic(connectedSince: Long?) {
     val latest by TrafficMonitor.sample.collectAsStateWithLifecycle()
     val zero = remember(connectedSince) { TrafficMonitor.Sample() }
     val sample = if (latest.live) latest else zero
-    Row(Modifier.fillMaxWidth()) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         RateTile(
             label = stringResource(R.string.traffic_download),
             rate = sample.downloadRate,
@@ -1309,7 +1461,6 @@ private fun LiveTraffic(connectedSince: Long?) {
             tint = accents.protected,
             modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(10.dp))
         RateTile(
             label = stringResource(R.string.traffic_upload),
             rate = sample.uploadRate,
@@ -1343,427 +1494,63 @@ private fun RateTile(
         color = accents.card,
         border = BorderStroke(1.dp, accents.cardBorder),
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(
+            Modifier
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .semantics(mergeDescendants = true) { },
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconChip(icon, tint)
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    label,
-                    style = AetherMetaLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                TrafficMonitor.formatRate(rate),
-                style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-            )
-            Spacer(Modifier.height(8.dp))
-            Canvas(
-                Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clearAndSetSemantics { },
-            ) {
-                val radius = CornerRadius(size.height / 2f)
-                drawRoundRect(color = track.copy(alpha = 0.4f), cornerRadius = radius)
-                val width = size.width * level
-                if (width > 0.5f) {
-                    val rtl = layoutDirection == LayoutDirection.Rtl
-                    drawRoundRect(
-                        brush = Brush.horizontalGradient(listOf(tint.copy(alpha = 0.55f), tint)),
-                        topLeft = Offset(if (rtl) size.width - width else 0f, 0f),
-                        size = Size(width, size.height),
-                        cornerRadius = radius,
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                TrafficMonitor.formatBytes(total),
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontFamily = AetherMono,
-                    textDirection = TextDirection.Ltr,
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-// ---------------------------------------------------------------- phase track --
-
-/**
- * The four phases as ONE animated object: finished capsules lit with a
- * gradient, the running one carrying a travelling band, the future ones dim,
- * plus "step N of 4" so the progress is also a sentence. RTL-mirrored from the
- * draw scope's layout direction - the segments AND the band running inside the
- * current one, which travels the way progress does ([shimmerBandStart]). Under
- * the track, finished phases carry a check and the running one the state tone.
- * The clock is pinned LTR and monospaced.
- */
-@Composable
-private fun PhaseWave(active: Int, tone: Color, elapsed: String) {
-    val reduced = LocalReducedMotion.current
-    val labels = listOf(
-        R.string.phase_engine,
-        R.string.phase_tunnel,
-        R.string.phase_verify,
-        R.string.phase_ready,
-    )
-    val current = active.coerceIn(0, labels.lastIndex)
-    val shimmer = remember { Animatable(0f) }
-    LaunchedEffect(reduced) {
-        if (reduced) {
-            shimmer.snapTo(0f)
-            return@LaunchedEffect
-        }
-        shimmer.snapTo(0f)
-        shimmer.animateTo(1f, infiniteRepeatable(tween(1500, easing = LinearEasing)))
-    }
-    val track = MaterialTheme.colorScheme.outlineVariant
-
-    AetherCard {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    stringResource(R.string.passage_phase_title),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    stringResource(
-                        R.string.conn_phase_step,
-                        current + 1,
-                        PHASE_COUNT,
-                        stringResource(labels[current]),
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = tone,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Text(
-                elapsed,
-                style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        Canvas(
-            Modifier
-                .fillMaxWidth()
-                .height(18.dp),
-        ) {
-            val gap = 8.dp.toPx()
-            val segmentWidth =
-                ((size.width - gap * (PHASE_COUNT - 1)) / PHASE_COUNT).coerceAtLeast(1f)
-            val barHeight = 10.dp.toPx()
-            val top = (size.height - barHeight) / 2f
-            val radius = CornerRadius(barHeight / 2f)
-            val mirrored = layoutDirection == LayoutDirection.Rtl
-            val phase = shimmer.value
-
-            repeat(PHASE_COUNT) { index ->
-                val slot = if (mirrored) PHASE_COUNT - 1 - index else index
-                val left = slot * (segmentWidth + gap)
-                val done = index < current
-                val running = index == current
-
-                if (done || running) {
-                    val spread = 3.dp.toPx()
-                    drawRoundRect(
-                        color = tone.copy(alpha = if (done) 0.22f else 0.12f),
-                        topLeft = Offset(left - spread, top - spread),
-                        size = Size(segmentWidth + spread * 2f, barHeight + spread * 2f),
-                        cornerRadius = CornerRadius(barHeight / 2f + spread),
-                    )
-                }
-                if (done) {
-                    drawRoundRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(tone, tone.copy(alpha = 0.68f)),
-                            startY = top,
-                            endY = top + barHeight,
-                        ),
-                        topLeft = Offset(left, top),
-                        size = Size(segmentWidth, barHeight),
-                        cornerRadius = radius,
-                    )
-                } else {
-                    drawRoundRect(
-                        color = if (running) track.copy(alpha = 0.55f) else track.copy(alpha = 0.32f),
-                        topLeft = Offset(left, top),
-                        size = Size(segmentWidth, barHeight),
-                        cornerRadius = radius,
-                    )
-                }
-                if (running) {
-                    if (reduced) {
-                        drawRoundRect(
-                            color = tone.copy(alpha = 0.55f),
-                            topLeft = Offset(left, top),
-                            size = Size(segmentWidth, barHeight),
-                            cornerRadius = radius,
-                        )
-                    } else {
-                        val bandWidth = segmentWidth * 0.55f
-                        // Mirrored with the segments: in Persian the light runs
-                        // right to left, toward the phases still to come.
-                        val bandStart =
-                            shimmerBandStart(left, segmentWidth, bandWidth, phase, mirrored)
-                        clipRect(
-                            left = left,
-                            top = top - 1f,
-                            right = left + segmentWidth,
-                            bottom = top + barHeight + 1f,
-                        ) {
-                            drawRoundRect(
-                                brush = Brush.horizontalGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        tone,
-                                        Color.Transparent,
-                                    ),
-                                    startX = bandStart,
-                                    endX = bandStart + bandWidth,
-                                ),
-                                topLeft = Offset(left, top),
-                                size = Size(segmentWidth, barHeight),
-                                cornerRadius = radius,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            labels.forEachIndexed { index, label ->
-                // Finished phases carry a check, the running one the state
-                // colour: the row reads "done, doing, to do" at a glance instead
-                // of three greys and a slightly darker grey.
-                val done = index < current
-                Row(
-                    Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (done) {
-                        Icon(
-                            Icons.Rounded.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(12.dp),
-                            tint = tone,
-                        )
-                        Spacer(Modifier.width(3.dp))
-                    }
+                Column(Modifier.weight(1f)) {
                     Text(
-                        stringResource(label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when {
-                            index == current -> tone
-                            done -> MaterialTheme.colorScheme.onSurface
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+                        label,
+                        style = AetherMetaLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        TrafficMonitor.formatRate(rate),
+                        style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-        }
-    }
-}
-
-// ------------------------------------------------------------- session bento --
-
-/**
- * Everything factual about the live session, ranked: the exit IP wide over a
- * tonal wash, then the winning protocol and the session clock. Every value is
- * monospaced and pinned LTR - load-bearing in Persian, where an IP address
- * otherwise renders reordered.
- */
-@Composable
-private fun SessionBento(
-    connectedSince: Long?,
-    ipInfo: IpEndpoint?,
-    ipLoading: Boolean,
-    tone: Color,
-) {
-    val meta by EngineMeta.state.collectAsStateWithLifecycle()
-    val uptime = tickingElapsed(connectedSince, connectedSince != null)
-
-    Column(Modifier.fillMaxWidth()) {
-        ExitTile(
-            ipInfo = ipInfo,
-            ipLoading = ipLoading,
-            tone = tone,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth()) {
-            BentoTile(
-                label = stringResource(R.string.meta_protocol),
-                value = meta.protocol ?: "\u2014",
-                icon = Icons.Rounded.Shield,
-                tint = tone,
-                mono = false,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            BentoTile(
-                label = stringResource(R.string.connected_for),
-                value = uptime,
-                icon = Icons.Rounded.Schedule,
-                tint = tone,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (!meta.endpoint.isNullOrBlank()) {
-            Spacer(Modifier.height(10.dp))
-            // Copyable, because its only real use is being pasted into a bug
-            // report.
-            ValueRow(
-                label = stringResource(R.string.meta_endpoint),
-                value = meta.endpoint.orEmpty(),
-            )
-        }
-    }
-}
-
-/** The headline tile: whose network the internet sees you coming out of. */
-@Composable
-private fun ExitTile(
-    ipInfo: IpEndpoint?,
-    ipLoading: Boolean,
-    tone: Color,
-    modifier: Modifier = Modifier,
-) {
-    val accents = LocalAetherAccents.current
-    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
-    val country = ipInfo?.countryCode?.uppercase(Locale.US)
-    val value = when {
-        ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
-        ipInfo != null -> ipInfo.ip
-        else -> stringResource(R.string.ip_unavailable)
-    }
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.large,
-        color = accents.card,
-        border = BorderStroke(1.dp, accents.cardBorder),
-    ) {
-        Column(
-            Modifier
-                .background(
-                    Brush.verticalGradient(
-                        listOf(tone.copy(alpha = 0.13f), Color.Transparent),
-                    ),
-                )
-                .padding(18.dp),
-        ) {
+            Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Public, null, Modifier.size(16.dp), tone)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    stringResource(R.string.ip_server_label),
-                    style = AetherMetaLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                if (!country.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = tone,
-                        shape = MaterialTheme.shapes.small,
-                    ) {
-                        Text(
-                            country,
-                            Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
+                Canvas(
+                    Modifier
+                        .weight(1f)
+                        .height(4.dp)
+                        .clearAndSetSemantics { },
+                ) {
+                    val radius = CornerRadius(size.height / 2f)
+                    drawRoundRect(color = track.copy(alpha = 0.4f), cornerRadius = radius)
+                    val width = size.width * level
+                    if (width > 0.5f) {
+                        val rtl = layoutDirection == LayoutDirection.Rtl
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(listOf(tint.copy(alpha = 0.55f), tint)),
+                            topLeft = Offset(if (rtl) size.width - width else 0f, 0f),
+                            size = Size(width, size.height),
+                            cornerRadius = radius,
                         )
                     }
                 }
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (flag.isNotBlank()) {
-                    Text(flag, style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.width(10.dp))
-                }
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    value,
-                    Modifier.weight(1f),
-                    style = AetherNumeralLarge.copy(textDirection = TextDirection.Ltr),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.meta_exit_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/** One cell of the grid, with its icon in a tinted chip as the focal point. */
-@Composable
-private fun BentoTile(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
-    tint: Color = MaterialTheme.colorScheme.onSurface,
-    mono: Boolean = true,
-) {
-    val accents = LocalAetherAccents.current
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.large,
-        color = accents.card,
-        border = BorderStroke(1.dp, accents.cardBorder),
-    ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (icon != null) {
-                    IconChip(icon, tint)
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(
-                    label,
-                    style = AetherMetaLabel,
+                    TrafficMonitor.formatBytes(total),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = AetherMono,
+                        textDirection = TextDirection.Ltr,
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                value,
-                style = if (mono) {
-                    AetherNumeral.copy(textDirection = TextDirection.Ltr)
-                } else {
-                    MaterialTheme.typography.titleMedium
-                },
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
@@ -1791,7 +1578,7 @@ private fun tickingElapsed(since: Long?, running: Boolean): String {
     return formatSessionUptime(since, now)
 }
 
-/** The word INSIDE the ring. Same four words the badge uses. */
+/** The word INSIDE the ring. */
 @Composable
 private fun stateWord(state: ConnectionState): String = stringResource(
     when {
@@ -1801,17 +1588,6 @@ private fun stateWord(state: ConnectionState): String = stringResource(
         else -> R.string.pill_off
     },
 )
-
-@Composable
-private fun stateWash(state: ConnectionState): Color {
-    val a = LocalAetherAccents.current
-    return when {
-        state.isConnected -> a.protectedWash
-        state is ConnectionState.Error -> a.failedWash
-        state.isBusy -> a.workingWash
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-}
 
 @Composable
 private fun connectionTitle(state: ConnectionState): String = stringResource(
@@ -1828,13 +1604,8 @@ private fun connectionTitle(state: ConnectionState): String = stringResource(
 )
 
 /**
- * The sentence under the title. Chain-aware: "through Cloudflare WARP" and "the
- * scan mode" only mean something when Aether is in the chain.
- *
- * Never a repeat of something already on screen: Disconnecting used to echo the
- * title word for word, and Error printed the engine message here AND in the
- * notice bar twelve dp below it. The notice bar owns the engine's words; this
- * line says what to do next.
+ * The sentence under the title. Never a repeat of something already on screen:
+ * the error strip owns the engine's words; this line says what to do next.
  */
 @Composable
 private fun connectionHint(state: ConnectionState, profile: ConnectionProfile): String =

@@ -99,7 +99,8 @@ fun HomeScreen(
 ) {
     var route by rememberSaveable(stateSaver = HomeRouteSaver) { mutableStateOf(HomeRoute()) }
     var focusErrors by rememberSaveable { mutableStateOf(false) }
-    val homeScroll = rememberScrollState()
+    // The connection tab is a fixed, non-scrolling layout now (see
+    // ConnectionHome), so only Settings keeps a scroll position.
     val settingsScroll = rememberScrollState()
     val pages = rememberSaveableStateHolder()
     val haptics = LocalHapticFeedback.current
@@ -163,7 +164,7 @@ fun HomeScreen(
                                         focusErrors = focusErrors,
                                         onFocusConsumed = { focusErrors = false },
                                     )
-                                    else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
+                                    else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading,
                                         editable = editable,
                                         onProfileChange = onProfileChange,
                                         onToggleConnection = {
