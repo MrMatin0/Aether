@@ -42,35 +42,35 @@
     <string name="page_engine_title">هستهٔ اتصال</string>
     <string name="page_engine_sub">پروتکل، اسکن، مسیریابی و ضدDPI</string>
     <string name="page_setups_title">تنظیمات ذخیره‌شده</string>
-    <string name="page_setups_sub">آنچه کار می‌کند را نگه دارید و بین گوشی‌ها جابه‌جا کنید</string>
+    <string name="page_setups_sub">ذخیره و انتقال تنظیمات اتصال</string>
     <string name="page_automation_title">خودکارسازی و تاریخچه</string>
     <string name="page_automation_sub">اتصال خودکار، و آنچه ثبت می‌شود</string>
     <string name="page_sharing_title">اشتراک VPN</string>
-    <string name="page_sharing_sub">این گوشی را دروازهٔ دستگاه‌های دیگر کنید</string>
+    <string name="page_sharing_sub">از این گوشی به‌عنوان دروازهٔ دستگاه‌های دیگر استفاده کنید</string>
     <string name="page_about_title">درباره</string>
-    <string name="page_about_sub">نسخه‌ها، اعتبارها و پیوندها</string>
+    <string name="page_about_sub">نسخه، سازندگان و پیوندها</string>
 
     <!-- ظاهر -->
     <string name="theme_title">پوسته</string>
-    <string name="theme_subtitle">برنامه با چه رنگی ترسیم شود</string>
+    <string name="theme_subtitle">ظاهر برنامه را انتخاب کنید</string>
     <string name="theme_system">سیستم</string>
     <string name="theme_dark">تاریک</string>
     <string name="theme_light">روشن</string>
-    <string name="theme_hint">حالت سیستم از گوشی پیروی می‌کند. اگر تنظیم گوشی انتخاب شما نیست، یا صفحهٔ روشن در جایی که هستید مناسب نیست، آن را ثابت کنید.</string>
+    <string name="theme_hint">حالت سیستم از تنظیمات گوشی پیروی می‌کند. برای ظاهر ثابت، روشن یا تاریک را انتخاب کنید.</string>
     <string name="language_subtitle">بی‌درنگ روی همهٔ صفحه‌ها اعمال می‌شود</string>
 
     <!-- تنظیمات هسته -->
     <string name="section_connection">اتصال</string>
-    <string name="section_connection_note">این‌ها تعیین می‌کنند که اصلاً وصل می‌شوید یا نه</string>
+    <string name="section_connection_note">انتخاب پروتکل و سرور</string>
     <string name="section_safety">تور ایمنی</string>
     <string name="section_safety_note">وقتی تونل قطع می‌شود چه اتفاقی بیفتد</string>
     <string name="section_routing_note">چه چیزی از تونل عبور کند و چه چیزی نه</string>
-    <string name="section_transport_note">فقط وقتی اتصال مکرراً ناموفق است این‌ها را تغییر دهید</string>
-    <string name="section_routes_note">قواعد بر پایهٔ مقصد. ابتدا «مسدود» بررسی می‌شود</string>
+    <string name="section_transport_note">فقط وقتی اتصال مکرراً ناموفق است تغییر دهید</string>
+    <string name="section_routes_note">قواعد بر پایهٔ مقصد؛ ابتدا بلاک بررسی می‌شود</string>
     <string name="section_zerotrust_note">برای WARP سازمانی. برای استفادهٔ معمول خاموش بماند</string>
     <string name="section_security_note">محافظت از نشتی و محدودیت راه‌اندازی مجدد</string>
-    <string name="section_engine_tuning_note">آرگومان‌های خام هسته. پیش‌فرض‌ها معمولاً درست‌اند</string>
-    <string name="section_reset_note">راه بازگشت به تنظیماتی که کار می‌کرد</string>
+    <string name="section_engine_tuning_note">آرگومان‌های خام هسته؛ پیش‌فرض‌ها معمولاً درست‌اند</string>
+    <string name="section_reset_note">بازگرداندن تنظیمات پیش‌فرض</string>
     <string name="settings_mode_basic">ضروری‌ها</string>
     <string name="settings_mode_full">همه</string>
     <string name="settings_locked">برای تغییر این تنظیمات ابتدا اتصال را قطع کنید.</string>
@@ -78,12 +78,12 @@
 
     <!-- تنظیمات ذخیره‌شده -->
     <string name="presets_transfer_title">انتقال به گوشی دیگر</string>
-    <string name="presets_transfer_sub">یک قطعه متن، بدون هیچ گذرواژه یا توکنی</string>
+    <string name="presets_transfer_sub">انتقال تنظیمات، بدون گذرواژه یا توکن</string>
 
     <!-- خودکارسازی -->
     <string name="automation_system_title">تنظیمات سیستم</string>
     <string name="automation_system_sub">دو کلید که اندروید اجازهٔ تغییرشان را به برنامه نمی‌دهد</string>
-    <string name="history_count">%1$d نشست ثبت‌شده</string>
+    <string name="history_count">نشست‌های ثبت‌شده: %1$d</string>
 
     <!-- درباره -->
     <string name="about_build_title">این نسخه</string>

@@ -2,27 +2,27 @@
 <!-- Smart DNS (sanctions bypass through a proxying resolver). -->
 <resources>
     <string name="section_smart_dns">DNS هوشمند</string>
-    <string name="section_smart_dns_note">سایت‌هایی که ایران را تحریم کرده‌اند (Gemini، ابزارهای هوش مصنوعی، سرویس‌های توسعه) از طریق یک ارائه‌دهنده DNS که آن‌ها را از خارج پراکسی می‌کند باز می‌شوند، و اتر همچنان سایت‌های فیلترشده را باز می‌کند.</string>
+    <string name="section_smart_dns_note">برای سایت‌های تحریم‌شده در ایران (Gemini، ابزارهای هوش مصنوعی، سرویس‌های توسعه) از DNS پراکسی‌شونده استفاده کنید؛ اتر همچنان سایت‌های فیلترشده را باز می‌کند.</string>
     <string name="smart_dns_title">استفاده از DNS هوشمند</string>
-    <string name="smart_dns_desc">دستگاه به جای 1.1.1.1 و 8.8.8.8 نام‌ها را از سرورهای زیر می‌پرسد. سایت‌هایی که ارائه‌دهنده پوشش می‌دهد کشور ارائه‌دهنده را می‌بینند و بقیه همان خروجی WARP را.</string>
-    <string name="smart_dns_chain_only">فقط در زنجیره «فقط اتر» اعمال می‌شود. با سایفون یا تور در جلو، خروجی از قبل خارج از کشور است و این تنظیم نادیده گرفته می‌شود.</string>
+    <string name="smart_dns_desc">نام‌ها را با این سرورها، نه 1.1.1.1 و 8.8.8.8، حل می‌کند. سایت‌های تحت پوشش کشور ارائه‌دهنده را می‌بینند؛ بقیه از خروجی WARP استفاده می‌کنند.</string>
+    <string name="smart_dns_chain_only">فقط برای زنجیرهٔ «فقط اتر». با سایفون یا تور در جلو، خروجی از قبل خارج از کشور است و این تنظیم نادیده گرفته می‌شود.</string>
     <string name="smart_dns_protocol_title">پروتکل</string>
     <string name="smart_dns_protocol_plain">DNS معمولی</string>
     <string name="smart_dns_protocol_doh">DNS over HTTPS</string>
     <string name="smart_dns_protocol_dot">DNS over TLS</string>
-    <string name="smart_dns_protocol_plain_desc">DNS کلاسیک روی UDP (برای پاسخ‌های بزرگ TCP). با همه ارائه‌دهنده‌ها کار می‌کند، ولی رمزنگاری ندارد.</string>
-    <string name="smart_dns_protocol_doh_desc">پرسش‌ها داخل HTTPS می‌روند و شبیه ترافیک عادی وب هستند. اگر ارائه‌دهنده پشتیبانی کند، مقاوم‌ترین گزینه است.</string>
-    <string name="smart_dns_protocol_dot_desc">پرسش‌ها داخل TLS روی پورت 853 می‌روند. رمزنگاری‌شده و سریع، ولی پورت 853 راحت‌تر مسدود می‌شود.</string>
+    <string name="smart_dns_protocol_plain_desc">DNS روی UDP (برای پاسخ‌های بزرگ روی TCP). با همهٔ ارائه‌دهنده‌ها کار می‌کند، اما رمزگذاری‌شده نیست.</string>
+    <string name="smart_dns_protocol_doh_desc">پرسش‌ها با HTTPS و شبیه ترافیک وب ارسال می‌شوند. فقط وقتی ارائه‌دهنده پشتیبانی می‌کند از آن استفاده کنید.</string>
+    <string name="smart_dns_protocol_dot_desc">پرسش‌ها با TLS روی پورت 853 ارسال می‌شوند. رمزگذاری‌شده است، اما مسدود کردن پورت 853 آسان‌تر است.</string>
     <string name="smart_dns_servers_label">سرورهای DNS هوشمند</string>
     <string name="smart_dns_servers_hint_plain">مثلاً 203.0.113.53, 198.51.100.53</string>
     <string name="smart_dns_servers_hint_doh">مثلاً https://dns.example.com/dns-query</string>
     <string name="smart_dns_servers_hint_dot">مثلاً dns.example.com</string>
-    <string name="smart_dns_servers_help_plain">آدرس‌های IPv4، در صورت نیاز با پورت (1.2.3.4:5353)، جدا شده با ویرگول، فاصله یا خط جدید. حداکثر ۸ سرور، به ترتیب امتحان می‌شوند.</string>
-    <string name="smart_dns_servers_help_doh">آدرس‌های HTTPS یا نام میزبان (مسیر پیش‌فرض ‎/dns-query). حداکثر ۸ سرور، به ترتیب امتحان می‌شوند.</string>
-    <string name="smart_dns_servers_help_dot">نام میزبان یا آدرس IPv4، در صورت نیاز با پورت (پیش‌فرض 853). حداکثر ۸ سرور، به ترتیب امتحان می‌شوند.</string>
-    <string name="smart_dns_servers_invalid">هیچ‌کدام از این‌ها برای پروتکل انتخاب‌شده سرور قابل استفاده نیست. تا وقتی یکی معتبر نباشد از DNS پیش‌فرض استفاده می‌شود.</string>
-    <string name="smart_dns_route_auto">پرسش‌ها اول از داخل تونل می‌روند. اگر ارائه‌دهنده فقط به IP ایرانی یا ثبت‌شده جواب بدهد، اتر خودش به اتصال مستقیم سوییچ می‌کند و پراکسی‌های ارائه‌دهنده را هم مستقیم می‌فرستد.</string>
+    <string name="smart_dns_servers_help_plain">نشانی‌های IPv4، در صورت نیاز با پورت (1.2.3.4:5353)، جداشده با ویرگول، فاصله یا خط جدید. حداکثر ۸ سرور به‌ترتیب امتحان می‌شوند.</string>
+    <string name="smart_dns_servers_help_doh">نشانی‌های HTTPS یا نام میزبان؛ مسیر پیش‌فرض /dns-query است. حداکثر ۸ سرور به‌ترتیب امتحان می‌شوند.</string>
+    <string name="smart_dns_servers_help_dot">نام میزبان یا نشانی IPv4، در صورت نیاز با پورت (پیش‌فرض 853). حداکثر ۸ سرور به‌ترتیب امتحان می‌شوند.</string>
+    <string name="smart_dns_servers_invalid">هیچ سرور قابل استفاده‌ای برای این پروتکل نیست. تا معتبر شدن یکی، از حل‌کننده‌های DNS پیش‌فرض استفاده می‌شود.</string>
+    <string name="smart_dns_route_auto">پرسش‌ها ابتدا از تونل عبور می‌کنند. اگر ارائه‌دهنده فقط به IPهای ایرانی یا ثبت‌شده پاسخ دهد، اتر مستقیم به آن وصل می‌شود و پراکسی‌هایش را هم مستقیم می‌فرستد.</string>
     <string name="smart_dns_live_tunnel">الان: از داخل تونل.</string>
-    <string name="smart_dns_live_direct">الان: مستقیم (ارائه‌دهنده تونل را رد کرد). بازه‌های پراکسی شناسایی‌شده: %1$d.</string>
-    <string name="smart_dns_private_dns_hint">«DNS خصوصی» اندروید (تنظیمات، شبکه، DNS خصوصی) باید خاموش یا خودکار باشد، وگرنه سیستم DNS هوشمند را نادیده می‌گیرد. تا وقتی DNS هوشمند روشن است IPv6 به برنامه‌ها داده نمی‌شود. برای تست، سایتی را که ارائه‌دهنده پوشش می‌دهد باز کنید، نه سایت نمایش IP.</string>
+    <string name="smart_dns_live_direct">اکنون: مستقیم (ارائه‌دهنده تونل را نپذیرفت). بازه‌های پراکسی شناسایی‌شده: %1$d.</string>
+    <string name="smart_dns_private_dns_hint">«DNS خصوصی» اندروید (تنظیمات، شبکه، DNS خصوصی) باید خاموش یا خودکار باشد؛ وگرنه Smart DNS نادیده گرفته می‌شود. هنگام روشن بودن آن، IPv6 در اختیار برنامه‌ها نیست. برای آزمایش، سایت تحت پوشش را بررسی کنید، نه سایت نمایش IP.</string>
 </resources>
