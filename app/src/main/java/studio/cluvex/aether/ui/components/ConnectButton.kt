@@ -56,6 +56,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.cos
@@ -91,115 +93,65 @@ fun accentFor(mode: ButtonMode): Color {
 private const val START_ANGLE = -90f
 
 /**
- * The tick ladder inside the ring.
- *
- * 36 and not 72: at 72 the ticks visually merge into a second, thinner ring on
- * a 184dp orb, which is a decoration; at 36 each tick is separable, so a
- * half-filled ladder can actually be counted.
+ * The tick ladder inside the ring. 36 and not 72: at 72 the ticks visually
+ * merge into a second, thinner ring; at 36 each tick is separable.
  */
 private const val TICK_COUNT = 36
 
 /**
  * Whether the ladder tick [fraction] of the way round is lit, for an arc of
- * [sweep].
- *
- * `fraction <= sweep` on its own lit the twelve o'clock tick (fraction 0) on an
- * EMPTY ring, so an idle orb always carried one lit notch at the top: a gauge
- * reading "a little bit started" while nothing was. An empty arc lights nothing,
- * and a failure - three broken arcs - lights nothing either.
+ * [sweep]. An empty arc lights nothing, and a failure lights nothing either.
  */
 internal fun tickLit(fraction: Float, sweep: Float, mode: ButtonMode): Boolean =
     mode != ButtonMode.ERROR && sweep > 0f && fraction <= sweep
 
-/** The size the orb was designed at, and the size it uses whenever it fits. */
+/** The width-driven default's upper bound (callers that pass no diameter). */
 private val ORB_MAX = 256.dp
 
-/**
- * The smallest the orb may get. Below this the state word inside it starts
- * wrapping to a third line and the ring stops reading as a gauge.
- */
+/** The width-driven default's lower bound. */
 private val ORB_MIN = 184.dp
 
-/** Breathing room either side, so the orb never crowds the column it sits in. */
+/** Breathing room either side, for the width-driven default. */
 private val ORB_GUTTER = 56.dp
+
+/** Below this the orb switches to its compact type: smaller glyph, word and readout. */
+private val ORB_COMPACT = 168.dp
+
+/** Below this the glyph shrinks again and the gaps close up. */
+private val ORB_TINY = 120.dp
 
 /**
  * THE HERO CONTROL: a layered progress orb.
  *
- * WHAT THIS PASS ADDS, AND WHY
- *
- * The previous orb was already honest - determinate arc, state colour, words at
- * the optical centre - and it was FLAT. One track, one arc, one travelling
- * highlight, one disc. On the screen whose entire job is to make a security
- * state feel unmistakable, the difference between "connecting" and "protected"
- * was a hue and an arc length, which is exactly the kind of difference people
- * miss at arm's length in daylight.
- *
- * So the orb is now built in DEPTH, and each layer carries meaning:
- *
- *   1. AMBIENT BLOOM. A radial gradient behind the ring, scaled by state:
- *      barely there when idle, warm while working, a full mint wash when
- *      verified. It is the layer you read from across the room, before any text
- *      resolves.
- *   2. PULSING RINGS. Three expanding rings, staggered a third of a cycle apart,
- *      only while the tunnel is coming up. Outward motion says "reaching", which
- *      is what the busy states actually are - and unlike a spinner it cannot be
- *      confused with progress, because the determinate arc is right next to it.
- *   3. NEON HALO. Once verified: a wide soft glow on the ring plus one slow
- *      breathing outline. This is the CYBER-MINT signature, and it is earned by
- *      a passed self-test - never shown for Verifying, never for Reconnecting.
- *   4. TICK LADDER. 36 ticks inside the track, lit up to the current progress.
- *      The arc says how far along; the ladder makes that readable as a quantity
- *      rather than a shape. An empty ring lights none of them ([tickLit]).
- *   5. GLASS CORE. A radial-gradient disc, tinted toward the state colour and
- *      brightened on press, with a hairline rim. It gives the words a surface to
- *      sit on instead of floating in the middle of a circle.
- *
- * Each state still has its own unmistakable behaviour:
+ * Layers, each carrying meaning: ambient bloom (state, legible across the
+ * room), pulsing rings (only while reaching an endpoint), neon halo (only once
+ * verified), the gauge track with its tick ladder (progress as a quantity), and
+ * the glass core the words sit on.
  *
  *   IDLE       bare track and ladder, nothing animating at all
  *   BUSY       amber arc grows with real progress, rings pulse, comet sweeps
  *   CONNECTED  full mint ring, glass core lit, neon halo breathing
  *   ERROR      three broken rose arcs, frozen, ladder unlit
  *
- * PRESS. [press] scales the whole orb, and the same gesture thickens the ring
- * and lifts the core's tint, so the control deforms under the finger instead of
- * only shrinking. Haptics stay at the call site, where the click actually is.
+ * SIZE. [diameter], when given, is used as-is: the home tab measures the space
+ * it has left and passes the result, so the orb never pushes anything off a
+ * non-scrolling screen. Without it the orb falls back to the width-driven
+ * default (parent width minus [ORB_GUTTER], clamped to [ORB_MIN]..[ORB_MAX]).
+ * The ring stroke is a fraction of the diameter (4..9dp), and below
+ * [ORB_COMPACT] / [ORB_TINY] the glyph, word and readout step down, so a small
+ * orb is a smaller gauge rather than a big gauge with its words spilling out.
+ * The Canvas matches the tappable circle exactly, so geometry and hit target
+ * can never disagree; even the smallest orb stays far above the 48dp target.
  *
- * ENABLED. [enabled] = false is for teardown: the orb stays on screen and keeps
- * its busy colour, but it takes no tap, does not squeeze, drops the outward
- * "reaching" rings (nothing is being reached) and dims its words. TalkBack reads
- * it as disabled instead of offering an action that would do nothing.
+ * PRESS scales the orb, thickens the ring and lifts the core's tint. ENABLED =
+ * false is for teardown: no tap, no squeeze, no outward rings, dimmed words.
+ * FOCUS draws its own ring, because the ripple is switched off. MOTION asks
+ * [LocalReducedMotion] first and never starts a loop under reduced motion.
+ * PERFORMANCE: loop clocks are read inside the draw lambda only.
  *
- * DETAIL. [detail] is an instrument readout under the word - the attempt clock
- * while an attempt is timed, the session clock once the tunnel is verified - in
- * a capsule of the state colour, so a ticking counter reads as a live gauge and
- * not as a caption. Monospaced, Latin figures, pinned LTR.
- *
- * FOCUS. The ripple is switched off on purpose (it fights the ring), and that
- * also switched off the only focus indication the control had - a keyboard,
- * D-pad or switch-access user could not see where focus was. A focused orb now
- * draws its own focus ring on the inner edge of the tappable circle.
- *
- * SIZE. Measured from the constraints the parent gives it and clamped between
- * [ORB_MIN] and [ORB_MAX]; the Canvas matches the tappable circle exactly, so
- * geometry and hit target can never disagree. An unbounded width degrades on
- * its own: Dp.Infinity clamps straight to [ORB_MAX].
- *
- * MOTION. Every loop asks [LocalReducedMotion] FIRST and is not started at all
- * when motion is off - a 0ms infinite repeat is an invalidation every frame,
- * forever, which is worse than the thing being removed. Under reduced motion
- * the orb keeps all of its meaning: the arc still fills, the ladder still
- * lights, the bloom still changes colour, the words still swap. Nothing moves.
- *
- * PERFORMANCE. The two loop clocks are [Animatable]s read INSIDE the draw
- * lambda, so a live orb costs redraws of one Canvas and never a recomposition
- * of the screen around it.
- *
- * ACCESSIBILITY (unchanged contract): the ring is a Canvas and the glyph is
- * decorative, so [stateLabel] is published as the node's state description and
- * [actionLabel] as its click label, in the same words the status badge and the
- * dock use. TalkBack announces "Protected, button, double tap to disconnect".
+ * ACCESSIBILITY: [stateLabel] is the node's state description and
+ * [actionLabel] its click label. TalkBack: "Protected, button, double tap to
+ * disconnect".
  */
 @Composable
 fun ConnectButton(
@@ -211,16 +163,13 @@ fun ConnectButton(
     detail: String? = null,
     progress: Float = 0f,
     enabled: Boolean = true,
+    diameter: Dp? = null,
 ) {
     val accents = LocalAetherAccents.current
     val accent = accentFor(mode)
     val reduced = LocalReducedMotion.current
 
-    // AnimatedContent's transitionSpec is a PLAIN lambda, not a @Composable one,
-    // so aetherDuration (a @Composable read of LocalReducedMotion) cannot be
-    // called inside it. Resolve both lengths here, in composition, and let the
-    // specs capture the Ints. Still theme-aware, still collapses to 0 under
-    // reduced motion.
+    // transitionSpec is a PLAIN lambda: resolve the durations in composition.
     val fadeInMs = aetherDuration(AetherDur.Base)
     val fadeOutMs = aetherDuration(AetherDur.Quick)
 
@@ -249,8 +198,7 @@ fun ConnectButton(
     val sweep by animateFloatAsState(
         targetValue = when (mode) {
             ButtonMode.CONNECTED -> 1f
-            // Never zero while working: a ring with no arc at all reads as
-            // "nothing started".
+            // Never zero while working: a ring with no arc reads as "nothing started".
             ButtonMode.BUSY -> progress.coerceIn(0.08f, 1f)
             ButtonMode.ERROR -> 1f
             ButtonMode.IDLE -> 0f
@@ -330,12 +278,24 @@ fun ConnectButton(
         modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center,
     ) {
-        val diameter = (maxWidth - ORB_GUTTER).coerceIn(ORB_MIN, ORB_MAX)
+        val orb = diameter ?: (maxWidth - ORB_GUTTER).coerceIn(ORB_MIN, ORB_MAX)
+        val compact = orb < ORB_COMPACT
+        val tiny = orb < ORB_TINY
+        val glyphSize = when {
+            tiny -> 20.dp
+            compact -> 26.dp
+            else -> 30.dp
+        }
+        val wordStyle = when {
+            tiny -> MaterialTheme.typography.titleSmall
+            compact -> MaterialTheme.typography.titleMedium
+            else -> MaterialTheme.typography.titleLarge
+        }
 
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(diameter)
+                .size(orb)
                 .scale(press)
                 .clip(CircleShape)
                 .clickable(
@@ -348,23 +308,26 @@ fun ConnectButton(
                 )
                 .semantics { stateDescription = stateLabel },
         ) {
-            // matchParentSize, not a second hardcoded diameter: every bit of the
-            // ring geometry is derived from the Canvas's own size, so the Canvas
-            // has to be exactly the tappable circle and nothing else.
+            // matchParentSize: every bit of ring geometry is derived from the
+            // Canvas's own size, so it has to be exactly the tappable circle.
             Canvas(modifier = Modifier.matchParentSize()) {
                 val cx = size.width / 2f
                 val cy = size.height / 2f
                 val centre = Offset(cx, cy)
                 val outerR = size.minDimension / 2f
-                val stroke = 9.dp.toPx() * (1f + 0.10f * squeeze)
-                val ringR = outerR - stroke / 2f - 6.dp.toPx()
+                // A fraction of the diameter: 9dp on the old 256dp orb, never
+                // thinner than 4dp, so a small orb is a smaller gauge.
+                val baseStroke = (size.minDimension * 0.035f).coerceIn(4.dp.toPx(), 9.dp.toPx())
+                val stroke = baseStroke * (1f + 0.10f * squeeze)
+                val inset = (size.minDimension * 0.024f).coerceIn(3.dp.toPx(), 6.dp.toPx())
+                val ringR = outerR - stroke / 2f - inset
                 if (ringR <= 0f) return@Canvas
                 val topLeft = Offset(cx - ringR, cy - ringR)
                 val ringSize = Size(ringR * 2f, ringR * 2f)
                 val turn = spin.value
                 val phase = wave.value
 
-                // 1. AMBIENT BLOOM. The layer that is legible before any text is.
+                // 1. AMBIENT BLOOM.
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
@@ -403,15 +366,14 @@ fun ConnectButton(
                     if (!reduced) {
                         drawCircle(
                             color = animatedAccent.copy(alpha = (1f - phase) * 0.26f * core),
-                            radius = ringR + 3.dp.toPx() + 9.dp.toPx() * phase,
+                            radius = ringR + 2.dp.toPx() + inset * 1.2f * phase,
                             center = centre,
                             style = Stroke(width = 1.6.dp.toPx()),
                         )
                     }
                 }
 
-                // 4. THE GAUGE TRACK: always the full circle, so the ring reads as
-                // a gauge with a maximum rather than an arc floating in space.
+                // 4. THE GAUGE TRACK: always the full circle.
                 drawArc(
                     color = track,
                     startAngle = START_ANGLE,
@@ -423,8 +385,9 @@ fun ConnectButton(
                 )
 
                 // 5. TICK LADDER: the arc's length, as a countable quantity.
-                val tickOuter = ringR - stroke / 2f - 5.dp.toPx()
-                val tickInner = tickOuter - 5.dp.toPx()
+                val tickGap = (size.minDimension * 0.02f).coerceIn(3.dp.toPx(), 5.dp.toPx())
+                val tickOuter = ringR - stroke / 2f - tickGap
+                val tickInner = tickOuter - tickGap
                 if (tickInner > 0f) {
                     repeat(TICK_COUNT) { index ->
                         val fraction = index.toFloat() / TICK_COUNT
@@ -440,15 +403,14 @@ fun ConnectButton(
                             },
                             start = Offset(cx + dx * tickInner, cy + dy * tickInner),
                             end = Offset(cx + dx * tickOuter, cy + dy * tickOuter),
-                            strokeWidth = 1.4.dp.toPx(),
+                            strokeWidth = 1.2.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
                 }
 
                 if (mode == ButtonMode.ERROR) {
-                    // Three broken arcs, frozen. A failure should look
-                    // interrupted, not merely coloured differently.
+                    // Three broken arcs, frozen. A failure should look interrupted.
                     repeat(3) { index ->
                         drawArc(
                             color = animatedAccent,
@@ -461,8 +423,7 @@ fun ConnectButton(
                         )
                     }
                 } else if (sweep > 0.001f) {
-                    // The arc, twice: a wide soft pass for the glow, then the
-                    // real one on top. Cheaper and steadier than a blur.
+                    // The arc, twice: a wide soft pass for the glow, then the real one.
                     drawArc(
                         color = animatedAccent.copy(alpha = 0.18f),
                         startAngle = START_ANGLE,
@@ -483,11 +444,7 @@ fun ConnectButton(
                     )
                 }
 
-                // The travelling comet: proof of life, never mistaken for
-                // progress because it laps the whole ring regardless of the arc.
-                // Skipped under reduced motion, where a parked highlight is just
-                // a bright notch of the same colour sitting on the arc, saying
-                // nothing.
+                // The travelling comet: proof of life, never mistaken for progress.
                 if (showComet) {
                     drawArc(
                         color = animatedAccent.copy(
@@ -502,8 +459,7 @@ fun ConnectButton(
                     )
                 }
 
-                // 6. THE GLASS CORE: a surface for the words, lit by state and by
-                // the finger.
+                // 6. THE GLASS CORE: a surface for the words.
                 val discR = ringR * 0.74f
                 drawCircle(color = cardTone, radius = discR, center = centre)
                 drawCircle(
@@ -531,8 +487,7 @@ fun ConnectButton(
                     style = Stroke(width = 1.5.dp.toPx()),
                 )
 
-                // 7. FOCUS RING, on the inner edge of the hit circle so the clip
-                // cannot eat it. Only for keyboard / D-pad / switch focus.
+                // 7. FOCUS RING, on the inner edge of the hit circle.
                 if (focused && enabled) {
                     val focusStroke = 2.dp.toPx()
                     drawCircle(
@@ -552,15 +507,11 @@ fun ConnectButton(
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                // Proportional, not a fixed 30dp: the inset has to stay inside
-                // the core disc, and the disc is a function of the diameter.
+                // Proportional: the inset has to stay inside the core disc.
                 modifier = Modifier
-                    .padding(horizontal = diameter * 0.12f)
+                    .padding(horizontal = orb * 0.14f)
                     .alpha(content),
             ) {
-                // The glyph swaps with a scale, not a hard cut: power to bolt is
-                // the moment the tunnel became real, and it should feel like one
-                // object becoming another.
                 AnimatedContent(
                     targetState = icon,
                     transitionSpec = {
@@ -578,10 +529,10 @@ fun ConnectButton(
                         imageVector = glyph,
                         contentDescription = null,
                         tint = animatedAccent,
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(glyphSize),
                     )
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(if (compact) 4.dp else 8.dp))
                 AnimatedContent(
                     targetState = stateLabel,
                     transitionSpec = {
@@ -591,28 +542,33 @@ fun ConnectButton(
                 ) { word ->
                     Text(
                         text = word,
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = wordStyle,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,
-                        maxLines = 2,
+                        maxLines = if (compact) 1 else 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (!detail.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    // A capsule of the state colour: amber while an attempt is
-                    // timed, mint once the session clock runs. A bare grey line
-                    // under the word read as a caption; this reads as a gauge.
+                    Spacer(Modifier.height(if (compact) 3.dp else 6.dp))
+                    // A capsule of the state colour: reads as a gauge, not a caption.
                     Box(
                         Modifier
                             .clip(CircleShape)
                             .background(animatedAccent.copy(alpha = 0.12f))
-                            .padding(horizontal = 10.dp, vertical = 2.dp),
+                            .padding(horizontal = if (compact) 7.dp else 10.dp, vertical = 2.dp),
                     ) {
                         Text(
                             // Counters are instrument readouts: monospaced, Latin
-                            // figures, pinned LTR. Prose keeps the locale's digits.
+                            // figures, pinned LTR.
                             text = detail,
-                            style = MaterialTheme.typography.labelMedium.copy(
+                            style = (
+                                if (compact) {
+                                    MaterialTheme.typography.labelSmall
+                                } else {
+                                    MaterialTheme.typography.labelMedium
+                                }
+                                ).copy(
                                 fontFamily = AetherMono,
                                 textDirection = TextDirection.Ltr,
                             ),
