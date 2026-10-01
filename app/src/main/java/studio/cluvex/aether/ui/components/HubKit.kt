@@ -252,9 +252,9 @@ fun SectionCard(
                             summary.orEmpty(),
                             style = AetherMetaLabel,
                             color = scheme.primary,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp),
+                            modifier = Modifier.padding(top = 4.dp),
                         )
                     }
                 }
@@ -273,7 +273,7 @@ fun SectionCard(
                 exit = shrinkVertically(hubTween(AetherDur.Quick)) + fadeOut(hubTween(AetherDur.Snap)),
             ) {
                 Column(Modifier.padding(start = 6.dp, end = 6.dp, bottom = 6.dp)) {
-                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = scheme.outlineVariant.copy(alpha = 0.6f))
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = scheme.outlineVariant)
                     content()
                 }
             }
@@ -284,7 +284,8 @@ fun SectionCard(
 /**
  * One destination. The second line is the LIVE value when there is one, so
  * the page only needs opening to change something, not to find out what it
- * says. No chevron: the whole row is the target.
+ * says. Titles wrap at larger font scales instead of hiding the destination.
+ * No chevron: the whole row is the target.
  */
 @Composable
 fun HubRow(
@@ -315,14 +316,15 @@ fun HubRow(
         Column(Modifier.weight(1f)) {
             if (eyebrow != null) {
                 Text(eyebrow, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(4.dp))
             }
-            HighlightedText(title, highlights, MaterialTheme.typography.titleMedium, ink, maxLines = 1)
-            Spacer(Modifier.height(3.dp))
+            HighlightedText(title, highlights, MaterialTheme.typography.titleMedium, ink)
+            Spacer(Modifier.height(4.dp))
             if (value != null) {
                 Text(value, style = AetherMetaLabel, color = scheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             } else {
-                Text(note, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // Destructive actions must keep their explanation visible at any font scale.
+                Text(note, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
             }
             if (tags.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))

@@ -40,8 +40,9 @@ import studio.cluvex.aether.ui.theme.aetherDuration
 /**
  * The settings hub.
  *
- * Top to bottom: lock badge (only while the tunnel is up), search, then four
- * collapsible groups whose collapsed headers already carry the live values.
+ * Top to bottom: lock badge (only while the tunnel is up), search, then five
+ * intent-based groups whose collapsed headers already carry the live values.
+ * The centered reading column stays usable on tablets and in landscape.
  *
  * The connection status strip, quick controls and recommended presets that
  * used to sit above the groups are gone: the connection state already lives on
@@ -80,9 +81,18 @@ fun SettingsHub(
     SettingsHubLayout(locked, null, profile, null, onOpen, modifier, scrollState)
 }
 
+/** Preserve expanded sections saved before Routing & safety became two groups. */
+internal fun restoreSettingsGroups(names: List<String>): Set<SettingsGroup> =
+    names.flatMap { name ->
+        when (name) {
+            "ROUTING_SAFETY" -> listOf(SettingsGroup.TRAFFIC, SettingsGroup.SAFETY)
+            else -> SettingsGroup.entries.filter { it.name == name }
+        }
+    }.toSet()
+
 private val GroupSetSaver = listSaver<Set<SettingsGroup>, String>(
     save = { set -> set.map { it.name } },
-    restore = { names -> names.mapNotNull { n -> SettingsGroup.entries.find { it.name == n } }.toSet() },
+    restore = ::restoreSettingsGroups,
 )
 
 // ----------------------------------------------------------------- layout --
@@ -116,11 +126,17 @@ private fun SettingsHubLayout(
     }
 
     val fade = aetherDuration(AetherDur.Quick)
-    Column(modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 20.dp)) {
+    Column(
+        modifier.fillMaxSize()
+            .wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = 720.dp)
+            .verticalScroll(scrollState)
+            .padding(horizontal = 20.dp),
+    ) {
         Spacer(Modifier.height(4.dp))
         // No connection status here: Home already shows it. The lock is the
         // only piece of tunnel state the hub needs, because it explains why
-        // some rows are disabled.
+        // some settings cannot be edited while connected.
         if (locked) {
             LockBadge()
             Spacer(Modifier.height(16.dp))
@@ -144,29 +160,39 @@ private fun SettingsHubLayout(
                 Column {
                     Spacer(Modifier.height(28.dp))
                     SettingsGroup.entries.forEach { group ->
-                        val isOpen = group in expanded
-                        SectionCard(
-                            title = stringResource(group.label),
-                            summary = group.summaryPages.mapNotNull { byPage[it]?.state }.joinToString(HUB_DOT).ifEmpty { null },
-                            icon = group.icon,
-                            expanded = isOpen,
-                            onToggle = { expanded = if (isOpen) expanded - group else expanded + group },
-                        ) {
-                            group.pages.forEach { page ->
-                                byPage[page]?.let { entry ->
-                                    HubRow(
-                                        icon = settingsPageIcon(page),
-                                        title = entry.title,
-                                        value = entry.state,
-                                        note = entry.note,
-                                        locked = locked && page.editsProfile,
-                                        destructive = page == SettingsPage.RESET,
-                                        onClick = { openPage(page) },
-                                    )
+                        key(group) {
+                            val isOpen = group in expanded
+                            SectionCard(
+                                title = stringResource(group.label),
+                                summary = group.summaryPages.mapNotNull { byPage[it]?.state }.joinToString(HUB_DOT).ifEmpty { null },
+                                icon = group.icon,
+                                expanded = isOpen,
+                                onToggle = { expanded = if (isOpen) expanded - group else expanded + group },
+                            ) {
+                                group.pages.forEachIndexed { index, page ->
+                                    key(page) {
+                                        byPage[page]?.let { entry ->
+                                            if (index > 0) {
+                                                HorizontalDivider(
+                                                    Modifier.padding(horizontal = 12.dp),
+                                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                                )
+                                            }
+                                            HubRow(
+                                                icon = settingsPageIcon(page),
+                                                title = entry.title,
+                                                value = entry.state,
+                                                note = entry.note,
+                                                locked = locked && page.editsProfile,
+                                                destructive = page == SettingsPage.RESET,
+                                                onClick = { openPage(page) },
+                                            )
+                                        }
+                                    }
                                 }
                             }
+                            Spacer(Modifier.height(12.dp))
                         }
-                        Spacer(Modifier.height(12.dp))
                     }
                 }
             }
@@ -246,7 +272,7 @@ private fun SearchResults(
                         if (index > 0) {
                             HorizontalDivider(
                                 Modifier.padding(horizontal = 12.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                color = MaterialTheme.colorScheme.outlineVariant,
                             )
                         }
                         val page = hit.entry.page
