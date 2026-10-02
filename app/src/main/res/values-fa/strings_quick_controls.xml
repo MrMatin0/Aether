@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- کنترل‌های سریع اتصال در زبانهٔ اتصال -->
+<resources>
+    <string name="qc_route">مسیر</string>
+    <string name="qc_protocol">پروتکل</string>
+    <string name="qc_scan">اسکن</string>
+
+    <string name="qc_not_used">بی‌اثر در این مسیر</string>
+    <string name="qc_pinned">نقطهٔ پایانی ثابت</string>
+
+    <string name="qc_change">تغییر %1$s</string>
+    <string name="qc_locked">در حین اتصال قفل است</string>
+
+    <string name="qc_title">تنظیم اتصال</string>
+    <string name="qc_note">تغییرها از اتصال بعدی اعمال می‌شوند. باقی گزینه‌ها در تنظیمات هستند.</string>
+    <string name="qc_done">تأیید</string>
+    <string name="qc_advanced_label">گزینه‌های بیشتر</string>
+    <string name="qc_advanced_connection">نقطهٔ پایانی، نسخهٔ IP و گزینه‌های MASQUE</string>
+    <string name="qc_advanced_chain">گزینه‌های Psiphon و Tor</string>
+    <string name="qc_advanced_bridges">پل‌های Tor</string>
+
+    <string name="qc_not_used_note">مسیر %1$s از موتور Aether استفاده نمی‌کند. این انتخاب برای بعد نگه داشته می‌شود، اما در این مسیر اثری ندارد.</string>
+    <string name="qc_pinned_note">یک نقطهٔ پایانی ثابت انتخاب کرده‌اید، پس اسکن انجام نمی‌شود. برای استفاده از حالت اسکن، نقطهٔ پایانی را به «خودکار» برگردانید.</string>
+    <string name="qc_mim_note">هر دو لایهٔ MASQUE با اسکن پیدا می‌شوند. برای ثابت کردن هر لایه، گزینه‌های نقطهٔ پایانی را در پایین باز کنید.</string>
+
+    <string name="qc_protocol_auto_desc">اول شبکه را می‌سنجد و مناسب‌ترین انتقال را خودش انتخاب می‌کند.</string>
+    <string name="qc_protocol_masque_desc">تونل MASQUE کلادفلر؛ شبیه ترافیک عادی HTTPS.</string>
+    <string name="qc_protocol_mim_desc">دو لایهٔ MASQUE؛ خروجی با لبه‌ای که به آن وصل می‌شوید یکی نیست.</string>
+    <string name="qc_protocol_wireguard_desc">تونل کلاسیک UDP وارپ؛ سریع‌ترین گزینه وقتی UDP باز است.</string>
+    <string name="qc_protocol_gool_desc">وارپ درون وارپ روی WireGuard، برای خروجی متفاوت.</string>
+</resources>

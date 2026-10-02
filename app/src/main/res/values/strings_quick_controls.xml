@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quick connection controls on the connection tab (ui/QuickControls.kt). -->
+<resources>
+    <!-- Tile eyebrows / sheet sections. Kept short: three of them share a phone's width. -->
+    <string name="qc_route">Route</string>
+    <string name="qc_protocol">Protocol</string>
+    <string name="qc_scan">Scan</string>
+
+    <!-- Tile values that are honest about an idle setting -->
+    <string name="qc_not_used">Not used</string>
+    <string name="qc_pinned">Pinned endpoint</string>
+
+    <!-- Accessibility. %1$s is the control, e.g. "Protocol". -->
+    <string name="qc_change">Change %1$s</string>
+    <string name="qc_locked">Locked while connected</string>
+
+    <!-- Sheet -->
+    <string name="qc_title">Connection setup</string>
+    <string name="qc_note">Changes apply to your next connection. Everything else lives in Settings.</string>
+    <string name="qc_done">Done</string>
+    <string name="qc_advanced_label">More options</string>
+    <string name="qc_advanced_connection">Endpoint, IP version and MASQUE options</string>
+    <string name="qc_advanced_chain">Psiphon and Tor options</string>
+    <string name="qc_advanced_bridges">Tor bridges</string>
+
+    <!-- %1$s is the route, e.g. "Tor". -->
+    <string name="qc_not_used_note">%1$s does not use the Aether engine. This choice is kept for later but has no effect on this route.</string>
+    <string name="qc_pinned_note">You pinned an endpoint, so the scan is skipped. Set the endpoint back to automatic to use a scan mode.</string>
+    <string name="qc_mim_note">Both MASQUE hops are found by scanning. To pin either hop, open the endpoint options below.</string>
+
+    <!-- One line per protocol -->
+    <string name="qc_protocol_auto_desc">Probes the network first and picks the transport for you.</string>
+    <string name="qc_protocol_masque_desc">Cloudflare\'s MASQUE tunnel. Looks like ordinary HTTPS traffic.</string>
+    <string name="qc_protocol_mim_desc">Two MASQUE hops, so the exit is not the edge you connect to.</string>
+    <string name="qc_protocol_wireguard_desc">WARP\'s classic UDP tunnel. Fastest where UDP gets through.</string>
+    <string name="qc_protocol_gool_desc">WARP inside WARP over WireGuard, for a different exit.</string>
+</resources>
