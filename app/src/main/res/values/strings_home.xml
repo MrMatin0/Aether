@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the Aurora home redesign (status capsule, location card). -->
+<resources>
+    <string name="aurora_status_protected">Protected</string>
+    <string name="aurora_status_unprotected">Not protected</string>
+    <string name="aurora_status_securing">Securing</string>
+    <string name="aurora_status_stopping">Disconnecting</string>
+    <string name="aurora_status_failed">Interrupted</string>
+    <string name="aurora_location_label">Location</string>
+</resources>
