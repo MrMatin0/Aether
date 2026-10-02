@@ -45,6 +45,7 @@ import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.ScanModeSelector
 import studio.cluvex.aether.ui.theme.AetherDur
@@ -161,8 +162,8 @@ internal fun QuickControls(
     val notUsed = stringResource(R.string.qc_not_used)
 
     // The VALUE ignores the lock: a locked tile still says what it is set to.
-    fun shown(control: QuickControl) = quickControlAvailability(control, profile, editable = true)
-    fun lockOr(control: QuickControl) = quickControlAvailability(control, profile, editable)
+    val protocolShown = quickControlAvailability(QuickControl.PROTOCOL, profile, editable = true)
+    val scanShown = quickControlAvailability(QuickControl.SCAN, profile, editable = true)
 
     val liveProtocol = meta.protocol?.takeIf { state.isConnected && it.isNotBlank() }
     val specs = listOf(
@@ -172,34 +173,35 @@ internal fun QuickControls(
             value = chainLabel(profile.chain),
             icon = Icons.Rounded.Route,
             tint = tierTone(profile.chain),
-            availability = lockOr(QuickControl.ROUTE),
+            availability = quickControlAvailability(QuickControl.ROUTE, profile, editable),
             idle = false,
         ),
         TileSpec(
             control = QuickControl.PROTOCOL,
             label = stringResource(R.string.qc_protocol),
-            value = when (shown(QuickControl.PROTOCOL)) {
-                ControlAvailability.NOT_USED -> notUsed
+            value = if (protocolShown == ControlAvailability.NOT_USED) {
+                notUsed
+            } else {
                 // Auto is resolved before launch; once up, say what it became.
-                else -> liveProtocol ?: protocolLabel(profile.protocol)
+                liveProtocol ?: protocolLabel(profile.protocol)
             },
             icon = Icons.Rounded.Cable,
             tint = accents.brand,
-            availability = lockOr(QuickControl.PROTOCOL),
-            idle = shown(QuickControl.PROTOCOL) == ControlAvailability.NOT_USED,
+            availability = quickControlAvailability(QuickControl.PROTOCOL, profile, editable),
+            idle = protocolShown == ControlAvailability.NOT_USED,
         ),
         TileSpec(
             control = QuickControl.SCAN,
             label = stringResource(R.string.qc_scan),
-            value = when (shown(QuickControl.SCAN)) {
+            value = when (scanShown) {
                 ControlAvailability.NOT_USED -> notUsed
                 ControlAvailability.PINNED -> stringResource(R.string.qc_pinned)
                 else -> scanLabel(profile.scanMode.effectiveFor(BuildConfig.CORE_VERSION))
             },
-            icon = Icons.Rounded.Radar,
+            icon = Icons.Rounded.Speed,
             tint = accents.brand,
-            availability = lockOr(QuickControl.SCAN),
-            idle = shown(QuickControl.SCAN) != ControlAvailability.READY,
+            availability = quickControlAvailability(QuickControl.SCAN, profile, editable),
+            idle = scanShown != ControlAvailability.READY,
         ),
     )
 
@@ -369,7 +371,7 @@ internal fun ConnectionControlsSheet(
 
     // Every write goes through here: refused once locked, and a no-op choice
     // (tapping the selected row) does not rewrite the profile.
-    val apply: (ConnectionProfile.() -> ConnectionProfile) -> Unit = { change ->
+    val edit: (ConnectionProfile.() -> ConnectionProfile) -> Unit = { change ->
         if (canEdit) {
             val next = latest.change()
             if (next != latest) onProfileChange(next)
@@ -418,13 +420,13 @@ internal fun ConnectionControlsSheet(
                 Column(Modifier.fillMaxWidth()) {
                     when (shown) {
                         QuickControl.ROUTE -> RouteChoices(profile.chain, cores) { mode ->
-                            apply { copy(chain = mode) }
+                            edit { copy(chain = mode) }
                         }
                         QuickControl.PROTOCOL -> ProtocolChoices(profile, editable) { value ->
-                            apply { copy(protocol = value) }
+                            edit { copy(protocol = value) }
                         }
                         QuickControl.SCAN -> ScanChoices(profile, editable) { value ->
-                            apply { copy(scanMode = value) }
+                            edit { copy(scanMode = value) }
                         }
                     }
                     Spacer(Modifier.height(18.dp))
@@ -498,7 +500,7 @@ private fun SectionSwitcher(selected: QuickControl, onSelect: (QuickControl) -> 
 private fun sectionIcon(control: QuickControl): ImageVector = when (control) {
     QuickControl.ROUTE -> Icons.Rounded.Route
     QuickControl.PROTOCOL -> Icons.Rounded.Cable
-    QuickControl.SCAN -> Icons.Rounded.Radar
+    QuickControl.SCAN -> Icons.Rounded.Speed
 }
 
 @Composable
@@ -738,7 +740,7 @@ internal fun protocolDescription(protocol: Protocol): String = stringResource(
 private fun ScanChoices(
     profile: ConnectionProfile,
     enabled: Boolean,
-    onSelect: (studio.cluvex.aether.model.ScanMode) -> Unit,
+    onSelect: (ScanMode) -> Unit,
 ) {
     when {
         !profile.chain.usesAether -> {
