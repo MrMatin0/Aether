@@ -14,13 +14,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,14 +37,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -70,8 +65,6 @@ import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
-import studio.cluvex.aether.core.CoreAvailability
-import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
@@ -80,7 +73,6 @@ import studio.cluvex.aether.core.TrafficMonitor
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
-import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
@@ -99,36 +91,36 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB, v5: "Aurora, steady".
- *
- * Same information architecture as v4 (one screen, each fact once):
+ * THE CONNECTION TAB, v6: "Aurora, in reach".
  *
  *   status capsule     the state in one word, with a live dot that FADES
  *   hero               the glass power core inside its orbit; satellites (one
  *                      per hop) ride the orbit with a tail
  *   title + hint
+ *   quick controls     route, protocol, scan: the current value of each, one
+ *                      tap from the sheet that changes it (QuickControls.kt)
  *   error strip        only on failure
  *   session stats      only while verified
- *   location card      always: exit, chain, route path, IP footer
+ *   location card      exit, route path (roomy windows), IP footer
  *   privacy line       idle, Aether only, when there is room
  *
- * v5 CHANGES
+ * v6 CHANGES
  *
- *   STEADY ORB  The hero's slot is sized from the WINDOW ([heroSlotHeight]),
- *               never from what the cards below happen to leave over. In v4
- *               the orb took `weight(1f)`, so the stats card appearing, the
- *               IP row hiding mid-attempt or the error strip showing all
- *               resized it: the button grew and shrank on every state change.
- *   LIGHTER     No sonar waves, no breathing wash. Rotating parts are drawn
- *               once and turned by a graphics layer. The attempt clock ticks
- *               inside the hero only, not across the whole tab. The wash's
- *               gradients are cached. The route path stops animating once the
- *               session is up instead of running for its whole length.
+ *   IN REACH    The three settings that decide whether and how fast you get
+ *               online moved from Settings to directly under the button. The
+ *               v5 route-only sheet (opened from the location card) is gone:
+ *               the quick-controls sheet covers route, protocol and scan in
+ *               one place and links to the Settings page that owns the rest.
+ *   ONE FACT,   The location card no longer repeats chain, scan mode and
+ *   ONCE        protocol in its subtitle, and is no longer a click target: the
+ *               deck above it owns those facts and that action.
+ *   SAME ORB    [heroReserve] grew by the deck's row, so the orb still keeps
+ *               one size through every state ([heroSlotHeight] unchanged).
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
  * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail],
- * [heroGeometry], [homeDensity], [useTwoPane] and [formatSessionUptime] keep
- * their exact contracts.
+ * [heroGeometry], [homeDensity], [useTwoPane], [heroSlotHeight] and
+ * [formatSessionUptime] keep their exact contracts.
  */
 
 /** Engine, tunnel, verify, ready. */
@@ -148,8 +140,6 @@ internal val ORB_HOME_MIN = 96.dp
 
 private val NODE_SIZE = 32.dp
 private val NODE_SIZE_DENSE = 26.dp
-private val HOP_CHIP = 28.dp
-private val HOP_STEP = 16.dp
 private val FLAG_AVATAR = 46.dp
 private val FLAG_AVATAR_DENSE = 38.dp
 
@@ -162,10 +152,10 @@ private val TWO_PANE_GUTTER = 72.dp
 /**
  * How much the tab can show at once, from the height it is given.
  *
- *   ROOMY    everything, at full padding
- *   COMPACT  everything but the privacy line, tighter padding
- *   TIGHT    location card collapses (no route path), the hint goes,
- *            session stats lose their meters
+ *   ROOMY    everything, at full padding, route path in the location card
+ *   COMPACT  everything but the privacy line and the route path
+ *   TIGHT    quick controls go to one line each, the hint goes, session
+ *            stats lose their meters
  *   MINIMAL  as TIGHT, and the session stats go (the orb still says verified)
  */
 internal enum class HomeDensity { ROOMY, COMPACT, TIGHT, MINIMAL }
@@ -203,16 +193,21 @@ internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
 
 /**
  * The height everything that is NOT the hero can need at [density], in the
- * WORST state for that density (verified: stats card plus the full location
- * card). Scaled with the font, like [homeDensity].
+ * WORST state for that density (verified: quick controls, stats card and the
+ * location card). Scaled with the font, like [homeDensity].
+ *
+ * v6 budgets the quick-controls deck: +68dp roomy (56dp tiles + gap), +52dp
+ * tight and minimal (44dp one-line tiles + gap). Compact only grows by 8dp,
+ * because the route path it used to draw (~56dp) now only appears when roomy.
+ * Two-pane is unchanged: the deck lives in the scrolling details pane there.
  */
 internal fun heroReserve(density: HomeDensity, twoPane: Boolean, fontScale: Float = 1f): Dp {
     val base = when {
         twoPane -> if (density == HomeDensity.MINIMAL) 92.dp else 116.dp
-        density == HomeDensity.ROOMY -> 420.dp
-        density == HomeDensity.COMPACT -> 350.dp
-        density == HomeDensity.TIGHT -> 250.dp
-        else -> 196.dp
+        density == HomeDensity.ROOMY -> 488.dp
+        density == HomeDensity.COMPACT -> 358.dp
+        density == HomeDensity.TIGHT -> 302.dp
+        else -> 248.dp
     }
     return base * fontScale.coerceAtLeast(1f)
 }
@@ -336,6 +331,7 @@ internal fun ConnectionHome(
     onProfileChange: (ConnectionProfile) -> Unit,
     onToggleConnection: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenSettings: (SettingsPage) -> Unit = {},
 ) {
     val accents = LocalAetherAccents.current
     val mode = buttonMode(state)
@@ -349,10 +345,12 @@ internal fun ConnectionHome(
     // Only the STAMP lives here; the ticking happens inside the hero.
     val startedAt = rememberSaveable(working) { SystemClock.elapsedRealtime() }
 
-    var routeSheet by rememberSaveable { mutableStateOf(false) }
+    // Which quick-controls section is open, or none. Saved, so a rotation
+    // keeps the sheet on the section the user was looking at.
+    var controls by rememberSaveable { mutableStateOf<QuickControl?>(null) }
     // The session started (or a reconnect kicked in) while the sheet was open:
     // the choice is no longer the user's to make, so the sheet goes away.
-    LaunchedEffect(editable) { if (!editable) routeSheet = false }
+    LaunchedEffect(editable) { if (!editable) controls = null }
 
     // Manual-only latency: a stale reading must not survive the session.
     val verified = state is ConnectionState.Connected
@@ -388,7 +386,7 @@ internal fun ConnectionHome(
                 tone = tone,
                 editable = editable,
                 density = density,
-                onOpenRoute = { routeSheet = true },
+                onOpenControl = { controls = it },
                 onOpenDiagnostics = onOpenDiagnostics,
                 modifier = slot,
             )
@@ -471,14 +469,14 @@ internal fun ConnectionHome(
         }
     }
 
-    if (routeSheet) {
-        RouteSheet(
-            selected = profile.chain,
-            onDismiss = { routeSheet = false },
-            onSelect = { chosen ->
-                if (chosen != profile.chain) onProfileChange(profile.copy(chain = chosen))
-                routeSheet = false
-            },
+    controls?.let { section ->
+        ConnectionControlsSheet(
+            initial = section,
+            profile = profile,
+            editable = editable,
+            onProfileChange = onProfileChange,
+            onOpenSettings = onOpenSettings,
+            onDismiss = { controls = null },
         )
     }
 }
@@ -627,7 +625,11 @@ private fun HomeHeadline(
     }
 }
 
-/** Everything below the hero, in one column, each fact once. */
+/**
+ * Everything below the hero, in one column, each fact once. The quick
+ * controls lead: they are the next thing a user reaches for after the button
+ * (and, after a failure, before trying it again).
+ */
 @Composable
 private fun HomeDetails(
     state: ConnectionState,
@@ -639,7 +641,7 @@ private fun HomeDetails(
     tone: Color,
     editable: Boolean,
     density: HomeDensity,
-    onOpenRoute: () -> Unit,
+    onOpenControl: (QuickControl) -> Unit,
     onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -651,6 +653,14 @@ private fun HomeDetails(
     // is parked in that window and the row would flash "unavailable".
     val showIp = connected || (step == null && state !is ConnectionState.Disconnecting)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(gap)) {
+        QuickControls(
+            profile = profile,
+            state = state,
+            editable = editable,
+            compact = density >= HomeDensity.TIGHT,
+            onOpen = onOpenControl,
+        )
+
         if (state is ConnectionState.Error) {
             // The engine's own words, and one route to the log line behind them.
             ErrorStrip(state.message, accents.failed, onOpenDiagnostics)
@@ -670,9 +680,8 @@ private fun HomeDetails(
             tone = tone,
             editable = editable,
             showIp = showIp,
-            expanded = density <= HomeDensity.COMPACT,
+            expanded = density == HomeDensity.ROOMY,
             dense = density != HomeDensity.ROOMY,
-            onOpen = onOpenRoute,
         )
 
         // The WARP disclosure is about the WARP exit network; with Psiphon or
@@ -1046,7 +1055,8 @@ private fun RateCell(
 
 private data class RouteNode(val label: String, val icon: ImageVector)
 
-private fun hopIcon(hop: Hop): ImageVector = when (hop) {
+/** One glyph per core. Shared with the route choices in QuickControls.kt. */
+internal fun hopIcon(hop: Hop): ImageVector = when (hop) {
     Hop.AETHER -> Icons.Rounded.Bolt
     Hop.PSIPHON -> Icons.Rounded.Cloud
     Hop.TOR -> Icons.Rounded.Layers
@@ -1112,13 +1122,12 @@ private fun countryName(code: String): String {
 
 /**
  * THE LOCATION CARD: where this session comes out, how it gets there, and
- * what the internet sees. The only place exit, chain, scan mode, protocol and
- * IP appear on the tab.
+ * what the internet sees. Read-only since v6: the route, protocol and scan
+ * mode are shown (and changed) by the quick controls above it, so this card
+ * no longer repeats them in a subtitle or opens a picker of its own.
  *
- * The top part (avatar, place, chain, route path) opens the route picker,
- * only while the profile is editable; locked, the lock glyph carries the
- * reason for TalkBack. The IP footer is separate so its latency chip is its
- * own control. [expanded] draws the route path; [dense] tightens padding.
+ * [expanded] draws the route path; [dense] tightens padding. The border takes
+ * the state colour while the profile is locked, the same cue as before.
  */
 @Composable
 private fun LocationCard(
@@ -1133,10 +1142,8 @@ private fun LocationCard(
     showIp: Boolean,
     expanded: Boolean,
     dense: Boolean,
-    onOpen: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
-    val meta by EngineMeta.state.collectAsStateWithLifecycle()
     val chain = profile.chain
     val nodes = routeNodes(chain)
     val lit = litRouteNodes(state, step, nodes.size)
@@ -1144,21 +1151,6 @@ private fun LocationCard(
     val place = countryName(exit)
     val connected = state is ConnectionState.Connected
     val pad = if (dense) 14.dp else 16.dp
-
-    val tech = buildList {
-        if (chain.usesAether) {
-            add(
-                if (profile.hasManualPeer) {
-                    endpointLabel(EndpointMode.MANUAL_PEER)
-                } else {
-                    scanLabel(profile.scanMode)
-                },
-            )
-            val liveProtocol = meta.protocol?.takeIf { state.isConnected && it.isNotBlank() }
-            add(liveProtocol ?: protocolLabel(profile.protocol))
-        }
-    }.joinToString(" \u00B7 ")
-    val subtitle = listOf(chainLabel(chain), tech).filter { it.isNotBlank() }.joinToString(" \u00B7 ")
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1170,12 +1162,6 @@ private fun LocationCard(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clickable(
-                        enabled = editable,
-                        onClickLabel = stringResource(R.string.conn_route_change),
-                        role = Role.Button,
-                        onClick = onOpen,
-                    )
                     .background(
                         Brush.verticalGradient(listOf(tone.copy(alpha = 0.10f), Color.Transparent)),
                     )
@@ -1189,7 +1175,11 @@ private fun LocationCard(
                         lit = connected,
                     )
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .semantics(mergeDescendants = true) { },
+                    ) {
                         Text(
                             stringResource(R.string.aurora_location_label),
                             style = AetherMetaLabel,
@@ -1203,23 +1193,7 @@ private fun LocationCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(
-                            subtitle,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    TierBadge(chain)
-                    Spacer(Modifier.width(4.dp))
-                    Icon(
-                        if (editable) Icons.AutoMirrored.Rounded.KeyboardArrowRight else Icons.Rounded.Lock,
-                        contentDescription = if (editable) null else stringResource(R.string.conn_route_locked),
-                        modifier = Modifier.size(if (editable) 24.dp else 16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
 
                 if (expanded) {
@@ -1590,208 +1564,6 @@ private fun IconChip(
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, description, Modifier.size(size * 0.54f), tint)
-    }
-}
-
-/** Fast / slower / slowest, from the hops themselves - same as the Chain page. */
-@Composable
-private fun TierBadge(mode: ChainMode) {
-    val accents = LocalAetherAccents.current
-    val label: String
-    val tone: Color
-    when {
-        mode.usesTor -> {
-            label = stringResource(R.string.chain_tier_slow)
-            tone = accents.failed
-        }
-        mode.usesPsiphon -> {
-            label = stringResource(R.string.chain_tier_moderate)
-            tone = accents.working
-        }
-        else -> {
-            label = stringResource(R.string.chain_tier_fast)
-            tone = accents.protected
-        }
-    }
-    Surface(color = tone.copy(alpha = 0.14f), shape = CircleShape) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-            style = AetherMetaLabel,
-            color = tone,
-            maxLines = 1,
-        )
-    }
-}
-
-// --------------------------------------------------------------- route sheet --
-
-/**
- * The route picker, where the route is. Same rules as the Chain settings page.
- * The sheet itself still scrolls: it is a modal list, not the home tab.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RouteSheet(
-    selected: ChainMode,
-    onDismiss: () -> Unit,
-    onSelect: (ChainMode) -> Unit,
-) {
-    val context = LocalContext.current
-    // Install-time facts: read once, never per recomposition.
-    val cores = remember(context) { CoreAvailability.of(context) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = AetherRadius.Sheet, topEnd = AetherRadius.Sheet),
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-        ) {
-            Text(
-                stringResource(R.string.conn_route_sheet_title),
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.semantics { heading() },
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                stringResource(R.string.conn_route_sheet_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(18.dp))
-            Column(Modifier.fillMaxWidth().selectableGroup()) {
-                Text(
-                    stringResource(R.string.chain_group_single),
-                    style = AetherMetaLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                ChainMode.entries.filterNot { it.isChained }.forEach { mode ->
-                    RouteOption(mode, selected, cores, onSelect)
-                }
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    stringResource(R.string.chain_group_stacked),
-                    style = AetherMetaLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                ChainMode.entries.filter { it.isChained }.forEach { mode ->
-                    RouteOption(mode, selected, cores, onSelect)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RouteOption(
-    mode: ChainMode,
-    selected: ChainMode,
-    cores: CoreAvailability.Snapshot,
-    onSelect: (ChainMode) -> Unit,
-) {
-    val accents = LocalAetherAccents.current
-    val missing = cores.missing(mode)
-    val runnable = missing.isEmpty()
-    val active = mode == selected
-    val alpha = if (runnable) 1f else 0.45f
-    val tint = if (active) accents.brand else MaterialTheme.colorScheme.onSurfaceVariant
-    val shape = RoundedCornerShape(AetherRadius.Card)
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clip(shape)
-            .selectable(
-                selected = active,
-                enabled = runnable,
-                role = Role.RadioButton,
-                onClick = { onSelect(mode) },
-            ),
-        shape = shape,
-        color = if (active) accents.brandWash else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, if (active) accents.brand else accents.cardBorder),
-    ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            HopStack(mode, tint, alpha)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        chainLabel(mode),
-                        Modifier.weight(1f, fill = false),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    TierBadge(mode)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    chainDescription(mode),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!runnable) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        stringResource(
-                            R.string.chain_mode_unavailable,
-                            missing.joinToString(", ") { it.label },
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = accents.failed,
-                    )
-                }
-            }
-            Spacer(Modifier.width(8.dp))
-            Icon(
-                if (active) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = tint.copy(alpha = alpha),
-            )
-        }
-    }
-}
-
-/** The hops of a mode as overlapping chips, entry first. Fixed width so rows align. */
-@Composable
-private fun HopStack(mode: ChainMode, tint: Color, alpha: Float) {
-    val accents = LocalAetherAccents.current
-    val hops = mode.hops.asReversed()
-    Box(
-        Modifier
-            .width(HOP_CHIP + HOP_STEP * 2)
-            .height(HOP_CHIP),
-    ) {
-        hops.forEachIndexed { index, hop ->
-            Box(
-                Modifier
-                    .offset(x = HOP_STEP * index)
-                    .size(HOP_CHIP)
-                    .clip(CircleShape)
-                    .background(accents.card)
-                    .border(1.dp, tint.copy(alpha = 0.5f * alpha), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(hopIcon(hop), null, Modifier.size(14.dp), tint.copy(alpha = alpha))
-            }
-        }
     }
 }
 

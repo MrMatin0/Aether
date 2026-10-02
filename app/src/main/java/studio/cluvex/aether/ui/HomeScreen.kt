@@ -131,7 +131,9 @@ fun HomeScreen(
     val settingsScroll = rememberScrollState()
     val pages = rememberSaveableStateHolder()
     val haptics = LocalHapticFeedback.current
-    val editable = state is ConnectionState.Idle || state is ConnectionState.Error
+    // One rule for the whole shell; the quick controls and the settings pages
+    // lock on exactly the same states.
+    val editable = quickControlsEditable(state)
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val reduced = LocalReducedMotion.current
     val accents = LocalAetherAccents.current
@@ -224,7 +226,10 @@ fun HomeScreen(
                                         onOpenDiagnostics = {
                                             focusErrors = true
                                             route = route.select(HomeTab.DIAGNOSTICS)
-                                        })
+                                        },
+                                        // The quick-controls sheet hands over to the page
+                                        // that owns the rest; back returns via the hub.
+                                        onOpenSettings = { route = route.open(it) })
                                 }
                             }
                         }
