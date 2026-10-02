@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the Aurora home redesign (status capsule, location card). -->
+<resources>
+    <string name="aurora_status_protected">محافظت\u200cشده</string>
+    <string name="aurora_status_unprotected">بدون محافظت</string>
+    <string name="aurora_status_securing">در حال ایمن\u200cسازی</string>
+    <string name="aurora_status_stopping">در حال قطع</string>
+    <string name="aurora_status_failed">قطع شد</string>
+    <string name="aurora_location_label">موقعیت</string>
+</resources>

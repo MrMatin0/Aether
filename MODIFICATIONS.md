@@ -45,6 +45,18 @@ high-level shape of the divergence, by area:
   onboarding flow. The diagnostics panel was rebuilt on the new components.
   A Vazirmatn type scale was added with Persian-safe leading and
   locale-aware digit handling.
+- **The connection tab and app shell, "Aurora"** (2026-10-02,
+  `feat/home-aurora-redesign`). The connect orb is a glass power core with a
+  conic progress arc and a comet sweep; the hero sits in a sonar field; a
+  status capsule, a session-stats card and a single location card (flag,
+  localized country, route path, IP and latency) replace the separate route,
+  traffic and IP surfaces; a floating dock with a live status dot replaces
+  the flat navigation bar. Layout and state contracts are unchanged.
+  Review fixes (2026-10-02) preserve connected-core text contrast across the
+  gradient and clock background in both themes, remove the unused radial
+  animation after connection, and add regression tests for both contracts.
+  The IP footer puts its label above the address so long addresses cannot
+  consume the label's entire width on narrow cards.
 - **Language handling.** An in-app English/Persian switch, with the first-run
   flow and the settings surface both wired to it.
 - **The VPN session layer.** `vpn/session` and the tunnel core
