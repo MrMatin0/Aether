@@ -101,6 +101,17 @@ private const val TICK_COUNT = 36
 internal fun tickLit(fraction: Float, sweep: Float, mode: ButtonMode): Boolean =
     mode != ButtonMode.ERROR && sweep > 0f && fraction <= sweep
 
+/** A radial clock is useful only while its breathing ring is actually drawn. */
+internal fun orbPulseEnabled(mode: ButtonMode, enabled: Boolean, reduced: Boolean): Boolean =
+    mode == ButtonMode.BUSY && enabled && !reduced
+
+/** Preserve onProtected contrast across the entire fill, not just its middle stop. */
+internal fun connectedCoreColors(accent: Color, dark: Boolean): List<Color> = listOf(
+    if (dark) lerp(accent, Color.White, 0.10f) else accent,
+    accent,
+    lerp(accent, Color.Black, 0.10f),
+)
+
 /** The width-driven default's upper bound (callers that pass no diameter). */
 private val ORB_MAX = 256.dp
 
@@ -209,6 +220,7 @@ fun ConnectButton(
     // Two independent clocks, read only in the draw lambda.
     val spin = remember { Animatable(0f) }
     val wave = remember { Animatable(0f) }
+    val showPulse = orbPulseEnabled(mode, enabled, reduced)
 
     LaunchedEffect(mode, reduced) {
         if (reduced) {
@@ -227,21 +239,10 @@ fun ConnectButton(
             else -> spin.snapTo(0f)
         }
     }
-    LaunchedEffect(mode, reduced) {
-        if (reduced) {
-            wave.snapTo(0f)
-            return@LaunchedEffect
-        }
-        when (mode) {
-            ButtonMode.BUSY -> {
-                wave.snapTo(0f)
-                wave.animateTo(1f, infiniteRepeatable(tween(2000, easing = LinearEasing)))
-            }
-            ButtonMode.CONNECTED -> {
-                wave.snapTo(0f)
-                wave.animateTo(1f, infiniteRepeatable(tween(4200, easing = LinearEasing)))
-            }
-            else -> wave.snapTo(0f)
+    LaunchedEffect(showPulse) {
+        wave.snapTo(0f)
+        if (showPulse) {
+            wave.animateTo(1f, infiniteRepeatable(tween(2000, easing = LinearEasing)))
         }
     }
 
@@ -251,8 +252,6 @@ fun ConnectButton(
     val onCore = accents.onProtected
     val darkTheme = accents.dark
     val showComet = !reduced && (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED)
-    // The ring breathes only while reaching. A teardown is not reaching for anything.
-    val showPulse = !reduced && enabled && mode == ButtonMode.BUSY
 
     // Words and glyph flip to the on-colour as the core fills.
     val contentTone = lerp(MaterialTheme.colorScheme.onSurface, onCore, core)
@@ -305,7 +304,6 @@ fun ConnectButton(
                 val topLeft = Offset(cx - ringR, cy - ringR)
                 val ringSize = Size(ringR * 2f, ringR * 2f)
                 val turn = spin.value
-                val phase = wave.value
 
                 // 1. AMBIENT BLOOM: legible across the room.
                 drawCircle(
@@ -324,6 +322,7 @@ fun ConnectButton(
 
                 // 2. BREATHING RING, only while an endpoint is being reached.
                 if (showPulse) {
+                    val phase = wave.value
                     repeat(2) { index ->
                         val p = (phase + index / 2f) % 1f
                         drawCircle(
@@ -475,11 +474,7 @@ fun ConnectButton(
                 if (core > 0.01f) {
                     drawCircle(
                         brush = Brush.linearGradient(
-                            colors = listOf(
-                                lerp(animatedAccent, Color.White, 0.20f),
-                                animatedAccent,
-                                lerp(animatedAccent, Color.Black, 0.30f),
-                            ),
+                            colors = connectedCoreColors(animatedAccent, darkTheme),
                             start = Offset(cx - discR, cy - discR),
                             end = Offset(cx + discR, cy + discR),
                         ),
@@ -488,7 +483,8 @@ fun ConnectButton(
                         alpha = core,
                     )
                 }
-                // Specular highlight: the "glass".
+                // A white highlight behind light-theme onProtected text would
+                // undo the fill's contrast. Keep it only on the unfilled core.
                 drawOval(
                     brush = Brush.verticalGradient(
                         colors = listOf(Color.White.copy(alpha = 0.18f), Color.Transparent),
@@ -497,6 +493,7 @@ fun ConnectButton(
                     ),
                     topLeft = Offset(cx - discR * 0.66f, cy - discR * 0.94f),
                     size = Size(discR * 1.32f, discR * 0.86f),
+                    alpha = if (darkTheme) 1f else 1f - core,
                 )
                 drawCircle(
                     color = animatedAccent.copy(alpha = 0.24f + 0.30f * core + 0.12f * squeeze),
