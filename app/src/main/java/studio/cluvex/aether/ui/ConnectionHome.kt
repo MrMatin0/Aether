@@ -4,7 +4,6 @@ import android.os.SystemClock
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
@@ -29,7 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -38,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +62,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.log10
@@ -98,34 +99,36 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB, v4: "Aurora".
+ * THE CONNECTION TAB, v5: "Aurora, steady".
  *
- * v3 fixed the information architecture (one screen, no scroll, each fact
- * once). v4 keeps that architecture and rebuilds the surface in the visual
- * language of current consumer VPN clients:
+ * Same information architecture as v4 (one screen, each fact once):
  *
- *   status capsule     the state in one word, with a live heartbeat dot
- *   hero               the glass power core inside a sonar field: waves roll
- *                      out from the core while reaching / once protected,
- *                      satellites (one per hop) ride the orbit with a tail
+ *   status capsule     the state in one word, with a live dot that FADES
+ *   hero               the glass power core inside its orbit; satellites (one
+ *                      per hop) ride the orbit with a tail
  *   title + hint
  *   error strip        only on failure
- *   session stats      only while verified: download / upload, rate, meter,
- *                      session total, in ONE card
- *   location card      always: flag avatar, the exit as a localized country
- *                      name, chain + scan + protocol, tier, the route path,
- *                      and the IP readout (with latency once verified) as its
- *                      footer. Was three separate surfaces.
+ *   session stats      only while verified
+ *   location card      always: exit, chain, route path, IP footer
  *   privacy line       idle, Aether only, when there is room
  *
- * NO SCROLL, same as v3: [homeDensity] picks what fits, [heroGeometry] sizes
- * the orb from what is left, [useTwoPane] splits landscape / wide windows.
+ * v5 CHANGES
+ *
+ *   STEADY ORB  The hero's slot is sized from the WINDOW ([heroSlotHeight]),
+ *               never from what the cards below happen to leave over. In v4
+ *               the orb took `weight(1f)`, so the stats card appearing, the
+ *               IP row hiding mid-attempt or the error strip showing all
+ *               resized it: the button grew and shrank on every state change.
+ *   LIGHTER     No sonar waves, no breathing wash. Rotating parts are drawn
+ *               once and turned by a graphics layer. The attempt clock ticks
+ *               inside the hero only, not across the whole tab. The wash's
+ *               gradients are cached. The route path stops animating once the
+ *               session is up instead of running for its whole length.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
- * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail]
- * and [formatSessionUptime] keep their exact contracts; the state machine,
- * the battery contract of the latency probe and the reduced-motion rules are
- * the same ones the rest of the app obeys.
+ * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail],
+ * [heroGeometry], [homeDensity], [useTwoPane] and [formatSessionUptime] keep
+ * their exact contracts.
  */
 
 /** Engine, tunnel, verify, ready. */
@@ -149,6 +152,12 @@ private val HOP_CHIP = 28.dp
 private val HOP_STEP = 16.dp
 private val FLAG_AVATAR = 46.dp
 private val FLAG_AVATAR_DENSE = 38.dp
+
+/** Horizontal padding of the one-pane column, both sides. */
+private val ONE_PANE_GUTTER = 40.dp
+
+/** Two-pane padding (24 + 24) plus the gap between the panes (24). */
+private val TWO_PANE_GUTTER = 72.dp
 
 /**
  * How much the tab can show at once, from the height it is given.
@@ -190,6 +199,39 @@ internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
     val orbit = side.coerceAtMost(HERO_ORBIT_MAX)
     val orb = (orbit * 0.78f).coerceIn(ORB_HOME_MIN, ORB_HOME_MAX)
     return maxOf(orbit, orb) to orb
+}
+
+/**
+ * The height everything that is NOT the hero can need at [density], in the
+ * WORST state for that density (verified: stats card plus the full location
+ * card). Scaled with the font, like [homeDensity].
+ */
+internal fun heroReserve(density: HomeDensity, twoPane: Boolean, fontScale: Float = 1f): Dp {
+    val base = when {
+        twoPane -> if (density == HomeDensity.MINIMAL) 92.dp else 116.dp
+        density == HomeDensity.ROOMY -> 420.dp
+        density == HomeDensity.COMPACT -> 350.dp
+        density == HomeDensity.TIGHT -> 250.dp
+        else -> 196.dp
+    }
+    return base * fontScale.coerceAtLeast(1f)
+}
+
+/**
+ * THE HERO'S FIXED SIDE. A function of the window alone, so the orb keeps one
+ * size through idle, connecting, verified and failed: the cards below it may
+ * come and go, the button does not move or resize.
+ */
+internal fun heroSlotHeight(
+    width: Dp,
+    height: Dp,
+    density: HomeDensity,
+    twoPane: Boolean,
+    fontScale: Float = 1f,
+): Dp {
+    val across = if (twoPane) (width - TWO_PANE_GUTTER) / 2 else width - ONE_PANE_GUTTER
+    val down = height - heroReserve(density, twoPane, fontScale)
+    return minOf(across, down).coerceIn(ORB_HOME_MIN, HERO_ORBIT_MAX)
 }
 
 /**
@@ -304,8 +346,8 @@ internal fun ConnectionHome(
 
     // Restarted whenever the attempt starts or ends, and saved, so a rotation
     // mid-connect does not reset the clock the user is timing the wait with.
+    // Only the STAMP lives here; the ticking happens inside the hero.
     val startedAt = rememberSaveable(working) { SystemClock.elapsedRealtime() }
-    val elapsed = tickingElapsed(startedAt, working)
 
     var routeSheet by rememberSaveable { mutableStateOf(false) }
     // The session started (or a reconnect kicked in) while the sheet was open:
@@ -316,15 +358,17 @@ internal fun ConnectionHome(
     val verified = state is ConnectionState.Connected
     LaunchedEffect(verified) { if (!verified) PingMonitor.reset() }
 
-    val hero: @Composable (Modifier) -> Unit = { slot ->
+    val hero: @Composable (Modifier, Dp) -> Unit = { slot, side ->
         HomeHero(
             state = state,
             mode = mode,
             chain = profile.chain,
             tone = tone,
             connectedSince = connectedSince,
-            elapsed = elapsed,
+            startedAt = startedAt,
+            working = working,
             step = step,
+            side = side,
             onToggleConnection = onToggleConnection,
             modifier = slot,
         )
@@ -351,10 +395,11 @@ internal fun ConnectionHome(
         }
 
         if (twoPane) {
+            val heroSide = heroSlotHeight(maxWidth, maxHeight, density, twoPane = true, fontScale = fontScale)
             Row(
                 Modifier
                     .fillMaxSize()
-                    .auroraWash(tone, accents.brand, breathing = state.isBusy, focusX = 0.27f, focusY = 0.50f)
+                    .auroraWash(tone, accents.brand, focusX = 0.27f, focusY = 0.50f)
                     .padding(horizontal = 24.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -364,29 +409,41 @@ internal fun ConnectionHome(
                 ) {
                     Spacer(Modifier.height(4.dp))
                     StatusCapsule(state, mode, tone)
-                    hero(Modifier.weight(1f).fillMaxWidth())
+                    hero(Modifier.fillMaxWidth().height(heroSide), heroSide)
                     HomeHeadline(state, profile, showHint = density != HomeDensity.MINIMAL, large = false)
-                    Spacer(Modifier.height(12.dp))
+                    // Slack goes BELOW the hero, so the hint changing length
+                    // never nudges the orb.
+                    Spacer(Modifier.weight(1f))
                 }
                 Spacer(Modifier.width(24.dp))
                 Box(
                     Modifier.weight(1f).fillMaxHeight(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    details(Modifier.widthIn(max = 520.dp).fillMaxWidth())
+                    details(
+                        Modifier
+                            .widthIn(max = 520.dp)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                    )
                 }
             }
         } else {
+            val reserve = heroReserve(density, twoPane = false, fontScale = fontScale)
+            val heroSide = heroSlotHeight(maxWidth, maxHeight, density, twoPane = false, fontScale = fontScale)
+            // Centre the block for its TALLEST state, once, from the window:
+            // a fixed lead, so nothing above the cards ever moves.
+            val lead = ((maxHeight - heroSide - reserve) / 2).coerceIn(0.dp, 56.dp)
             Column(
                 Modifier
                     .fillMaxSize()
-                    .auroraWash(tone, accents.brand, breathing = state.isBusy, focusX = 0.5f, focusY = 0.30f)
+                    .auroraWash(tone, accents.brand, focusX = 0.5f, focusY = 0.30f)
                     .padding(horizontal = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 6.dp else 2.dp))
+                Spacer(Modifier.height(lead + (if (density == HomeDensity.ROOMY) 6.dp else 2.dp)))
                 StatusCapsule(state, mode, tone)
-                hero(Modifier.weight(1f).fillMaxWidth())
+                hero(Modifier.fillMaxWidth().height(heroSide), heroSide)
                 HomeHeadline(
                     state,
                     profile,
@@ -394,8 +451,21 @@ internal fun ConnectionHome(
                     large = density == HomeDensity.ROOMY,
                 )
                 Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 18.dp else 10.dp))
-                // Capped so a portrait tablet gets cards, not banners.
-                details(Modifier.widthIn(max = 560.dp).fillMaxWidth())
+                // The cards grow downwards into the remaining space. The scroll
+                // is only a safety net for a window smaller than any budget;
+                // on a phone the content fits and it never engages.
+                Box(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    // Capped so a portrait tablet gets cards, not banners.
+                    details(
+                        Modifier
+                            .widthIn(max = 560.dp)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
                 Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 12.dp else 8.dp))
             }
         }
@@ -424,9 +494,9 @@ private fun capsuleLabel(state: ConnectionState): Int = when {
 }
 
 /**
- * The state in one word, on a pill of its own colour, with a heartbeat dot
- * that beats fast while reaching and slow once protected. Static at rest, on
- * failure and under reduced motion.
+ * The state in one word, on a pill of its own colour, with a live dot whose
+ * halo fades in and out (fast while reaching, slow once protected). The dot
+ * never changes size. Static at rest, on failure and under reduced motion.
  */
 @Composable
 private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color) {
@@ -439,11 +509,8 @@ private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color)
     val live = mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED
     val beat = remember { Animatable(0f) }
     LaunchedEffect(mode, reduced) {
-        if (reduced || !live) {
-            beat.snapTo(0f)
-            return@LaunchedEffect
-        }
         beat.snapTo(0f)
+        if (reduced || !live) return@LaunchedEffect
         beat.animateTo(
             1f,
             infiniteRepeatable(tween(if (mode == ButtonMode.BUSY) 1100 else 2200, easing = LinearEasing)),
@@ -468,8 +535,9 @@ private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color)
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val r = size.minDimension / 2f
                 if (live && !reduced) {
-                    val p = beat.value
-                    drawCircle(shown.copy(alpha = (1f - p) * 0.5f), radius = r * (0.4f + 0.6f * p), center = c)
+                    // 0 -> 1 -> 0 over one beat: a fade, not a growth.
+                    val glow = 1f - abs(2f * beat.value - 1f)
+                    drawCircle(shown.copy(alpha = 0.45f * glow), radius = r * 0.8f, center = c)
                 }
                 drawCircle(shown, radius = r * 0.4f, center = c)
             }
@@ -487,7 +555,7 @@ private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color)
 
 // ---------------------------------------------------------------------- hero --
 
-/** The orb in its sonar field, sized from whatever height the layout left for it. */
+/** The orb in its orbit, at the fixed [side] the tab worked out from the window. */
 @Composable
 private fun HomeHero(
     state: ConnectionState,
@@ -495,13 +563,15 @@ private fun HomeHero(
     chain: ChainMode,
     tone: Color,
     connectedSince: Long?,
-    elapsed: String,
+    startedAt: Long,
+    working: Boolean,
     step: Int?,
+    side: Dp,
     onToggleConnection: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        val (orbit, orb) = heroGeometry(maxWidth, maxHeight)
+    val (orbit, orb) = heroGeometry(side, side)
+    Box(modifier, contentAlignment = Alignment.Center) {
         OrbitalHero(
             mode = mode,
             chain = chain,
@@ -509,16 +579,17 @@ private fun HomeHero(
             orb = orb,
             modifier = Modifier.size(orbit),
         ) {
-            // Read here, in the hero's own scope: once the tunnel is verified
-            // this ticks every second, and the tick should recompose the orb -
-            // not the whole tab around it.
+            // Both clocks are read HERE, in the hero's own scope: they tick
+            // every second, and the tick should recompose the orb - not the
+            // whole tab around it.
+            val attemptClock = tickingElapsed(startedAt, working)
             val sessionClock = tickingElapsed(connectedSince, state is ConnectionState.Connected)
             ConnectButton(
                 mode = mode,
                 onClick = onToggleConnection,
                 stateLabel = stateWord(state),
                 actionLabel = stringResource(connectionActionLabel(state)),
-                detail = orbDetail(state, connectedSince, elapsed, sessionClock),
+                detail = orbDetail(state, connectedSince, attemptClock, sessionClock),
                 progress = phaseProgress(step),
                 enabled = connectControlEnabled(state),
                 diameter = orb,
@@ -680,80 +751,61 @@ private fun PrivacyLine() {
 /**
  * THE ATMOSPHERE: a pool of the state colour behind the hero ([focusX],
  * [focusY] as fractions of the tab), a faint brand pool low on the page and
- * another high on the start side. One [Animatable] read inside [drawBehind]:
- * draw phase only.
+ * another high on the start side.
+ *
+ * STATIC since v5: v4 breathed it while connecting, which redrew three
+ * full-screen gradients every frame. The brushes are built once per size or
+ * colour change ([drawWithCache]) and only replayed after that.
  */
-@Composable
 private fun Modifier.auroraWash(
     tone: Color,
     secondary: Color,
-    breathing: Boolean,
     focusX: Float,
     focusY: Float,
-): Modifier {
-    val reduced = LocalReducedMotion.current
-    val pulse = remember { Animatable(0.5f) }
-    LaunchedEffect(breathing, reduced) {
-        if (reduced || !breathing) {
-            pulse.snapTo(0.5f)
-            return@LaunchedEffect
-        }
-        pulse.snapTo(0f)
-        pulse.animateTo(
-            1f,
-            infiniteRepeatable(
-                animation = tween(2400, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse,
-            ),
-        )
-    }
-    return this.drawBehind {
-        val t = pulse.value
-        val center = Offset(size.width * focusX, size.height * focusY)
-        val radius = (size.minDimension * (0.90f + 0.10f * t)).coerceAtLeast(1f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    tone.copy(alpha = 0.16f + 0.08f * t),
-                    tone.copy(alpha = 0.04f),
-                    Color.Transparent,
-                ),
-                center = center,
-                radius = radius,
-            ),
-            radius = radius,
-            center = center,
-        )
-        val low = Offset(size.width * 0.92f, size.height * 0.95f)
-        val lowRadius = (size.minDimension * 0.80f).coerceAtLeast(1f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(secondary.copy(alpha = 0.08f), Color.Transparent),
-                center = low,
-                radius = lowRadius,
-            ),
-            radius = lowRadius,
-            center = low,
-        )
-        val high = Offset(size.width * 0.05f, size.height * 0.08f)
-        val highRadius = (size.minDimension * 0.55f).coerceAtLeast(1f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(secondary.copy(alpha = 0.06f), Color.Transparent),
-                center = high,
-                radius = highRadius,
-            ),
-            radius = highRadius,
-            center = high,
-        )
+): Modifier = this.drawWithCache {
+    val center = Offset(size.width * focusX, size.height * focusY)
+    val radius = (size.minDimension * 0.95f).coerceAtLeast(1f)
+    val pool = Brush.radialGradient(
+        colors = listOf(
+            tone.copy(alpha = 0.20f),
+            tone.copy(alpha = 0.04f),
+            Color.Transparent,
+        ),
+        center = center,
+        radius = radius,
+    )
+    val low = Offset(size.width * 0.92f, size.height * 0.95f)
+    val lowRadius = (size.minDimension * 0.80f).coerceAtLeast(1f)
+    val lowPool = Brush.radialGradient(
+        colors = listOf(secondary.copy(alpha = 0.08f), Color.Transparent),
+        center = low,
+        radius = lowRadius,
+    )
+    val high = Offset(size.width * 0.05f, size.height * 0.08f)
+    val highRadius = (size.minDimension * 0.55f).coerceAtLeast(1f)
+    val highPool = Brush.radialGradient(
+        colors = listOf(secondary.copy(alpha = 0.06f), Color.Transparent),
+        center = high,
+        radius = highRadius,
+    )
+    onDrawBehind {
+        drawCircle(brush = pool, radius = radius, center = center)
+        drawCircle(brush = lowPool, radius = lowRadius, center = low)
+        drawCircle(brush = highPool, radius = highRadius, center = high)
     }
 }
 
 /**
- * The orb in its sonar field. Waves roll out from the core to the orbit while
- * reaching (fast) and once protected (slow); one satellite per hop rides the
- * orbit with a short tail. Decorative to a screen reader. When the slot is so
- * small the orbit would cut through the orb, the field is not drawn.
+ * The orb in its orbit. One satellite per hop rides the orbit with a short
+ * tail while reaching (fast) and once protected (slow). Decorative to a
+ * screen reader. When the slot is so small the orbit would cut through the
+ * orb, the field is not drawn.
+ *
+ * PERFORMANCE: the rings are one static Canvas. The satellites are drawn ONCE
+ * at their start angles and the whole layer is rotated by [graphicsLayer], so
+ * the orbit costs a matrix update per frame instead of a redraw. v4's sonar
+ * waves (expanding circles, a redraw every frame for the entire session) are
+ * gone: they also read as the button pulsing bigger and smaller.
  */
 @Composable
 private fun OrbitalHero(
@@ -766,39 +818,24 @@ private fun OrbitalHero(
 ) {
     val reduced = LocalReducedMotion.current
     val orbit = remember { Animatable(0f) }
-    val sonar = remember { Animatable(0f) }
     LaunchedEffect(mode, reduced) {
         val period = when (mode) {
             ButtonMode.BUSY -> 4200
             ButtonMode.CONNECTED -> 18000
             else -> 0
         }
-        if (reduced || period == 0) {
-            orbit.snapTo(0f)
-            return@LaunchedEffect
-        }
         orbit.snapTo(0f)
+        if (reduced || period == 0) return@LaunchedEffect
         orbit.animateTo(1f, infiniteRepeatable(tween(period, easing = LinearEasing)))
-    }
-    LaunchedEffect(mode, reduced) {
-        val period = when (mode) {
-            ButtonMode.BUSY -> 1800
-            ButtonMode.CONNECTED -> 4600
-            else -> 0
-        }
-        if (reduced || period == 0) {
-            sonar.snapTo(0f)
-            return@LaunchedEffect
-        }
-        sonar.snapTo(0f)
-        sonar.animateTo(1f, infiniteRepeatable(tween(period, easing = LinearEasing)))
     }
     val track = MaterialTheme.colorScheme.outlineVariant
     val satellites = chain.hops.size.coerceAtLeast(1)
     val live = mode == ButtonMode.CONNECTED || mode == ButtonMode.BUSY || mode == ButtonMode.ERROR
     val moving = !reduced && (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED)
+    val base = if (live) tone else track
 
     Box(modifier, contentAlignment = Alignment.Center) {
+        // The field: static, redrawn only when the state changes.
         Canvas(
             Modifier
                 .matchParentSize()
@@ -808,22 +845,6 @@ private fun OrbitalHero(
             val radius = size.minDimension / 2f - 8.dp.toPx()
             val orbR = orb.toPx() / 2f
             if (radius < orbR + 6.dp.toPx()) return@Canvas
-            val base = if (live) tone else track
-
-            // Sonar waves, from the core's edge out to the orbit.
-            if (moving) {
-                val busy = mode == ButtonMode.BUSY
-                val count = if (busy) 3 else 2
-                repeat(count) { index ->
-                    val p = (sonar.value + index / count.toFloat()) % 1f
-                    drawCircle(
-                        color = tone.copy(alpha = (1f - p) * (if (busy) 0.32f else 0.22f)),
-                        radius = orbR + (radius - orbR) * p,
-                        center = centre,
-                        style = Stroke(width = (1.8f - 0.9f * p).dp.toPx()),
-                    )
-                }
-            }
 
             // A quiet guide ring halfway out, so the field reads as depth.
             drawCircle(
@@ -845,12 +866,23 @@ private fun OrbitalHero(
                     ),
                 ),
             )
+        }
 
-            val turn = orbit.value * 360f
+        // The satellites: drawn once, turned by the layer.
+        Canvas(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { rotationZ = orbit.value * 360f }
+                .clearAndSetSemantics { },
+        ) {
+            val centre = Offset(size.width / 2f, size.height / 2f)
+            val radius = size.minDimension / 2f - 8.dp.toPx()
+            val orbR = orb.toPx() / 2f
+            if (radius < orbR + 6.dp.toPx()) return@Canvas
             val orbitTopLeft = Offset(centre.x - radius, centre.y - radius)
             val orbitSize = Size(radius * 2f, radius * 2f)
             repeat(satellites) { index ->
-                val degrees = ORBIT_START + turn + index * (360f / satellites)
+                val degrees = ORBIT_START + index * (360f / satellites)
                 if (moving) {
                     // The tail: where the satellite just was.
                     drawArc(
@@ -1196,7 +1228,6 @@ private fun LocationCard(
                         nodes = nodes,
                         lit = lit,
                         tone = tone,
-                        flowing = state.isConnected,
                         reaching = step != null,
                         broken = state is ConnectionState.Error,
                         nodeSize = if (dense) NODE_SIZE_DENSE else NODE_SIZE,
@@ -1404,16 +1435,18 @@ private fun LatencyChip(connectedSince: Long?) {
 }
 
 /**
- * The route as nodes and links: done (solid, packets flow once verified),
- * reaching (dashed, travelling band), broken (dashed, failure tone), future
- * (dashed, dim). RTL mirrors from the draw scope's layout direction.
+ * The route as nodes and links: done (solid), reaching (dashed, travelling
+ * band), broken (dashed, failure tone), future (dashed, dim). RTL mirrors from
+ * the draw scope's layout direction.
+ *
+ * Only the reaching link animates. v4 also ran packets along every done link
+ * for the whole verified session: a per-frame redraw that lasted hours.
  */
 @Composable
 private fun RoutePath(
     nodes: List<RouteNode>,
     lit: Int,
     tone: Color,
-    flowing: Boolean,
     reaching: Boolean,
     broken: Boolean,
     nodeSize: Dp,
@@ -1421,13 +1454,10 @@ private fun RoutePath(
     val reduced = LocalReducedMotion.current
     val accents = LocalAetherAccents.current
     val flow = remember { Animatable(0f) }
-    val moving = !reduced && (flowing || reaching)
+    val moving = !reduced && reaching
     LaunchedEffect(moving) {
-        if (!moving) {
-            flow.snapTo(0f)
-            return@LaunchedEffect
-        }
         flow.snapTo(0f)
+        if (!moving) return@LaunchedEffect
         flow.animateTo(1f, infiniteRepeatable(tween(1400, easing = LinearEasing)))
     }
     val track = MaterialTheme.colorScheme.outlineVariant
@@ -1502,17 +1532,7 @@ private fun RoutePath(
                     val start = Offset(0f, y)
                     val end = Offset(size.width, y)
                     when {
-                        done -> {
-                            drawLine(tone.copy(alpha = 0.85f), start, end, stroke, StrokeCap.Round)
-                            if (flowing && !reduced) {
-                                repeat(2) { k ->
-                                    val f = (flow.value + k / 2f) % 1f
-                                    val x = if (rtl) size.width * (1f - f) else size.width * f
-                                    drawCircle(tone.copy(alpha = 0.25f), 5.dp.toPx(), Offset(x, y))
-                                    drawCircle(tone, 2.5.dp.toPx(), Offset(x, y))
-                                }
-                            }
-                        }
+                        done -> drawLine(tone.copy(alpha = 0.85f), start, end, stroke, StrokeCap.Round)
                         active -> {
                             drawLine(
                                 track.copy(alpha = 0.6f), start, end, stroke,

@@ -9,8 +9,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -41,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -49,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -101,7 +99,11 @@ private const val TICK_COUNT = 36
 internal fun tickLit(fraction: Float, sweep: Float, mode: ButtonMode): Boolean =
     mode != ButtonMode.ERROR && sweep > 0f && fraction <= sweep
 
-/** A radial clock is useful only while its breathing ring is actually drawn. */
+/**
+ * Whether a radial clock may run at all. The orb itself no longer breathes
+ * (v5: it never changes size), but the rule stays the contract for anything
+ * that wants a radial clock: only while reaching, enabled, and motion allowed.
+ */
 internal fun orbPulseEnabled(mode: ButtonMode, enabled: Boolean, reduced: Boolean): Boolean =
     mode == ButtonMode.BUSY && enabled && !reduced
 
@@ -128,26 +130,24 @@ private val ORB_COMPACT = 168.dp
 private val ORB_TINY = 120.dp
 
 /**
- * THE HERO CONTROL, v4: "glass power core".
- *
- * The language of current consumer VPN clients (one big, unmistakable power
- * control) on top of the instrument the orb always was:
+ * THE HERO CONTROL, v5: "steady glass power core".
  *
  *   IDLE       a dark glass core, quiet track, power glyph. Nothing animates.
  *   BUSY       amber conic arc grows with REAL progress, a comet with a
- *              gradient tail sweeps the ring, the ring breathes.
+ *              gradient tail sweeps the ring.
  *   CONNECTED  the core FILLS with the protected tone (glyph and words flip to
  *              the on-colour), a slow sheen travels the ring, a halo glows.
  *   ERROR      three broken rose arcs, frozen, ladder unlit.
  *
- * Inside: the power glyph, the ACTION word ("Connect", "Disconnect",
- * "Cancel", "Retry") and, while an attempt or a session runs, its clock. The
- * state word moved out to the status capsule above the hero; it is still the
- * node's state description, so TalkBack reads "Protected, button, double tap
- * to disconnect".
+ * v5 RULE: THE ORB NEVER CHANGES SIZE. No press scale, no stroke squeeze, no
+ * breathing rings, no glyph scale-in. Press feedback is light, not geometry:
+ * the core's inner glow and rim brighten.
  *
- * SIZE, PRESS, FOCUS, ENABLED, REDUCED MOTION and the draw-phase-only clocks
- * keep the exact contracts of v3.
+ * PERFORMANCE: everything static lives in one Canvas that only redraws when a
+ * state transition changes its inputs. The comet, the only thing that moves
+ * continuously, is drawn ONCE into its own layer and turned by
+ * [graphicsLayer]: a matrix update per frame, not a redraw of 36 ticks and
+ * six gradients.
  */
 @Composable
 fun ConnectButton(
@@ -209,40 +209,24 @@ fun ConnectButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val focused by interaction.collectIsFocusedAsState()
-    val press by animateFloatAsState(
-        targetValue = if (pressed && enabled) 0.955f else 1f,
+    // 0 at rest, 1 fully pressed. Light only: it never touches size or stroke.
+    val squeeze by animateFloatAsState(
+        targetValue = if (pressed && enabled) 1f else 0f,
         animationSpec = tween(aetherDuration(AetherDur.Snap), easing = AetherEaseOut),
         label = "press",
     )
-    // 0 at rest, 1 fully pressed. Drives the tactile part that is not scale.
-    val squeeze = ((1f - press) / 0.045f).coerceIn(0f, 1f)
 
-    // Two independent clocks, read only in the draw lambda.
+    // The comet's clock, read only by its own layer.
     val spin = remember { Animatable(0f) }
-    val wave = remember { Animatable(0f) }
-    val showPulse = orbPulseEnabled(mode, enabled, reduced)
-
     LaunchedEffect(mode, reduced) {
-        if (reduced) {
-            spin.snapTo(0f)
-            return@LaunchedEffect
-        }
+        spin.snapTo(0f)
+        if (reduced) return@LaunchedEffect
         when (mode) {
-            ButtonMode.BUSY -> {
-                spin.snapTo(0f)
+            ButtonMode.BUSY ->
                 spin.animateTo(1f, infiniteRepeatable(tween(1300, easing = LinearEasing)))
-            }
-            ButtonMode.CONNECTED -> {
-                spin.snapTo(0f)
+            ButtonMode.CONNECTED ->
                 spin.animateTo(1f, infiniteRepeatable(tween(AetherDur.Halo, easing = LinearEasing)))
-            }
-            else -> spin.snapTo(0f)
-        }
-    }
-    LaunchedEffect(showPulse) {
-        wave.snapTo(0f)
-        if (showPulse) {
-            wave.animateTo(1f, infiniteRepeatable(tween(2000, easing = LinearEasing)))
+            else -> Unit
         }
     }
 
@@ -279,7 +263,6 @@ fun ConnectButton(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .size(orb)
-                .scale(press)
                 .clip(CircleShape)
                 .clickable(
                     interactionSource = interaction,
@@ -291,19 +274,18 @@ fun ConnectButton(
                 )
                 .semantics { stateDescription = stateLabel },
         ) {
+            // STATIC LAYERS: redrawn only when a transition changes their inputs.
             Canvas(modifier = Modifier.matchParentSize()) {
                 val cx = size.width / 2f
                 val cy = size.height / 2f
                 val centre = Offset(cx, cy)
                 val outerR = size.minDimension / 2f
-                val baseStroke = (size.minDimension * 0.034f).coerceIn(4.dp.toPx(), 8.dp.toPx())
-                val stroke = baseStroke * (1f + 0.12f * squeeze)
+                val stroke = (size.minDimension * 0.034f).coerceIn(4.dp.toPx(), 8.dp.toPx())
                 val inset = (size.minDimension * 0.05f).coerceIn(5.dp.toPx(), 12.dp.toPx())
                 val ringR = outerR - stroke / 2f - inset
                 if (ringR <= 0f) return@Canvas
                 val topLeft = Offset(cx - ringR, cy - ringR)
                 val ringSize = Size(ringR * 2f, ringR * 2f)
-                val turn = spin.value
 
                 // 1. AMBIENT BLOOM: legible across the room.
                 drawCircle(
@@ -320,21 +302,7 @@ fun ConnectButton(
                     center = centre,
                 )
 
-                // 2. BREATHING RING, only while an endpoint is being reached.
-                if (showPulse) {
-                    val phase = wave.value
-                    repeat(2) { index ->
-                        val p = (phase + index / 2f) % 1f
-                        drawCircle(
-                            color = animatedAccent.copy(alpha = (1f - p) * 0.34f),
-                            radius = ringR + stroke / 2f + inset * p,
-                            center = centre,
-                            style = Stroke(width = 1.4.dp.toPx()),
-                        )
-                    }
-                }
-
-                // 3. HALO. Earned by a verified tunnel, and by nothing else.
+                // 2. HALO. Earned by a verified tunnel, and by nothing else.
                 if (core > 0.01f) {
                     drawCircle(
                         color = animatedAccent.copy(alpha = 0.16f * core),
@@ -344,7 +312,7 @@ fun ConnectButton(
                     )
                 }
 
-                // 4. THE TRACK: always the full circle.
+                // 3. THE TRACK: always the full circle.
                 drawCircle(
                     color = track.copy(alpha = 0.75f),
                     radius = ringR,
@@ -352,7 +320,7 @@ fun ConnectButton(
                     style = Stroke(width = stroke),
                 )
 
-                // 5. TICK LADDER, inside the ring: progress as a countable quantity.
+                // 4. TICK LADDER, inside the ring: progress as a countable quantity.
                 val tickGap = (size.minDimension * 0.02f).coerceIn(3.dp.toPx(), 5.dp.toPx())
                 val tickOuter = ringR - stroke / 2f - tickGap
                 val tickInner = tickOuter - tickGap
@@ -387,7 +355,7 @@ fun ConnectButton(
                         )
                     }
                 } else if (sweep > 0.001f) {
-                    // 6. THE ARC: a wide soft pass for the glow, then a conic
+                    // 5. THE ARC: a wide soft pass for the glow, then a conic
                     // gradient that brightens towards the leading edge.
                     drawArc(
                         color = animatedAccent.copy(alpha = 0.20f),
@@ -417,34 +385,7 @@ fun ConnectButton(
                     }
                 }
 
-                // 7. THE COMET: proof of life, never mistaken for progress. A
-                // gradient tail behind a bright head.
-                if (showComet) {
-                    val busy = mode == ButtonMode.BUSY
-                    val tail = if (busy) 0.20f else 0.32f
-                    val headAlpha = if (busy) 1f else 0.65f
-                    rotate(START_ANGLE + turn * 360f, centre) {
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                0f to Color.Transparent,
-                                (1f - tail) to Color.Transparent,
-                                1f to animatedAccent.copy(alpha = headAlpha),
-                                center = centre,
-                            ),
-                            startAngle = -tail * 360f,
-                            sweepAngle = tail * 360f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = ringSize,
-                            style = Stroke(width = stroke * 1.15f, cap = StrokeCap.Butt),
-                        )
-                        val head = Offset(cx + ringR, cy)
-                        drawCircle(animatedAccent.copy(alpha = 0.28f * headAlpha), radius = stroke * 1.9f, center = head)
-                        drawCircle(animatedAccent.copy(alpha = headAlpha), radius = stroke * 0.72f, center = head)
-                    }
-                }
-
-                // 8. THE GLASS CORE.
+                // 6. THE GLASS CORE.
                 val discR = ringR * 0.74f
                 drawCircle(
                     brush = Brush.verticalGradient(
@@ -461,7 +402,7 @@ fun ConnectButton(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            animatedAccent.copy(alpha = 0.14f + 0.08f * squeeze),
+                            animatedAccent.copy(alpha = 0.14f + 0.10f * squeeze),
                             Color.Transparent,
                         ),
                         center = Offset(cx, cy - discR * 0.35f),
@@ -496,13 +437,13 @@ fun ConnectButton(
                     alpha = if (darkTheme) 1f else 1f - core,
                 )
                 drawCircle(
-                    color = animatedAccent.copy(alpha = 0.24f + 0.30f * core + 0.12f * squeeze),
+                    color = animatedAccent.copy(alpha = 0.24f + 0.30f * core + 0.16f * squeeze),
                     radius = discR,
                     center = centre,
                     style = Stroke(width = 1.5.dp.toPx()),
                 )
 
-                // 9. FOCUS RING, on the inner edge of the hit circle.
+                // 7. FOCUS RING, on the inner edge of the hit circle.
                 if (focused && enabled) {
                     val focusStroke = 2.dp.toPx()
                     drawCircle(
@@ -511,6 +452,49 @@ fun ConnectButton(
                         center = centre,
                         style = Stroke(width = focusStroke),
                     )
+                }
+            }
+
+            // 8. THE COMET: proof of life, never mistaken for progress. Drawn
+            // once at twelve o'clock, turned by its layer every frame.
+            if (showComet) {
+                Canvas(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .graphicsLayer { rotationZ = spin.value * 360f },
+                ) {
+                    val cx = size.width / 2f
+                    val cy = size.height / 2f
+                    val centre = Offset(cx, cy)
+                    val outerR = size.minDimension / 2f
+                    val stroke = (size.minDimension * 0.034f).coerceIn(4.dp.toPx(), 8.dp.toPx())
+                    val inset = (size.minDimension * 0.05f).coerceIn(5.dp.toPx(), 12.dp.toPx())
+                    val ringR = outerR - stroke / 2f - inset
+                    if (ringR <= 0f) return@Canvas
+                    val topLeft = Offset(cx - ringR, cy - ringR)
+                    val ringSize = Size(ringR * 2f, ringR * 2f)
+                    val busy = mode == ButtonMode.BUSY
+                    val tail = if (busy) 0.20f else 0.32f
+                    val headAlpha = if (busy) 1f else 0.65f
+                    rotate(START_ANGLE, centre) {
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                0f to Color.Transparent,
+                                (1f - tail) to Color.Transparent,
+                                1f to animatedAccent.copy(alpha = headAlpha),
+                                center = centre,
+                            ),
+                            startAngle = -tail * 360f,
+                            sweepAngle = tail * 360f,
+                            useCenter = false,
+                            topLeft = topLeft,
+                            size = ringSize,
+                            style = Stroke(width = stroke * 1.15f, cap = StrokeCap.Butt),
+                        )
+                        val head = Offset(cx + ringR, cy)
+                        drawCircle(animatedAccent.copy(alpha = 0.28f * headAlpha), radius = stroke * 1.9f, center = head)
+                        drawCircle(animatedAccent.copy(alpha = headAlpha), radius = stroke * 0.72f, center = head)
+                    }
                 }
             }
 
@@ -526,16 +510,11 @@ fun ConnectButton(
                     .padding(horizontal = orb * 0.17f)
                     .alpha(content),
             ) {
+                // A crossfade only: the glyph does not grow in or shrink out.
                 AnimatedContent(
                     targetState = icon,
                     transitionSpec = {
-                        (
-                            fadeIn(tween(fadeInMs)) +
-                                scaleIn(tween(fadeInMs), initialScale = 0.72f)
-                            ) togetherWith (
-                            fadeOut(tween(fadeOutMs)) +
-                                scaleOut(tween(fadeOutMs), targetScale = 0.72f)
-                            )
+                        fadeIn(tween(fadeInMs)) togetherWith fadeOut(tween(fadeOutMs))
                     },
                     label = "glyph",
                 ) { glyph ->
