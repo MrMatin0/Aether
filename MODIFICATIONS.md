@@ -55,6 +55,8 @@ high-level shape of the divergence, by area:
   Review fixes (2026-10-02) preserve connected-core text contrast across the
   gradient and clock background in both themes, remove the unused radial
   animation after connection, and add regression tests for both contracts.
+  The IP footer puts its label above the address so long addresses cannot
+  consume the label's entire width on narrow cards.
 - **Language handling.** An in-app English/Persian switch, with the first-run
   flow and the settings surface both wired to it.
 - **The VPN session layer.** `vpn/session` and the tunnel core
@@ -70,8 +72,8 @@ high-level shape of the divergence, by area:
   Psiphon and with Tor. See `docs/CHAINING.md`, `docs/CHAIN_CORES.md` and
   `docs/TOR_BRIDGES.md`.
 - **Overlay core build tooling.** `scripts/build-overlay-cores.sh`,
-  `scripts/build-pt-transports.sh` and
-  `scripts/fetch-tor-bridges.sh` and `scripts/fetch-psiphon-serverlist.sh`.
+  `scripts/build-pt-transports.sh`, `scripts/fetch-tor-bridges.sh` and
+  `scripts/fetch-psiphon-serverlist.sh`.
 - **A centralised dependency catalogue** (`gradle/libs.versions.toml`), which
   upstream does not have. This project deliberately tracks pre-release
   dependency lines; the file documents the stable equivalents to fall back to.

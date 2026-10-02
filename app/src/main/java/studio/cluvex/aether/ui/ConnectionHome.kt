@@ -1277,35 +1277,41 @@ private fun IpRow(
             tint = if (connected) tone else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(8.dp))
-        Row(
+        // A weighted label beside an unweighted address is measured last and
+        // can receive zero width. Give label and address separate lines so
+        // a narrow card cannot silently lose whether this is your or server IP.
+        Column(
             Modifier
                 .weight(1f)
                 .semantics(mergeDescendants = true) { },
-            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 stringResource(if (connected) R.string.ip_server_label else R.string.ip_your_label),
-                Modifier.weight(1f, fill = false),
                 style = AetherMetaLabel,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.width(8.dp))
-            if (flag.isNotBlank()) {
-                Text(flag, style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.width(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (flag.isNotBlank()) {
+                    Text(flag, style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(
+                    value,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontFamily = AetherMono,
+                        textDirection = TextDirection.Ltr,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            Text(
-                value,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontFamily = AetherMono,
-                    textDirection = TextDirection.Ltr,
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
         if (connected) {
             Spacer(Modifier.width(8.dp))
