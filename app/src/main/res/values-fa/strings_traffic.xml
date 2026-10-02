@@ -12,5 +12,6 @@
     <!-- اعلان وضعیت‌محور -->
     <string name="notif_action_cancel">لغو</string>
     <string name="notif_action_retry">تلاش دوباره</string>
+    <string name="notif_action_reconnect">اتصال مجدد</string>
     <string name="notif_error_title">اتصال برقرار نشد</string>
 </resources>

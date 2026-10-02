@@ -32,8 +32,12 @@ import studio.cluvex.aether.core.TrafficMonitor
  * auto-size inside a bounded line so a long reading shrinks instead of
  * clipping.
  *
- *   collapsed \u2014 one row: down, up, session total.
+ *   collapsed \u2014 one row: down cell, up cell, session total. The two cells
+ *               use the same translucent gray well as the expanded card, so
+ *               the live speed stands out and both states read as one design.
  *   expanded  \u2014 state + exit country, route + session total, two meter cells.
+ *
+ * Actions: Reconnect + Disconnect.
  *
  * The session timer is the system's own chronometer in the header
  * (setUsesChronometer), so it ticks without a single extra notify().
@@ -93,6 +97,13 @@ internal object TrafficNotification {
             .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .setCustomContentView(compact)
             .setCustomBigContentView(expanded)
+            // Reconnect first, Disconnect last: the destructive action keeps
+            // its familiar trailing spot.
+            .addAction(
+                0,
+                context.getString(R.string.notif_action_reconnect),
+                NotificationKit.reconnectIntent(context),
+            )
             .addAction(
                 0,
                 context.getString(R.string.action_disconnect),

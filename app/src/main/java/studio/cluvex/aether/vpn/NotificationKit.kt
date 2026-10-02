@@ -23,7 +23,7 @@ internal enum class NotifPhase {
     /** Starting, scanning, verifying or reconnecting: progress + Cancel. */
     BUSY,
 
-    /** Tunnel verified: the live card. */
+    /** Tunnel verified: the live card, Reconnect + Disconnect. */
     CONNECTED,
 
     /** Failed connect, or the kill switch holding traffic: Retry + Disconnect. */
@@ -79,6 +79,7 @@ internal object NotificationKit {
     private const val REQ_OPEN = 0
     private const val REQ_DISCONNECT = 1
     private const val REQ_RETRY = 2
+    private const val REQ_RECONNECT = 3
 
     private const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 
@@ -134,6 +135,19 @@ internal object NotificationKit {
 
     fun retryIntent(context: Context): PendingIntent =
         serviceIntent(context, AetherVpnService.ACTION_RETRY, REQ_RETRY)
+
+    /**
+     * The connected card's Reconnect action.
+     *
+     * Deliberately the SAME service action as Retry: during a live session
+     * lastProfile holds the running profile, and startTunnel() already knows
+     * how to supersede a running session (cancel it, tear its natives down,
+     * wait for the ports, then connect fresh). A second code path for the
+     * same thing would only be a second place to get that ordering wrong.
+     * Its own request code keeps the two PendingIntents distinct.
+     */
+    fun reconnectIntent(context: Context): PendingIntent =
+        serviceIntent(context, AetherVpnService.ACTION_RETRY, REQ_RECONNECT)
 
     private fun serviceIntent(context: Context, action: String, requestCode: Int): PendingIntent =
         PendingIntent.getService(
