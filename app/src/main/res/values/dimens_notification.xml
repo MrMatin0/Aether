@@ -25,4 +25,7 @@
     <dimen name="notif_compact_text_min">9sp</dimen>
     <dimen name="notif_compact_text_max">14sp</dimen>
     <dimen name="notif_compact_line_height">24dp</dimen>
+    <!-- Gray speed wells in the collapsed row -->
+    <dimen name="notif_compact_cell_padding_h">8dp</dimen>
+    <dimen name="notif_compact_cell_padding_v">4dp</dimen>
 </resources>
