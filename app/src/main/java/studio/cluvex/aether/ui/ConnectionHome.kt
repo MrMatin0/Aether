@@ -78,7 +78,6 @@ import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.ButtonMode
 import studio.cluvex.aether.ui.components.ConnectButton
-import studio.cluvex.aether.ui.components.StatusHint
 import studio.cluvex.aether.ui.components.accentFor
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
@@ -91,36 +90,43 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB, v6: "Aurora, in reach".
+ * THE CONNECTION TAB, v7: "Aurora, in reach", with the words cut back.
  *
  *   status capsule     the state in one word, with a live dot that FADES
  *   hero               the glass power core inside its orbit; satellites (one
  *                      per hop) ride the orbit with a tail
- *   title + hint
  *   quick controls     route, protocol, scan: the current value of each, one
  *                      tap from the sheet that changes it (QuickControls.kt)
  *   error strip        only on failure
  *   session stats      only while verified
  *   location card      exit, route path (roomy windows), IP footer
- *   privacy line       idle, Aether only, when there is room
  *
- * v6 CHANGES
+ * v7 CHANGES
+ *
+ *   FEWER WORDS The title and hint sentence under the orb ("Ready to
+ *               connect." / "Connect through Cloudflare WARP in one tap.")
+ *               and the WARP privacy line are gone. The capsule and the orb's
+ *               own words already said the same thing; the capsule now carries
+ *               the live region the title used to.
+ *   BIGGER ORB  The height that copy used goes to the button: [heroReserve]
+ *               lost the headline's share, [HERO_ORBIT_MAX] and
+ *               [ORB_HOME_MAX] grew, and the orb takes a larger share of its
+ *               orbit. It still keeps one size through every state.
+ *
+ * v6 CHANGES (still true)
  *
  *   IN REACH    The three settings that decide whether and how fast you get
- *               online moved from Settings to directly under the button. The
- *               v5 route-only sheet (opened from the location card) is gone:
- *               the quick-controls sheet covers route, protocol and scan in
- *               one place and links to the Settings page that owns the rest.
- *   ONE FACT,   The location card no longer repeats chain, scan mode and
- *   ONCE        protocol in its subtitle, and is no longer a click target: the
- *               deck above it owns those facts and that action.
- *   SAME ORB    [heroReserve] grew by the deck's row, so the orb still keeps
- *               one size through every state ([heroSlotHeight] unchanged).
+ *               online sit directly under the button. The quick-controls
+ *               sheet covers route, protocol and scan in one place and links
+ *               to the Settings page that owns the rest.
+ *   ONE FACT,   The location card does not repeat chain, scan mode and
+ *   ONCE        protocol, and is not a click target: the deck above it owns
+ *               those facts and that action.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
  * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail],
- * [heroGeometry], [homeDensity], [useTwoPane], [heroSlotHeight] and
- * [formatSessionUptime] keep their exact contracts.
+ * [homeDensity], [useTwoPane] and [formatSessionUptime] keep their exact
+ * contracts; [heroGeometry] and [heroSlotHeight] keep theirs with new bounds.
  */
 
 /** Engine, tunnel, verify, ready. */
@@ -130,13 +136,19 @@ private const val PHASE_COUNT = 4
 private const val ORBIT_START = -90f
 
 /** The orbit (with its satellites) never grows past this, however tall the slot. */
-internal val HERO_ORBIT_MAX = 280.dp
+internal val HERO_ORBIT_MAX = 340.dp
 
-/** The orb on the home tab. Still well under the 256dp that crowded a phone. */
-internal val ORB_HOME_MAX = 208.dp
+/**
+ * The orb on the home tab. Up from 208dp, which read as too small once the
+ * copy under it was gone; still short of a dinner plate on a tablet.
+ */
+internal val ORB_HOME_MAX = 264.dp
 
 /** Below this the word inside the orb stops fitting on one line. */
 internal val ORB_HOME_MIN = 96.dp
+
+/** How much of the orbit the orb fills. The satellites must still ride OUTSIDE it. */
+private const val ORB_SHARE = 0.80f
 
 private val NODE_SIZE = 32.dp
 private val NODE_SIZE_DENSE = 26.dp
@@ -153,9 +165,9 @@ private val TWO_PANE_GUTTER = 72.dp
  * How much the tab can show at once, from the height it is given.
  *
  *   ROOMY    everything, at full padding, route path in the location card
- *   COMPACT  everything but the privacy line and the route path
- *   TIGHT    quick controls go to one line each, the hint goes, session
- *            stats lose their meters
+ *   COMPACT  everything but the route path
+ *   TIGHT    quick controls go to one line each, session stats lose their
+ *            meters
  *   MINIMAL  as TIGHT, and the session stats go (the orb still says verified)
  */
 internal enum class HomeDensity { ROOMY, COMPACT, TIGHT, MINIMAL }
@@ -180,14 +192,14 @@ internal fun useTwoPane(width: Dp, height: Dp): Boolean = width >= 480.dp && wid
 /**
  * The orbit's box and the orb's diameter for a hero slot of [width] x [height].
  *
- * The orb is ~78% of the orbit so the satellites always ride OUTSIDE it, and
- * both are clamped so a tablet does not get a dinner plate and a split-screen
- * window still gets a tappable control.
+ * The orb is [ORB_SHARE] of the orbit so the satellites always ride OUTSIDE
+ * it, and both are clamped so a tablet does not get a dinner plate and a
+ * split-screen window still gets a tappable control.
  */
 internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
     val side = minOf(width, height).coerceAtLeast(0.dp)
     val orbit = side.coerceAtMost(HERO_ORBIT_MAX)
-    val orb = (orbit * 0.78f).coerceIn(ORB_HOME_MIN, ORB_HOME_MAX)
+    val orb = (orbit * ORB_SHARE).coerceIn(ORB_HOME_MIN, ORB_HOME_MAX)
     return maxOf(orbit, orb) to orb
 }
 
@@ -196,18 +208,17 @@ internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
  * WORST state for that density (verified: quick controls, stats card and the
  * location card). Scaled with the font, like [homeDensity].
  *
- * v6 budgets the quick-controls deck: +68dp roomy (56dp tiles + gap), +52dp
- * tight and minimal (44dp one-line tiles + gap). Compact only grows by 8dp,
- * because the route path it used to draw (~56dp) now only appears when roomy.
- * Two-pane is unchanged: the deck lives in the scrolling details pane there.
+ * v7 dropped the headline (title, plus the hint where it showed), so each
+ * budget lost that share: about 52dp roomy, 50dp compact, 28dp tight and
+ * minimal, and the headline-and-hint block in two-pane.
  */
 internal fun heroReserve(density: HomeDensity, twoPane: Boolean, fontScale: Float = 1f): Dp {
     val base = when {
-        twoPane -> if (density == HomeDensity.MINIMAL) 92.dp else 116.dp
-        density == HomeDensity.ROOMY -> 488.dp
-        density == HomeDensity.COMPACT -> 358.dp
-        density == HomeDensity.TIGHT -> 302.dp
-        else -> 248.dp
+        twoPane -> 64.dp
+        density == HomeDensity.ROOMY -> 436.dp
+        density == HomeDensity.COMPACT -> 308.dp
+        density == HomeDensity.TIGHT -> 274.dp
+        else -> 220.dp
     }
     return base * fontScale.coerceAtLeast(1f)
 }
@@ -408,9 +419,7 @@ internal fun ConnectionHome(
                     Spacer(Modifier.height(4.dp))
                     StatusCapsule(state, mode, tone)
                     hero(Modifier.fillMaxWidth().height(heroSide), heroSide)
-                    HomeHeadline(state, profile, showHint = density != HomeDensity.MINIMAL, large = false)
-                    // Slack goes BELOW the hero, so the hint changing length
-                    // never nudges the orb.
+                    // Slack goes BELOW the hero, so nothing above it ever moves.
                     Spacer(Modifier.weight(1f))
                 }
                 Spacer(Modifier.width(24.dp))
@@ -442,12 +451,6 @@ internal fun ConnectionHome(
                 Spacer(Modifier.height(lead + (if (density == HomeDensity.ROOMY) 6.dp else 2.dp)))
                 StatusCapsule(state, mode, tone)
                 hero(Modifier.fillMaxWidth().height(heroSide), heroSide)
-                HomeHeadline(
-                    state,
-                    profile,
-                    showHint = density <= HomeDensity.COMPACT,
-                    large = density == HomeDensity.ROOMY,
-                )
                 Spacer(Modifier.height(if (density == HomeDensity.ROOMY) 18.dp else 10.dp))
                 // The cards grow downwards into the remaining space. The scroll
                 // is only a safety net for a window smaller than any budget;
@@ -495,6 +498,9 @@ private fun capsuleLabel(state: ConnectionState): Int = when {
  * The state in one word, on a pill of its own colour, with a live dot whose
  * halo fades in and out (fast while reaching, slow once protected). The dot
  * never changes size. Static at rest, on failure and under reduced motion.
+ *
+ * Since v7 the word is the tab's live region: with the title gone it is the
+ * one piece of copy that names the state.
  */
 @Composable
 private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color) {
@@ -542,6 +548,7 @@ private fun StatusCapsule(state: ConnectionState, mode: ButtonMode, tone: Color)
             Spacer(Modifier.width(8.dp))
             Text(
                 stringResource(capsuleLabel(state)),
+                Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 style = MaterialTheme.typography.labelLarge,
                 color = shown,
                 maxLines = 1,
@@ -592,35 +599,6 @@ private fun HomeHero(
                 enabled = connectControlEnabled(state),
                 diameter = orb,
             )
-        }
-    }
-}
-
-/**
- * The title and the sentence under it. The title carries the live region: it
- * is the most specific words on screen for the state.
- */
-@Composable
-private fun HomeHeadline(
-    state: ConnectionState,
-    profile: ConnectionProfile,
-    showHint: Boolean,
-    large: Boolean,
-) {
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            connectionTitle(state),
-            Modifier
-                .fillMaxWidth()
-                .semantics { liveRegion = LiveRegionMode.Polite },
-            style = if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (showHint) {
-            Spacer(Modifier.height(2.dp))
-            StatusHint(connectionHint(state, profile))
         }
     }
 }
@@ -683,12 +661,6 @@ private fun HomeDetails(
             expanded = density == HomeDensity.ROOMY,
             dense = density != HomeDensity.ROOMY,
         )
-
-        // The WARP disclosure is about the WARP exit network; with Psiphon or
-        // Tor in the chain it would describe somebody else's network.
-        if (density == HomeDensity.ROOMY && state is ConnectionState.Idle && profile.chain == ChainMode.AETHER) {
-            PrivacyLine()
-        }
     }
 }
 
@@ -730,30 +702,6 @@ private fun ErrorStrip(message: String, tone: Color, onOpenDiagnostics: () -> Un
                 )
             }
         }
-    }
-}
-
-/** The privacy disclosure as one quiet line instead of a full notice card. */
-@Composable
-private fun PrivacyLine() {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Rounded.Lock,
-            null,
-            Modifier.size(14.dp),
-            MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            stringResource(R.string.passage_privacy),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 
@@ -809,6 +757,9 @@ private fun Modifier.auroraWash(
  * tail while reaching (fast) and once protected (slow). Decorative to a
  * screen reader. When the slot is so small the orbit would cut through the
  * orb, the field is not drawn.
+ *
+ * This is the ONLY thing on the hero that turns: the button inside it has no
+ * spinning layer of its own (ConnectButton v6).
  *
  * PERFORMANCE: the rings are one static Canvas. The satellites are drawn ONCE
  * at their start angles and the whole layer is rotated by [graphicsLayer], so
@@ -1600,44 +1551,3 @@ private fun stateWord(state: ConnectionState): String = stringResource(
         else -> R.string.pill_off
     },
 )
-
-@Composable
-private fun connectionTitle(state: ConnectionState): String = stringResource(
-    when (state) {
-        is ConnectionState.Idle -> R.string.passage_ready
-        is ConnectionState.Launching -> R.string.state_launching
-        is ConnectionState.Connecting -> R.string.state_connecting
-        is ConnectionState.Verifying -> R.string.state_verifying
-        is ConnectionState.Connected -> R.string.passage_connected
-        is ConnectionState.Reconnecting -> R.string.state_reconnecting
-        is ConnectionState.Disconnecting -> R.string.state_disconnecting
-        is ConnectionState.Error -> R.string.passage_failed
-    },
-)
-
-/**
- * The sentence under the title. Never a repeat of something already on screen:
- * the error strip owns the engine's words; this line says what to do next.
- */
-@Composable
-private fun connectionHint(state: ConnectionState, profile: ConnectionProfile): String =
-    when (state) {
-        is ConnectionState.Idle ->
-            if (profile.chain == ChainMode.AETHER) {
-                stringResource(R.string.passage_start_hint)
-            } else {
-                stringResource(R.string.conn_start_hint_chain, chainLabel(profile.chain))
-            }
-        is ConnectionState.Connected -> stringResource(R.string.passage_connected_hint)
-        is ConnectionState.Launching, is ConnectionState.Connecting ->
-            if (profile.chain.usesAether) {
-                stringResource(R.string.busy_hint, scanLabel(profile.scanMode))
-            } else {
-                stringResource(R.string.conn_busy_chain, chainLabel(profile.chain))
-            }
-        is ConnectionState.Verifying -> stringResource(R.string.state_verify_hint)
-        is ConnectionState.Reconnecting ->
-            stringResource(R.string.reconnect_attempt, state.attempt, state.maxAttempts)
-        is ConnectionState.Disconnecting -> stringResource(R.string.conn_disconnecting_hint)
-        is ConnectionState.Error -> stringResource(R.string.conn_error_hint)
-    }

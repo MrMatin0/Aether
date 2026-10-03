@@ -29,7 +29,7 @@ class ConnectionLayoutTest {
     }
 
     @Test
-    fun orbStaysSmallerThanBeforeAndInsideItsOrbit() {
+    fun orbIsBoundedAndInsideItsOrbit() {
         listOf(
             320.dp to 120.dp,
             360.dp to 180.dp,
@@ -43,7 +43,10 @@ class ConnectionLayoutTest {
             assertTrue(orbit >= orb, "$w x $h orbit $orbit < orb $orb")
             assertTrue(orbit <= HERO_ORBIT_MAX || orbit == orb)
         }
-        assertTrue(ORB_HOME_MAX < 256.dp)
+        // Bigger than the old 208dp cap (the button read as too small), still
+        // short of a dinner plate on a tablet.
+        assertTrue(ORB_HOME_MAX > 208.dp)
+        assertTrue(ORB_HOME_MAX <= 272.dp)
     }
 
     @Test
