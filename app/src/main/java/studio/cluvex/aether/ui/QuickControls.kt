@@ -22,6 +22,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -31,10 +32,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.BuildConfig
@@ -82,6 +85,9 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  *   PINNED    a pinned endpoint skips the scan, so the scan mode is idle
  * The stored values are kept in every case (the user comes back to them),
  * this is about what is SHOWN.
+ *
+ * WHOLE VALUES. A tile's value shrinks to fit (see [FitText]) before it ever
+ * ellipsizes: "Wiregu\u2026" tells nobody which protocol is set.
  */
 
 /** The three quick decisions, in the order traffic meets them. */
@@ -119,7 +125,10 @@ internal fun advancedPagesFor(control: QuickControl, chain: ChainMode): List<Set
     QuickControl.PROTOCOL, QuickControl.SCAN -> listOf(SettingsPage.CONNECTION)
 }
 
-/** Narrowest a tile can be and still show a value like "WireGuard" whole. */
+/**
+ * Narrowest a tile can be before the deck stacks. A value like "WireGuard"
+ * no longer has to fit at full size here: [FitText] shrinks it first.
+ */
 internal val QUICK_TILE_MIN = 96.dp
 private val QUICK_GAP = 8.dp
 
@@ -258,18 +267,16 @@ private fun ControlTile(
             compact -> Row(
                 Modifier
                     .heightIn(min = 44.dp)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(icon, spec.label, Modifier.size(16.dp), iconTint)
-                Spacer(Modifier.width(8.dp))
-                Text(
+                Spacer(Modifier.width(6.dp))
+                FitText(
                     spec.value,
-                    Modifier.weight(1f),
                     style = MaterialTheme.typography.labelLarge,
                     color = valueInk,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
             }
             // A full-width row: label at the start, value at the end.
@@ -288,14 +295,12 @@ private fun ControlTile(
                     maxLines = 1,
                 )
                 Spacer(Modifier.width(12.dp))
-                Text(
+                FitText(
                     spec.value,
-                    Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     color = valueInk,
+                    modifier = Modifier.weight(1f),
                     textAlign = TextAlign.End,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!locked) {
                     Spacer(Modifier.width(4.dp))
@@ -311,7 +316,7 @@ private fun ControlTile(
             else -> Column(
                 Modifier
                     .heightIn(min = 56.dp)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(icon, null, Modifier.size(14.dp), iconTint)
@@ -326,16 +331,55 @@ private fun ControlTile(
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
+                FitText(
                     spec.value,
                     style = MaterialTheme.typography.titleSmall,
                     color = valueInk,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
     }
+}
+
+/**
+ * One line that SHRINKS to fit before it gives up and ellipsizes: a tile a
+ * third of a phone wide must still say "WireGuard", not "Wiregu\u2026". Steps
+ * the size down to [minScale] of [style] and only ellipsizes past that floor.
+ * Not drawn until it has settled, so the oversized first pass never flashes.
+ */
+@Composable
+private fun FitText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+    textAlign: TextAlign? = null,
+    minScale: Float = 0.7f,
+) {
+    var scale by remember(text, style) { mutableFloatStateOf(1f) }
+    var settled by remember(text, style) { mutableStateOf(false) }
+    val floor = scale <= minScale + 0.001f
+    val shown = if (style.fontSize.isSpecified) style.copy(fontSize = style.fontSize * scale) else style
+    Text(
+        text,
+        modifier.drawWithContent { if (settled) drawContent() },
+        style = shown,
+        color = color,
+        textAlign = textAlign,
+        maxLines = 1,
+        softWrap = false,
+        // Clip while measuring so an overflow is visible to onTextLayout;
+        // ellipsize only once the floor is reached and it still does not fit.
+        overflow = if (floor) TextOverflow.Ellipsis else TextOverflow.Clip,
+        onTextLayout = { result ->
+            if (result.didOverflowWidth && !floor) {
+                scale = (scale - 0.06f).coerceAtLeast(minScale)
+            } else {
+                settled = true
+            }
+        },
+    )
 }
 
 // --------------------------------------------------------------- the sheet --
