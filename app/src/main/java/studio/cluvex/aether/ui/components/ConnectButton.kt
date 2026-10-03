@@ -2,10 +2,7 @@ package studio.cluvex.aether.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -32,7 +29,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -46,7 +42,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -64,7 +59,6 @@ import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMono
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
-import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 enum class ButtonMode { IDLE, BUSY, CONNECTED, ERROR }
@@ -86,7 +80,7 @@ fun accentFor(mode: ButtonMode): Color {
     }
 }
 
-/** Twelve o'clock. Every arc, tick and comet starts here. */
+/** Twelve o'clock. Every arc and tick starts here. */
 private const val START_ANGLE = -90f
 
 /** The tick ladder around the core. 36 keeps every tick separable. */
@@ -101,8 +95,9 @@ internal fun tickLit(fraction: Float, sweep: Float, mode: ButtonMode): Boolean =
 
 /**
  * Whether a radial clock may run at all. The orb itself no longer breathes
- * (v5: it never changes size), but the rule stays the contract for anything
- * that wants a radial clock: only while reaching, enabled, and motion allowed.
+ * (v5: it never changes size) and nothing turns inside it any more (v6), but
+ * the rule stays the contract for anything that wants a radial clock: only
+ * while reaching, enabled, and motion allowed.
  */
 internal fun orbPulseEnabled(mode: ButtonMode, enabled: Boolean, reduced: Boolean): Boolean =
     mode == ButtonMode.BUSY && enabled && !reduced
@@ -123,6 +118,9 @@ private val ORB_MIN = 184.dp
 /** Breathing room either side, for the width-driven default. */
 private val ORB_GUTTER = 56.dp
 
+/** At or above this the orb gets its large glyph and word. */
+private val ORB_LARGE = 220.dp
+
 /** Below this the orb switches to its compact type. */
 private val ORB_COMPACT = 168.dp
 
@@ -130,24 +128,24 @@ private val ORB_COMPACT = 168.dp
 private val ORB_TINY = 120.dp
 
 /**
- * THE HERO CONTROL, v5: "steady glass power core".
+ * THE HERO CONTROL, v6: "steady glass power core".
  *
  *   IDLE       a dark glass core, quiet track, power glyph. Nothing animates.
- *   BUSY       amber conic arc grows with REAL progress, a comet with a
- *              gradient tail sweeps the ring.
+ *   BUSY       amber conic arc grows with REAL progress.
  *   CONNECTED  the core FILLS with the protected tone (glyph and words flip to
- *              the on-colour), a slow sheen travels the ring, a halo glows.
+ *              the on-colour), a halo glows.
  *   ERROR      three broken rose arcs, frozen, ladder unlit.
  *
  * v5 RULE: THE ORB NEVER CHANGES SIZE. No press scale, no stroke squeeze, no
  * breathing rings, no glyph scale-in. Press feedback is light, not geometry:
  * the core's inner glow and rim brighten.
  *
- * PERFORMANCE: everything static lives in one Canvas that only redraws when a
- * state transition changes its inputs. The comet, the only thing that moves
- * continuously, is drawn ONCE into its own layer and turned by
- * [graphicsLayer]: a matrix update per frame, not a redraw of 36 ticks and
- * six gradients.
+ * v6 RULE: NOTHING SPINS INSIDE THE ORB. The comet that used to sweep the
+ * ring is gone; proof of life is the orbit OUTSIDE the button (OrbitalHero in
+ * ConnectionHome.kt), and progress is the arc, which only ever moves forward.
+ *
+ * PERFORMANCE: everything lives in one Canvas that only redraws when a state
+ * transition changes its inputs.
  */
 @Composable
 fun ConnectButton(
@@ -163,7 +161,6 @@ fun ConnectButton(
 ) {
     val accents = LocalAetherAccents.current
     val accent = accentFor(mode)
-    val reduced = LocalReducedMotion.current
 
     // transitionSpec is a PLAIN lambda: resolve the durations in composition.
     val fadeInMs = aetherDuration(AetherDur.Base)
@@ -216,26 +213,11 @@ fun ConnectButton(
         label = "press",
     )
 
-    // The comet's clock, read only by its own layer.
-    val spin = remember { Animatable(0f) }
-    LaunchedEffect(mode, reduced) {
-        spin.snapTo(0f)
-        if (reduced) return@LaunchedEffect
-        when (mode) {
-            ButtonMode.BUSY ->
-                spin.animateTo(1f, infiniteRepeatable(tween(1300, easing = LinearEasing)))
-            ButtonMode.CONNECTED ->
-                spin.animateTo(1f, infiniteRepeatable(tween(AetherDur.Halo, easing = LinearEasing)))
-            else -> Unit
-        }
-    }
-
     val track = MaterialTheme.colorScheme.outlineVariant
     val focusTone = MaterialTheme.colorScheme.onSurface
     val cardTone = accents.card
     val onCore = accents.onProtected
     val darkTheme = accents.dark
-    val showComet = !reduced && (mode == ButtonMode.BUSY || mode == ButtonMode.CONNECTED)
 
     // Words and glyph flip to the on-colour as the core fills.
     val contentTone = lerp(MaterialTheme.colorScheme.onSurface, onCore, core)
@@ -248,14 +230,17 @@ fun ConnectButton(
         val orb = diameter ?: (maxWidth - ORB_GUTTER).coerceIn(ORB_MIN, ORB_MAX)
         val compact = orb < ORB_COMPACT
         val tiny = orb < ORB_TINY
+        val large = orb >= ORB_LARGE
         val glyphSize = when {
             tiny -> 24.dp
             compact -> 32.dp
+            large -> 48.dp
             else -> 40.dp
         }
         val wordStyle = when {
             tiny -> MaterialTheme.typography.labelMedium
             compact -> MaterialTheme.typography.labelLarge
+            large -> MaterialTheme.typography.titleLarge
             else -> MaterialTheme.typography.titleMedium
         }
 
@@ -452,49 +437,6 @@ fun ConnectButton(
                         center = centre,
                         style = Stroke(width = focusStroke),
                     )
-                }
-            }
-
-            // 8. THE COMET: proof of life, never mistaken for progress. Drawn
-            // once at twelve o'clock, turned by its layer every frame.
-            if (showComet) {
-                Canvas(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .graphicsLayer { rotationZ = spin.value * 360f },
-                ) {
-                    val cx = size.width / 2f
-                    val cy = size.height / 2f
-                    val centre = Offset(cx, cy)
-                    val outerR = size.minDimension / 2f
-                    val stroke = (size.minDimension * 0.034f).coerceIn(4.dp.toPx(), 8.dp.toPx())
-                    val inset = (size.minDimension * 0.05f).coerceIn(5.dp.toPx(), 12.dp.toPx())
-                    val ringR = outerR - stroke / 2f - inset
-                    if (ringR <= 0f) return@Canvas
-                    val topLeft = Offset(cx - ringR, cy - ringR)
-                    val ringSize = Size(ringR * 2f, ringR * 2f)
-                    val busy = mode == ButtonMode.BUSY
-                    val tail = if (busy) 0.20f else 0.32f
-                    val headAlpha = if (busy) 1f else 0.65f
-                    rotate(START_ANGLE, centre) {
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                0f to Color.Transparent,
-                                (1f - tail) to Color.Transparent,
-                                1f to animatedAccent.copy(alpha = headAlpha),
-                                center = centre,
-                            ),
-                            startAngle = -tail * 360f,
-                            sweepAngle = tail * 360f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = ringSize,
-                            style = Stroke(width = stroke * 1.15f, cap = StrokeCap.Butt),
-                        )
-                        val head = Offset(cx + ringR, cy)
-                        drawCircle(animatedAccent.copy(alpha = 0.28f * headAlpha), radius = stroke * 1.9f, center = head)
-                        drawCircle(animatedAccent.copy(alpha = headAlpha), radius = stroke * 0.72f, center = head)
-                    }
                 }
             }
 
