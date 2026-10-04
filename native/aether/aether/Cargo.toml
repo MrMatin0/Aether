@@ -17,6 +17,7 @@ name = "aether"
 path = "src/main.rs"
 
 [dependencies]
+arc-swap = "=1.7.1"
 quiche = { path = "../quiche/quiche", default-features = false, features = ["boringssl-boring-crate", "qlog"] }
 boring = "4.22"
 foreign-types-shared = "0.3"

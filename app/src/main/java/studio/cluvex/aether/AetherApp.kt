@@ -11,6 +11,7 @@ import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.LogLevel
 import studio.cluvex.aether.core.SessionTracker
 import studio.cluvex.aether.data.AppPrefs
+import studio.cluvex.aether.data.WgExperimentPrefs
 import java.io.File
 
 class AetherApp : Application() {
@@ -39,6 +40,7 @@ class AetherApp : Application() {
         // no UI attached — the boot receiver, the VPN service's state changes —
         // so they are initialised here rather than from a composable.
         AppPrefs.init(this)
+        WgExperimentPrefs.init(this)
         SessionTracker.init(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
