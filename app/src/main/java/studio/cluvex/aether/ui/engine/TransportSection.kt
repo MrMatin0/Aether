@@ -94,6 +94,10 @@ internal fun TransportSection(
 
         Spacer(Modifier.height(EngineSpacing.Divider))
         EngineDivider()
+        WgExperimentControls(protocol = protocol, enabled = enabled)
+
+        Spacer(Modifier.height(EngineSpacing.Divider))
+        EngineDivider()
         SwitchRow(
             title = stringResource(R.string.ech_title),
             description = stringResource(R.string.ech_desc),
@@ -136,12 +140,7 @@ internal fun TransportSection(
             )
         }
 
-        // ----------------------------------------------------- spoofing --
-        // The SNI applies to every MASQUE carrier (H2 and H3 both put it in
-        // their ClientHello); the split modes only the HTTP/2 one, whose TCP
-        // stream the engine writes itself. A WireGuard session has no
-        // ClientHello for any of this, so it gets the explanation rather than
-        // dead switches.
+        // The SNI applies to MASQUE carriers; the split modes only to H2.
         if (protocol.isMasque) {
             Spacer(Modifier.height(EngineSpacing.Divider))
             EngineDivider()

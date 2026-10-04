@@ -3,6 +3,7 @@ package studio.cluvex.aether.core
 import android.util.Log
 import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.data.WgExperimentPrefs
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -58,8 +59,12 @@ class AetherProcess(
         val builder = ProcessBuilder(command)
             .directory(workingDir)
             .redirectErrorStream(true)
+        // Snapshot once per launch. Changing a lab switch never mutates a live
+        // child, and boot/restart paths read the same persisted device settings.
+        val experiments = WgExperimentPrefs.state.value.toEnv(profile.protocol)
         builder.environment().apply {
             putAll(profile.toEnv())
+            putAll(experiments)
             put("HOME", workingDir.absolutePath)
             put("TMPDIR", workingDir.absolutePath)
         }
@@ -67,6 +72,7 @@ class AetherProcess(
         val proc = builder.start()
         process = proc
 
+        DiagnosticsLog.i("engine", "WireGuard experiments: hop=${experiments["AETHER_WG_PORT_HOP"]}, padding=${experiments["AETHER_WG_DATA_PADDING"]}")
         DiagnosticsLog.i("engine", "Spawned ${bin.name} ${profile.toArgs().joinToString(" ")}")
         // Drain stdout/stderr so a full pipe never blocks the engine, mirroring
         // every line into both logcat and the in-app diagnostics panel.
@@ -110,18 +116,12 @@ class AetherProcess(
      * The bounded overload is used so the supervisor still re-checks its own
      * cancellation state periodically.
      *
-     * DISCONNECT-LATENCY ROOT CAUSE (fixed): `Process.waitFor` is a BLOCKING
+     * DISCONNECT-LATENCY ROOT CAUSE (fixed): this used to be a BLOCKING
      * java call. Coroutine cancellation cannot interrupt a blocking call, so
      * when the user tapped disconnect the service sat inside this wait until
-     * the whole window expired — which is exactly the 30-50 s
-     * "Disconnecting…" freeze. `runInterruptible` maps cancellation onto a real
-     * thread interrupt, so `waitFor` throws immediately and the teardown
-     * continues within milliseconds — while still costing zero polling when
-     * idle.
-     *
-     * CancellationException is rethrown, not mapped to "timeout": a cancelled
-     * caller must unwind, and "we were cancelled" must stay distinguishable
-     * from "the engine outlived the window".
+     * the whole window expired. `runInterruptible` maps cancellation onto a
+     * real thread interrupt, so teardown continues within milliseconds.
+     * CancellationException is rethrown, not mapped to a timeout.
      */
     suspend fun awaitExit(timeoutMs: Long): Boolean =
         try {
@@ -137,30 +137,17 @@ class AetherProcess(
     /**
      * Stops the engine and does not return until the OS has really reaped it.
      *
-     * 1.2.2 PROTOCOL-SWITCH FIX: this used to be a fire-and-forget
-     * `destroy()`. `destroy()` only *asks* the process to exit, so the old
-     * engine was often still alive — and still holding the local SOCKS5
-     * listener on 127.0.0.1:1819 — while the next connect was already
-     * spawning a new engine. The new engine then either failed to bind or the
-     * app's port probe saw the DYING engine's socket and declared "port is
-     * up" far too early, which is exactly why switching protocols felt like it
-     * hung for tens of seconds and then had to retry. We now wait for the
-     * process to actually exit and escalate to SIGKILL if it does not.
+     * 1.2.2 PROTOCOL-SWITCH FIX: a fire-and-forget destroy leaves the engine
+     * holding its port while the next connect is starting. Wait for exit and
+     * escalate to SIGKILL if necessary.
      */
     fun stop() = synchronized(lifecycleLock) {
         val proc = process ?: return@synchronized
         process = null
         runCatching {
             proc.destroy()
-            // Give the engine a very short, fixed grace period, then SIGKILL.
-            // Deliberately short: the user is waiting for the button to turn
-            // grey, and the next connect independently waits for the local
-            // proxy port to be released, so nothing depends on a long wait
-            // here.
             if (!proc.waitFor(GRACEFUL_EXIT_MS, TimeUnit.MILLISECONDS)) {
                 proc.destroyForcibly()
-                // Keep the KDoc's promise: confirm the reaping after the
-                // escalation too, so port 1819 is free when this returns.
                 proc.waitFor(FORCE_EXIT_MS, TimeUnit.MILLISECONDS)
             }
         }
@@ -170,7 +157,6 @@ class AetherProcess(
     private companion object {
         /** How long a polite SIGTERM gets before we escalate to SIGKILL. */
         const val GRACEFUL_EXIT_MS = 250L
-
         /** How long a SIGKILL gets to be reaped before we give up waiting. */
         const val FORCE_EXIT_MS = 1_000L
     }

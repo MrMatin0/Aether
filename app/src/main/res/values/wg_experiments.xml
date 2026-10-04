@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wg_lab_title">WireGuard experiments</string>
+    <string name="wg_lab_note">Both switches start off. Disconnect before changing them, then reconnect. These are device-wide lab settings, separate from saved setups and profile reset. Test each separately; connectivity is not guaranteed.</string>
+    <string name="wg_lab_hop_title">Port hopping (experimental)</string>
+    <string name="wg_lab_hop_note">Try a new UDP source port on handshake retries and during the session. WARP ingress also rotates destination ports 2408, 500, 1701 and 4500. A session hop without an authenticated reply rolls back; brief packet loss is possible.</string>
+    <string name="wg_lab_padding_title">Data padding (experimental)</string>
+    <string name="wg_lab_padding_note">Add variable zero padding inside encrypted IPv4/IPv6 data and verification probes, without changing IP length headers. Large packets, empty keepalives and handshake packets stay unchanged. Does not disguise the handshake.</string>
+    <string name="wg_lab_select_wg">Select WireGuard explicitly to edit these switches. Other selected transports leave them inactive.</string>
+</resources>
