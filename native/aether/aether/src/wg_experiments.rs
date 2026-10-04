@@ -73,7 +73,7 @@ impl Paths {
             tokio::select! {
                 biased;
                 _ = changed.changed() => continue,
-                read = path.sock.recv(buf) => return read.map(|n| (n, path)),
+                read = path.sock.recv(buf) => return read.map(|n| (n, path.clone())),
             }
         }
     }
@@ -83,9 +83,22 @@ impl Paths {
         path.sock.send(packet).await
     }
 
+    /// Only the single rotation task writes current. Keep old alive throughout
+    /// the trial; authenticated traffic, not successful UDP send(), proves it.
+    async fn trial(&self, candidate: Arc<SocketPath>, old: Arc<SocketPath>, wait: Duration) -> bool {
+        self.install(candidate.clone());
+        tokio::time::sleep(wait).await;
+        if candidate.valid_rx.load(Ordering::Relaxed) == 0 {
+            self.install(old);
+            false
+        } else {
+            true
+        }
+    }
+
     /// A replacement is installed only after bind/connect/detour succeeded.
-    /// It gets three seconds to return authenticated data, otherwise restore
-    /// the old path. Health probes and ordinary traffic exercise the candidate.
+    /// Four seconds covers a complete jittered health-probe interval (3.5s
+    /// maximum) plus reply time; otherwise restore the old path.
     pub async fn rotate(&self) {
         let mut turn = 0usize;
         loop {
@@ -113,13 +126,10 @@ impl Paths {
             };
             super::tune_socket_buffers(&socket);
             let candidate = Arc::new(SocketPath::new(Arc::new(socket), peer, detour));
-            self.install(candidate.clone());
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            if candidate.valid_rx.load(Ordering::Relaxed) == 0 {
-                self.install(old);
-                log::info!("[wg-experiment] hop had no authenticated reply; rolled back");
-            } else {
+            if self.trial(candidate, old, Duration::from_secs(4)).await {
                 log::info!("[wg-experiment] hop confirmed on port {}", peer.port());
+            } else {
+                log::info!("[wg-experiment] hop had no authenticated reply; rolled back");
             }
             // old/candidate guards drop only after all readers release them.
         }
@@ -257,6 +267,29 @@ mod tests {
         assert_eq!(tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap(), b"new");
     }
 
+    #[tokio::test]
+    async fn an_unconfirmed_hop_restores_the_old_path_and_keeps_readers_alive() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = server.local_addr().unwrap();
+        let old_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        old_sock.connect(peer).await.unwrap();
+        let paths = Paths::new(SocketPath::new(Arc::new(old_sock), peer, DetourGuard::default()));
+        let in_flight = paths.load();
+        let weak = Arc::downgrade(&in_flight);
+        let new_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        new_sock.connect(peer).await.unwrap();
+        let candidate = Arc::new(SocketPath::new(Arc::new(new_sock), peer, DetourGuard::default()));
+        assert!(!paths.trial(candidate.clone(), paths.load(), Duration::from_millis(1)).await);
+        assert!(Arc::ptr_eq(&paths.load(), &in_flight));
+        candidate.authenticated();
+        assert!(paths.trial(candidate.clone(), paths.load(), Duration::from_millis(1)).await);
+        assert!(Arc::ptr_eq(&paths.load(), &candidate));
+        assert!(weak.upgrade().is_some(), "retired path stays alive for the in-flight reader");
+        in_flight.sock.send(b"retained").await.unwrap();
+        drop(in_flight);
+        assert!(weak.upgrade().is_none(), "retired socket and guard are released after the last reader");
+    }
+
     #[test]
     fn encrypted_padding_round_trips_for_ipv4_and_ipv6() {
         use boringtun::noise::{Tunn, TunnResult};
@@ -290,7 +323,7 @@ mod tests {
                     TunnResult::WriteToNetwork(p) => p.to_vec(), other => panic!("{other:?}"),
                 };
                 match b.decapsulate(None, &encrypted, &mut bb) {
-                    TunnResult::WriteToTunnelV4(p, _) | TunnResult::WriteToTunnelV6(p, _) => assert_eq!(p, packet),
+                    TunnResult::WriteToTunnelV4(p, _) | TunnResult::WriteToTunnelV6(p, _) => assert_eq!(&*p, packet.as_slice()),
                     other => panic!("{other:?}"),
                 }
             }
