@@ -300,6 +300,18 @@ build_aether() {
     # runs exactly one Tor and never emits the engine's --tor* flags, so
     # compiling Arti in would only make libaether.so much larger for code
     # nothing is allowed to reach.
+    #
+    # Static libc++ (core 2.3.0, boring 5.2). boring-sys 5 links BoringSSL's
+    # C++ runtime as libc++_shared.so on Android unless told otherwise, and
+    # libaether.so is exec'd from the app's native library directory, where the
+    # dynamic linker never looks for it: the engine would die on start with
+    # "library libc++_shared.so not found" while every build stayed green.
+    # Upstream's own release build sets the same variable (CluvexStudio/Aether
+    # 6cf29b3). On an older core it changes nothing that matters: a static C++
+    # runtime is what this APK needs either way.
+    local triple_env
+    triple_env="$(printf '%s' "${triple}" | tr '-' '_')"
+    export "BORING_BSSL_RUST_CPPLIB_${triple_env}=static:-bundle=c++"
     ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release )
 
     local reldir="${CARGO_TARGET_DIR}/${triple}/release"
@@ -320,7 +332,17 @@ build_aether() {
     mkdir -p "${JNI_DIR}/${abi}"
     cp "${artifact}" "${JNI_DIR}/${abi}/libaether.so"
     "${NDK_TOOLCHAIN}/llvm-strip" "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null || true
-    echo "    installed libaether.so for ${abi}"
+
+    # Hard check: nothing ships libc++_shared.so beside libaether.so, so the
+    # engine must not need it (see the static libc++ note above).
+    local needed_aether
+    needed_aether="$("${NDK_TOOLCHAIN}/llvm-readelf" -d "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null \
+      | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
+    if grep -qx 'libc++_shared.so' <<< "${needed_aether}"; then
+      echo "ERROR: [${abi}] libaether.so needs libc++_shared.so; the static libc++ link did not take." >&2
+      exit 1
+    fi
+    echo "    installed libaether.so for ${abi} (NEEDED: $(echo ${needed_aether}))"
   }
 
   local abi
