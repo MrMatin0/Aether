@@ -48,7 +48,9 @@
 # If the merge conflicts we deliberately keep the PURE UPSTREAM file (which is
 # guaranteed to compile) instead of forcing our stale copy, and we shout about
 # it in the log and in the changelog. A degraded feature is recoverable; a red
-# build on every future run is not.
+# build on every future run is not. Since core 2.3.0 the conflicted merge is
+# also kept, markers and all, under native/aether/.core-conflicts/, so the
+# person resolving it starts from the merge rather than from scratch.
 #
 # Finally, the previous core is snapshotted to native/.core-prev so the CI
 # "Build engine" step can roll back and retry if the new core does not build
@@ -65,6 +67,18 @@
 # Before it touches the tree, the script now compares the vendored core with
 # pristine upstream at the vendored version and stops, naming every file it
 # would lose, unless CORE_SYNC_ALLOW_DRIFT=1 says to discard them on purpose.
+#
+# THE LISTS CAUGHT UP WITH THE ENGINE WORK (core 2.3.0 review, 2026-10-05)
+# ------------------------------------------------------------------------
+# Between the 2.1.0 sync (2026-09-24) and the 2.3.0 release the app carried
+# engine work in eleven files that were NOT in PATCHED_FILES (see
+# MODIFICATIONS.md, "Engine patches"), plus a module upstream does not ship
+# (wg_experiments.rs). The drift guard would have refused the 2.3.0 upgrade,
+# correctly, and CORE_SYNC_ALLOW_DRIFT=1 would have deleted all of it. Those
+# files are listed now, the new module is APP_OWNED_FILES, and the quiche
+# workspace manifest, which pins the boring version quiche builds with and
+# which nothing used to move, is UPSTREAM_EXTRA_FILES (core 2.3.0 moved boring
+# from 4.22 to 5.2 on both sides; two boring-sys copies cannot link together).
 #
 # The script is deliberately conservative: any failure to reach GitHub leaves
 # the vendored core untouched and exits 0, so a network hiccup can never break
@@ -89,6 +103,7 @@ CORE_REPO="${AETHER_REPO:-CluvexStudio/Aether}"
 CORE_DIR="native/aether"
 VERSION_FILE="$CORE_DIR/CORE_VERSION"
 BASELINE_DIR="$CORE_DIR/.upstream-baseline"
+CONFLICT_DIR="$CORE_DIR/.core-conflicts"
 PREV_DIR="native/.core-prev"
 STATE_FILE="native/.core-sync-state"
 README_EN="README.md"
@@ -109,33 +124,66 @@ BASELINE="1.5.0"
 
 # App-specific patches carried on top of the upstream engine. These are MERGED
 # (three-way) onto the new upstream sources, never blind-copied over them.
-#   prober.rs     -> custom_cidrs_v4() + manual-range mode in build_candidates()
-#   wg_prober.rs  -> custom_wg_cidrs_v4() + manual-range mode in build_wg_candidates()
-#   Both power the 1.2.2 location picker (AETHER_SCAN_CIDRS).
+#
+#   Cargo.toml    -> arc-swap (wg_experiments), smoltcp socket-tcp-cubic/-reno
+#   account.rs    -> keep the registration before enrolling, cut-on-the-wire
+#                    detection, no short connect timeout on a proxied path
+#   api.rs        -> follows account.rs / apifront.rs
+#   apifront.rs   -> ECH route first, Android trust store, early stop on a real
+#                    API answer. Upstream 2.3.0 DELETES this file (its https.rs
+#                    and --enroll-address replace the camouflaged route), so the
+#                    sync drops it and keeps a copy under .core-conflicts/.
 #   cli.rs        -> --precise / --ultra accepted as aliases of --balanced /
-#                    --ironclad (the 1.4.6 scan-mode names), plus the parser
-#                    tests that hold them.
+#                    --ironclad (the 1.4.6 scan-mode names), plus parser tests.
+#   masque_h2.rs  -> backpressure instead of drops, SpoofingStream, custom SNI
+#   netstack.rs   -> TCP congestion control, no tx drops, event-driven waits
+#   prober.rs     -> quiet window from the first gateway, DoH ranges last,
+#                    failure tally (and, historically, AETHER_SCAN_CIDRS)
+#   quic.rs       -> sendmmsg batching, lossless inbound, custom SNI
+#   socks.rs      -> DNS cache, parallel resolvers, non-blocking UDP associate
+#   sysprofile.rs -> netstack TCP windows sized for the link
+#   tls.rs        -> CUBIC unless AETHER_QUIC_CC asks otherwise, ECH helpers
+#   wg_prober.rs  -> custom_wg_cidrs_v4() (the 1.2.2 location picker)
+#   wireguard.rs  -> drain boringtun, no lock across await, socket buffers,
+#                    wg_experiments wiring
 #
-# cli.rs WAS MISSING FROM THIS LIST through core 2.0.0. Everything under aether/
-# is replaced wholesale below and only the files named here are merged back, so
-# the next upgrade would have deleted the aliases without a word - and with the
-# app emitting --precise on its default scan mode, every connect would have
-# died on "unknown option". Since 1.5.0 the app sends upstream's own flag names
-# (model/Profile.kt, ScanMode.engineFlag), so losing the aliases can no longer
-# break a connect; they are kept for shells and scripts that pass the old names.
-#
-# NOTE (1.5.0): at core 2.0.0, prober.rs and wg_prober.rs are byte-identical to
-# upstream - the manual-range patch did not survive the 2.0.0 sync, and neither
-# upstream file reads AETHER_SCAN_CIDRS. They stay listed so that a re-applied
-# patch is carried forward by the next upgrade instead of being overwritten.
-#
-# A change under aether/ that is NOT listed here is not merged, it is deleted
-# by the next upgrade. The drift guard below refuses to upgrade until such a
-# change is either listed or explicitly given up (CORE_SYNC_ALLOW_DRIFT=1).
+# cli.rs WAS MISSING FROM THIS LIST through core 2.0.0, and everything from
+# Cargo.toml down to wireguard.rs above except prober.rs and wg_prober.rs was
+# missing through core 2.1.0. A change under aether/ that is NOT listed here
+# (or in APP_OWNED_FILES) is not merged, it is deleted by the next upgrade. The
+# drift guard below refuses to upgrade until such a change is either listed or
+# explicitly given up (CORE_SYNC_ALLOW_DRIFT=1).
 PATCHED_FILES=(
-  "aether/src/prober.rs"
-  "aether/src/wg_prober.rs"
+  "aether/Cargo.toml"
+  "aether/src/account.rs"
+  "aether/src/api.rs"
+  "aether/src/apifront.rs"
   "aether/src/cli.rs"
+  "aether/src/masque_h2.rs"
+  "aether/src/netstack.rs"
+  "aether/src/prober.rs"
+  "aether/src/quic.rs"
+  "aether/src/socks.rs"
+  "aether/src/sysprofile.rs"
+  "aether/src/tls.rs"
+  "aether/src/wg_prober.rs"
+  "aether/src/wireguard.rs"
+)
+
+# Files under aether/ that exist only in this repository. There is nothing
+# upstream to merge them onto, so they are carried across an upgrade verbatim.
+# If upstream ever ships a file of the same name, ours is kept and the run is
+# flagged for review.
+APP_OWNED_FILES=(
+  "aether/src/wg_experiments.rs"
+)
+
+# Upstream files OUTSIDE aether/ that the engine build depends on and that
+# must move with the core. The vendored quiche sources are identical to
+# upstream's; only the workspace manifest, which pins boring, changes between
+# releases. Replaced from the new tag when upstream ships them.
+UPSTREAM_EXTRA_FILES=(
+  "quiche/Cargo.toml"
 )
 
 log() { printf '[core-sync] %s\n' "$*"; }
@@ -236,9 +284,8 @@ fi
 #
 #   changed  an upstream file edited here. Add it to PATCHED_FILES and it is
 #            three-way merged like the others.
-#   added    a file upstream does not ship. There is nothing to merge it onto,
-#            so fold the change into a listed file or keep it out of
-#            native/aether/aether.
+#   added    a file upstream does not ship. Add it to APP_OWNED_FILES and it
+#            is carried over verbatim, or keep it out of native/aether/aether.
 #   removed  an upstream file deleted here.
 #
 # The vendored side is what git would commit (tracked files, plus untracked
@@ -249,6 +296,14 @@ allow_drift() { [[ "${CORE_SYNC_ALLOW_DRIFT:-0}" == "1" ]]; }
 is_patched() {
   local p
   for p in "${PATCHED_FILES[@]}"; do
+    [[ "$1" == "$p" ]] && return 0
+  done
+  return 1
+}
+
+is_app_owned() {
+  local p
+  for p in "${APP_OWNED_FILES[@]}"; do
     [[ "$1" == "$p" ]] && return 0
   done
   return 1
@@ -279,6 +334,7 @@ else
   drift=()
   while IFS= read -r -d '' rel; do
     is_patched "$rel" && continue
+    is_app_owned "$rel" && continue
     if [[ ! -e "$CORE_DIR/$rel" ]]; then
       drift+=("removed  $rel")
     elif [[ ! -e "$staging/base/$rel" ]]; then
@@ -298,7 +354,7 @@ else
     warn "Refusing to upgrade ${current_v} -> ${target_v}: it would silently delete ${#drift[@]} local change(s) outside PATCHED_FILES:"
     printf '[core-sync]   %s\n' "${drift[@]}" >&2
     warn "changed: add the file to PATCHED_FILES so it is three-way merged."
-    warn "added: upstream has no such file; fold the change into a listed file, or keep it out of ${CORE_DIR}/aether."
+    warn "added: add the file to APP_OWNED_FILES so it is carried over, or keep it out of ${CORE_DIR}/aether."
     warn "removed: restore the file from upstream ${current_v}."
     warn "Or discard them on purpose with CORE_SYNC_ALLOW_DRIFT=1. Nothing was changed."
     error_gh "Refusing to upgrade the core: ${#drift[@]} vendored engine change(s) outside PATCHED_FILES would be lost. The log names them."
@@ -316,7 +372,7 @@ for rel in "${PATCHED_FILES[@]}"; do
 done
 
 if (( have_baseline == 0 )); then
-  log "No cached baseline for ${current_v} - reconstructing it from upstream."
+  log "No complete cached baseline for ${current_v} - reconstructing it from upstream."
   # The drift guard has normally cloned this tag already; reuse it.
   if [[ -d "$staging/base/aether" ]] ||
      { clone_tag "$current_v" "$staging/base" && [[ -d "$staging/base/aether" ]]; }; then
@@ -344,7 +400,7 @@ cp -R "$CORE_DIR" "$PREV_DIR"
 # ---------------------------------------------------------------- preserve
 backup="$staging/ours"
 mkdir -p "$backup"
-for rel in "${PATCHED_FILES[@]}"; do
+for rel in "${PATCHED_FILES[@]}" "${APP_OWNED_FILES[@]}"; do
   if [[ -f "$CORE_DIR/$rel" ]]; then
     mkdir -p "$backup/$(dirname "$rel")"
     cp "$CORE_DIR/$rel" "$backup/$rel"
@@ -357,6 +413,29 @@ done
 rm -rf "$CORE_DIR/aether"
 cp -R "$staging/new/aether" "$CORE_DIR/aether"
 
+# Conflict copies from an earlier run describe an older merge; start clean.
+rm -rf "$CONFLICT_DIR"
+
+# keep_for_review <rel> <file> <suffix>: leave a copy beside the tree so the
+# person resolving a dropped patch does not have to dig it out of git history.
+keep_for_review() {
+  mkdir -p "$CONFLICT_DIR/$(dirname "$1")"
+  cp "$2" "$CONFLICT_DIR/$1.$3"
+}
+
+# App-owned files go back in verbatim.
+shadowed=()
+for rel in "${APP_OWNED_FILES[@]}"; do
+  [[ -f "$backup/$rel" ]] || continue
+  if [[ -f "$CORE_DIR/$rel" ]] && ! cmp -s "$backup/$rel" "$CORE_DIR/$rel"; then
+    warn "Upstream ${target_v} now ships ${rel} too; keeping this repo's copy, upstream's is under ${CONFLICT_DIR}/."
+    keep_for_review "$rel" "$CORE_DIR/$rel" "upstream"
+    shadowed+=("$rel")
+  fi
+  mkdir -p "$CORE_DIR/$(dirname "$rel")"
+  cp "$backup/$rel" "$CORE_DIR/$rel"
+done
+
 # Re-apply this app's patches by MERGING them onto the new upstream files.
 merged=()
 unchanged=()
@@ -366,10 +445,22 @@ for rel in "${PATCHED_FILES[@]}"; do
   theirs="$CORE_DIR/$rel"
   base="$BASELINE_DIR/$rel"
 
-  # Nothing of ours to carry over, or upstream removed the file entirely.
+  # Nothing of ours to carry over.
   [[ -f "$ours" ]] || continue
+
+  # Ours is pristine upstream (the file is listed but carries no patch right
+  # now): the new upstream file is already the right answer.
+  if [[ -f "$base" ]] && cmp -s "$base" "$ours"; then
+    if [[ -f "$theirs" ]]; then
+      unchanged+=("$rel")
+    fi
+    continue
+  fi
+
+  # Upstream removed the file entirely.
   if [[ ! -f "$theirs" ]]; then
-    warn "Upstream ${target_v} no longer ships ${rel}; the app patch for it is obsolete and was dropped."
+    warn "Upstream ${target_v} no longer ships ${rel}; the app patch for it was dropped (copy kept under ${CONFLICT_DIR}/)."
+    keep_for_review "$rel" "$ours" "orphan"
     dropped+=("$rel")
     continue
   fi
@@ -386,6 +477,7 @@ for rel in "${PATCHED_FILES[@]}"; do
     # No merge base available. Blind-copying is exactly the bug we are fixing,
     # so prefer the file that is guaranteed to compile: upstream's.
     warn "No merge base for ${rel}; keeping the pure upstream file (app patch NOT applied)."
+    keep_for_review "$rel" "$ours" "orphan"
     dropped+=("$rel")
     continue
   fi
@@ -406,12 +498,39 @@ for rel in "${PATCHED_FILES[@]}"; do
     log "Merged app patch into ${rel} cleanly."
   else
     # rc > 0 = conflicts, rc = 255 = merge error. Either way the result is not
-    # trustworthy; keep pure upstream so the engine still compiles.
+    # trustworthy; keep pure upstream so the engine still compiles, and keep
+    # the conflicted merge beside it for whoever re-applies the patch.
     warn "Could not merge the app patch into ${rel} (upstream rewrote it)."
-    warn "Keeping the pure upstream file so the build stays green; re-apply the patch by hand."
+    warn "Keeping the pure upstream file so the build stays green; the conflicted merge is ${CONFLICT_DIR}/${rel}.merge."
+    keep_for_review "$rel" "$work" "merge"
     dropped+=("$rel")
   fi
 done
+
+# Upstream files outside aether/ that move with the core.
+synced_extra=()
+for rel in "${UPSTREAM_EXTRA_FILES[@]}"; do
+  [[ -f "$staging/new/$rel" ]] || continue
+  if [[ ! -f "$CORE_DIR/$rel" ]] || ! cmp -s "$staging/new/$rel" "$CORE_DIR/$rel"; then
+    mkdir -p "$CORE_DIR/$(dirname "$rel")"
+    cp "$staging/new/$rel" "$CORE_DIR/$rel"
+    synced_extra+=("$rel")
+    log "Synced ${rel} from upstream ${target_v}."
+  fi
+done
+
+if [[ -d "$CONFLICT_DIR" ]]; then
+  cat > "$CONFLICT_DIR/README.txt" <<EOF
+Left by scripts/sync-core.sh while upgrading the core ${current_v} -> ${target_v}.
+
+  *.merge     the three-way merge of an app patch that conflicted. The file in
+              the tree is pure upstream ${target_v}; re-apply the patch from here.
+  *.orphan    an app patch whose upstream file is gone (or had no merge base).
+  *.upstream  upstream's copy of a file this repo owns (APP_OWNED_FILES).
+
+Nothing here is compiled. Delete the directory once every entry is resolved.
+EOF
+fi
 
 # The new upstream files become the baseline for the NEXT upgrade.
 mkdir -p "$BASELINE_DIR"
@@ -419,6 +538,8 @@ for rel in "${PATCHED_FILES[@]}"; do
   if [[ -f "$staging/new/$rel" ]]; then
     mkdir -p "$BASELINE_DIR/$(dirname "$rel")"
     cp "$staging/new/$rel" "$BASELINE_DIR/$rel"
+  else
+    rm -f "$BASELINE_DIR/$rel"
   fi
 done
 cat > "$BASELINE_DIR/README.txt" <<EOF
@@ -430,20 +551,23 @@ EOF
 
 if (( ${#dropped[@]} > 0 )); then
   warn "App engine patch(es) NOT applied on ${target_v}: ${dropped[*]}"
-  notice_gh "Core upgraded to ${target_v} but the app patch for ${dropped[*]} could not be rebased. Manual-range scanning and the legacy --precise/--ultra aliases may be missing until it is re-applied."
+  notice_gh "Core upgraded to ${target_v} but the app patch for ${dropped[*]} could not be rebased. The conflicted merges are under ${CONFLICT_DIR}/ and must be re-applied by hand."
 fi
 
 printf '%s\n' "$target_v" > "$VERSION_FILE"
 log "Core upgraded to ${target_v}."
-(( ${#merged[@]} > 0 ))    && log "  three-way merged: ${merged[*]}"
-(( ${#unchanged[@]} > 0 )) && log "  carried over unchanged: ${unchanged[*]}"
-(( ${#dropped[@]} > 0 ))   && log "  needs manual review: ${dropped[*]}"
+(( ${#merged[@]} > 0 ))       && log "  three-way merged: ${merged[*]}"
+(( ${#unchanged[@]} > 0 ))    && log "  carried over unchanged: ${unchanged[*]}"
+(( ${#synced_extra[@]} > 0 )) && log "  synced outside aether/: ${synced_extra[*]}"
+(( ${#shadowed[@]} > 0 ))     && log "  app-owned, now also upstream: ${shadowed[*]}"
+(( ${#dropped[@]} > 0 ))      && log "  needs manual review: ${dropped[*]}"
 
 # State for the CI rollback/commit steps.
 {
   echo "CORE_PREV_VERSION=${current_v}"
   echo "CORE_NEW_VERSION=${target_v}"
   echo "CORE_UPGRADED=1"
+  echo "CORE_DROPPED=${dropped[*]:-}"
 } > "$STATE_FILE"
 
 # --------------------------------------------------- new core capabilities
@@ -457,7 +581,9 @@ log "Core upgraded to ${target_v}."
 NEW_CAPS=""
 if [[ -d "$CORE_DIR/aether/src" ]]; then
   for cap in "--ech" "--noize" "--fragment" "--ironclad" "--dual" "--masque" "--gool" \
-             "--verified" "--exit-loc" "--stats"; do
+             "--verified" "--exit-loc" "--stats" "--gool-classic" "--tls-verify" \
+             "--register" "--enroll-address" "--disable-grease" "--tls-ciphers" \
+             "--tls-groups"; do
     if grep -rqF -- "$cap" "$CORE_DIR/aether/src" 2>/dev/null; then
       if ! grep -rqF -- "$cap" "app/src/main/java" 2>/dev/null; then
         NEW_CAPS+="${cap} "
