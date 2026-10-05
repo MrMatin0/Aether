@@ -831,7 +831,15 @@ data class ConnectionProfile(
             // REPLACES --masque rather than joining it.
             Protocol.MIM -> args += "--mim"
             Protocol.WIREGUARD -> args += "--wg"
-            Protocol.GOOL -> args += "--gool"
+            // Core 2.3.0 gave `--gool` a new meaning: a WireGuard identity
+            // carried INSIDE a MASQUE tunnel. The WireGuard-in-WireGuard gool
+            // this protocol has always meant moved to `--gool-classic`, which
+            // an older core does not parse (an unknown option is fatal), so the
+            // flag follows the core. Offering the MASQUE-carried gool is a
+            // separate decision (docs/CORE_V2_3.md); it must not arrive
+            // silently through an engine sync.
+            Protocol.GOOL -> args +=
+                if (CoreVersion.atLeast(coreVersion, GOOL_CLASSIC_SINCE)) "--gool-classic" else "--gool"
         }
 
         // A pinned peer makes scan mode irrelevant, so only emit it otherwise.
@@ -1160,6 +1168,9 @@ data class ConnectionProfile(
         val MTU_PRESETS = listOf(1280, 1380, 1420, 1500, 8500)
         /** Keepalive presets offered in the UI (0 = engine default). */
         val KEEPALIVE_PRESETS = listOf(0, 10, 25, 45)
+
+        /** First core where WireGuard-in-WireGuard gool is `--gool-classic`; see [toArgs]. */
+        const val GOOL_CLASSIC_SINCE = "2.3.0"
 
         /** Hard caps so a pasted blob can't build a gigantic argv. */
         const val MAX_DNS_SERVERS = 8

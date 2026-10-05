@@ -97,10 +97,14 @@ high-level shape of the divergence, by area:
 
 ## Engine patches
 
-The vendored engine is upstream's, with a small number of changes carried on
-top of it. Each file below is listed in `PATCHED_FILES` in
+The vendored engine is upstream's, with the changes below carried on top of
+it. Every file named here is listed in `PATCHED_FILES` in
 `scripts/sync-core.sh`, which three-way merges it onto every new core instead
-of overwriting it:
+of overwriting it; `wg_experiments.rs` exists only here and is listed in
+`APP_OWNED_FILES`, which carries it over verbatim. Until 2026-10-05 only
+`cli.rs`, `prober.rs` and `wg_prober.rs` were listed, so a core sync would have
+refused to run, or with `CORE_SYNC_ALLOW_DRIFT=1` deleted the rest. See
+`docs/CORE_V2_3.md` for how each of them fares on core 2.3.0.
 
 - `native/aether/aether/src/cli.rs`: `--precise` and `--ultra` are accepted
   as aliases of `--balanced` and `--ironclad` (1.4.6), with parser tests.
@@ -119,15 +123,62 @@ of overwriting it:
   CUBIC (quiche's default, as upstream) unless `AETHER_QUIC_CC=bbr2` or
   `reno` asks otherwise. PR #106 had made BBR2 (gcongestion) the default for
   the scan and the tunnel without a field test, and MASQUE scans stopped
-  finding gateways after it. Add `tls.rs` to `PATCHED_FILES` if the
-  `AETHER_QUIC_CC` switch should survive the next core sync.
+  finding gateways after it. Also (2026-09-25) ECH helpers that work on any
+  `SslRef`, for the API route below.
+- `native/aether/aether/src/account.rs` and `apifront.rs` (2026-09-25): an
+  ECH route to the WARP API first, so the API name never shows in plaintext;
+  the Android system trust store for the API handshake (first CA directory
+  with roots only, user-installed CAs not trusted by default, roots the user
+  disabled honoured); no ECH key set cached unless it can be used; a
+  registration saved before enrolment; a route cut on the wire, including a
+  silently dropped handshake, handed over at once instead of retried; and no
+  short connect timeout through an upstream proxy. `api.rs` follows them.
+  Upstream 2.3.0 deletes `apifront.rs`.
+- `native/aether/aether/src/netstack.rs` (2026-09-26): TCP congestion control
+  in smoltcp (CUBIC by default, `AETHER_TCP_CC`), no outbound drops under
+  pressure, event-driven backpressure, fewer allocations. `Cargo.toml` turns
+  on smoltcp's `socket-tcp-cubic` and `socket-tcp-reno` for it.
+- `native/aether/aether/src/sysprofile.rs` (2026-09-26): netstack TCP receive
+  windows sized for the link (2 / 4 / 8 MiB, capped by RAM) rather than the
+  CPU tier.
+- `native/aether/aether/src/quic.rs` (2026-09-26, 2026-09-28): batched
+  `sendmmsg`, lossless inbound, no per-packet copies; `AETHER_MASQUE_SNI`
+  honoured on the HTTP/3 carrier.
+- `native/aether/aether/src/masque_h2.rs` (2026-09-26 to 2026-09-28):
+  backpressure instead of dropped inbound datagrams, zero-copy batches; the
+  `SpoofingStream` ClientHello shaping (`AETHER_MASQUE_H2_SPOOF`) and
+  `AETHER_MASQUE_SNI` on the HTTP/2 carrier.
+- `native/aether/aether/src/socks.rs` (2026-09-26): a TTL-bounded DNS cache,
+  resolvers asked in parallel, UDP associate that does not block on a name,
+  cheaper relays.
+- `native/aether/aether/src/wireguard.rs` (2026-09-26, 2026-10-04): the
+  boringtun queue drained, the `Tunn` lock never held across an await, socket
+  buffers from the perf profile; the WireGuard experiments wired into the
+  tunnel tasks and endpoint verification.
+- `native/aether/aether/src/wg_experiments.rs` (2026-10-04, app-owned):
+  opt-in ArcSwap transport rotation and bounded plaintext padding
+  (`AETHER_WG_PORT_HOP`, `AETHER_WG_DATA_PADDING`). `Cargo.toml` adds
+  `arc-swap` for it.
+
+## Core sync tooling (2026-10-05)
+
+- `scripts/sync-core.sh` lists every engine patch above, carries app-owned
+  files, moves quiche's workspace manifest (`quiche/Cargo.toml`, which pins
+  boring) with the core, and keeps the conflicted merge of any patch it could
+  not rebase under `native/aether/.core-conflicts/`. `scripts/test-core-sync.sh`
+  covers it.
+- `scripts/build-natives.sh` links libc++ statically into `libaether.so`, which
+  boring-sys 5 (core 2.3.0) needs, and fails the build if the engine still
+  depends on `libc++_shared.so`.
+- `Protocol.GOOL` sends `--gool-classic` from core 2.3.0 on, where `--gool`
+  means WireGuard inside MASQUE.
 
 ## What this repository inherits unchanged
 
 - The Aether engine, vendored under `native/aether` and pinned by
-  `native/aether/CORE_VERSION` (engine **2.1.0** as of 2026-09-24).
-  `scripts/sync-core.sh` moves it; apart from the engine patches listed
-  above it is not hand-edited.
+  `native/aether/CORE_VERSION` (engine **2.1.0** as of 2026-09-24; 2.3.0 is
+  reviewed in `docs/CORE_V2_3.md`). `scripts/sync-core.sh` moves it; apart
+  from the engine patches listed above it is not hand-edited.
 - hev-socks5-tunnel, for TUN-to-SOCKS forwarding.
 - Tor, via the Tor Project / Guardian Project build.
 - The AGPL-3.0 license and the copyright notices of the Aether Mobile

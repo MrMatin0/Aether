@@ -15,6 +15,10 @@
 #   4. Engine changes outside            -> the upgrade is refused and names
 #      PATCHED_FILES (drift guard)          them, nothing is touched;
 #                                           CORE_SYNC_ALLOW_DRIFT=1 overrides.
+#   5. App-owned module, conflicted      -> the module is carried over, the
+#      patch, quiche manifest               conflicted merge is kept under
+#                                           .core-conflicts/, and quiche's
+#                                           workspace manifest moves too.
 #
 # Usage: bash scripts/test-core-sync.sh
 #
@@ -246,6 +250,62 @@ check "the discarded file is gone" "$r"
 grep -q 'expected_pins' "$core4/src/prober.rs" &&
   grep -qF "$app_patch_marker" "$core4/src/prober.rs" && r=yes || r=no
 check "patched files are still three-way merged" "$r"
+
+# ------------------- 5. app-owned files, conflict copies, quiche manifest
+echo
+echo "[5] app-owned module, an unmergeable patch, and the quiche manifest"
+make_upstream_repo5() {
+  local root="$TMP/upstream"
+  rm -rf "$root"
+  mkdir -p "$root/CluvexStudio"
+  local wt="$TMP/upstream5-wt"
+  rm -rf "$wt"
+  mkdir -p "$wt/aether/src" "$wt/quiche"
+  git -C "$wt" init -q
+  git -C "$wt" config user.email t@t.t
+  git -C "$wt" config user.name t
+  upstream_v1 > "$wt/aether/src/prober.rs"
+  echo "fn wg() {}" > "$wt/aether/src/wg_prober.rs"
+  echo "pub mod prober;" > "$wt/aether/src/lib.rs"
+  echo "pub fn tls() { old_upstream(); }" > "$wt/aether/src/tls.rs"
+  echo 'boring = { version = "4.22" }' > "$wt/quiche/Cargo.toml"
+  git -C "$wt" add -A && git -C "$wt" commit -qm v1 && git -C "$wt" tag 1.4
+  upstream_v2 > "$wt/aether/src/prober.rs"
+  echo "pub fn tls() { rewritten_upstream(); }" > "$wt/aether/src/tls.rs"
+  echo 'boring = { version = "5.2" }' > "$wt/quiche/Cargo.toml"
+  git -C "$wt" add -A && git -C "$wt" commit -qm v2 && git -C "$wt" tag 1.5
+  git clone -q --bare "$wt" "$root/CluvexStudio/Aether.git"
+}
+make_upstream_repo5
+APP5="$(make_app_repo)"
+core5="$APP5/native/aether"
+echo "pub fn tls() { app_patch(); }" > "$core5/aether/src/tls.rs"
+echo "pub fn experiments() {}" > "$core5/aether/src/wg_experiments.rs"
+mkdir -p "$core5/quiche"
+echo 'boring = { version = "4.22" }' > "$core5/quiche/Cargo.toml"
+git -C "$APP5" add -A
+git -C "$APP5" commit -qm "patched tls.rs, app-owned module, quiche manifest"
+
+rc5=0
+out5="$(run_sync "$APP5" 1.5)" || rc5=$?
+echo "$out5" | sed 's/^/      /'
+[[ "$rc5" -eq 0 ]] && r=yes || r=no
+check "the upgrade goes ahead (no drift reported)" "$r"
+echo "$out5" | grep -qF 'Drift guard: outside PATCHED_FILES' && r=yes || r=no
+check "the app-owned module is not drift" "$r"
+grep -q 'experiments' "$core5/aether/src/wg_experiments.rs" 2>/dev/null && r=yes || r=no
+check "the app-owned module survived the upgrade" "$r"
+grep -q 'rewritten_upstream' "$core5/aether/src/tls.rs" && ! grep -q '<<<<<<<' "$core5/aether/src/tls.rs" && r=yes || r=no
+check "an unmergeable patch falls back to pure upstream" "$r"
+f5="$core5/.core-conflicts/aether/src/tls.rs.merge"
+[[ -f "$f5" ]] && grep -q '<<<<<<<' "$f5" && grep -q 'app_patch' "$f5" && r=yes || r=no
+check "and the conflicted merge is kept for review" "$r"
+grep -q '5.2' "$core5/quiche/Cargo.toml" && r=yes || r=no
+check "quiche's workspace manifest moved with the core" "$r"
+grep -q 'Needs manual review: aether/src/tls.rs' "$APP5/README.md" && r=yes || r=no
+check "the changelog names the patch that needs review" "$r"
+grep -q 'expected_pins' "$core5/aether/src/prober.rs" && grep -qF "$app_patch_marker" "$core5/aether/src/prober.rs" && r=yes || r=no
+check "the other patched file still merged cleanly" "$r"
 
 echo
 printf 'core-sync tests: %d passed, %d failed\n' "$pass" "$fail"
