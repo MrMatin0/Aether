@@ -35,10 +35,10 @@ import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.log.LogSanitizer
 
 /**
- * The diagnostics destination: the core log, full height.
+ * The diagnostics destination: the manual WARP key card, then the core log.
  *
- * This is an assembly of [CyberTerminal] plus the side effects that have to
- * touch the clipboard, the share sheet and the log file.
+ * This is an assembly of [WarpKeyCard] and [CyberTerminal] plus the side
+ * effects that have to touch the clipboard, the share sheet and the log file.
  *
  * [consoleMaxHeight] null (the default) means FILL: the caller must give this
  * panel a bounded height, as the diagnostics tab does. A caller that still
@@ -65,6 +65,8 @@ fun DiagnosticsPanel(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(12.dp))
+        WarpKeyCard()
         Spacer(Modifier.height(12.dp))
         CyberTerminal(
             lines = lines,

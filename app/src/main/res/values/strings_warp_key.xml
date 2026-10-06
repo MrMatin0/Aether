@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Diagnostics: manual WARP key request -->
+    <string name="warp_key_title">Get WARP key</string>
+    <string name="warp_key_vpn">VPN</string>
+    <string name="warp_key_idle">Get key</string>
+    <string name="warp_key_running">Getting…</string>
+    <string name="warp_key_done">Key received</string>
+    <string name="warp_key_failed">Failed · retry</string>
+    <string name="warp_key_get">Get %1$s key</string>
+    <string name="warp_key_cancel">Cancel %1$s key request</string>
+</resources>
