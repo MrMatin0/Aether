@@ -18,6 +18,9 @@ private enum class AppPicker { SPLIT, BLOCKED }
 /**
  * Renders ONE engine category, because each of them is now its own
  * destination.
+ *
+ * Smart DNS is not here any more: it lives on the connection tab
+ * (SmartDnsHome.kt), next to the other choices people make between attempts.
  */
 @Composable
 internal fun EngineDestination(
@@ -82,15 +85,6 @@ internal fun EngineDestination(
                     enabled = enabled, edit = edit,
                     onPickSplitApps = { picker = AppPicker.SPLIT },
                     onPickBlockedApps = { picker = AppPicker.BLOCKED },
-                )
-                Spacer(Modifier.height(32.dp))
-                SmartDnsSection(
-                    smartDns = profile.smartDns,
-                    smartDnsProtocol = profile.smartDnsProtocol,
-                    smartDnsServers = profile.smartDnsServers,
-                    chain = profile.chain,
-                    validServers = profile.sanitizedSmartDns().size,
-                    enabled = enabled, edit = edit,
                 )
                 Spacer(Modifier.height(32.dp))
                 RoutesSection(
