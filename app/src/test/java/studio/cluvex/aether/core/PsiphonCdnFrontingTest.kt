@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import studio.cluvex.aether.model.PsiphonProtocol
 
@@ -43,6 +44,7 @@ class PsiphonCdnFrontingTest {
         assertEquals(listOf("FRONTED-MEEK-CDN-OSSH", "FRONTED-MEEK-CDN-HTTP-OSSH"), cdn.limitTunnelProtocols)
         val direct = PsiphonCdnFronting.plan(PsiphonProtocol.DIRECT, "", "", viaUpstream = true)
         assertFalse(direct.limitTunnelProtocols!!.any { it.contains("QUIC") })
+        assertEquals(PsiphonCdnFronting.DIRECT_PROTOCOLS.size - 3, direct.limitTunnelProtocols!!.size)
         assertNull(PsiphonCdnFronting.plan(PsiphonProtocol.AUTO, "", "", viaUpstream = true).limitTunnelProtocols)
     }
 
@@ -72,6 +74,15 @@ class PsiphonCdnFrontingTest {
     }
 
     @Test
+    fun defaultOverridesAreBuiltOnceAndBlankSniMeansNone() {
+        assertSame(PsiphonCdnFronting.dialOverrides(null), PsiphonCdnFronting.dialOverrides(null))
+        assertSame(PsiphonCdnFronting.dialOverrides(null), PsiphonCdnFronting.dialOverrides("  "))
+        // A custom SNI that is also an Akamai verify name must not repeat.
+        val edge = PsiphonCdnFronting.dialOverrides("www.akamai.com")[2]
+        assertEquals(edge.verifyServerNames.distinct(), edge.verifyServerNames)
+    }
+
+    @Test
     fun customEdgesBecomeAScanSpec() {
         val plan = PsiphonCdnFronting.plan(
             PsiphonProtocol.CDN_FRONTING,
@@ -88,7 +99,8 @@ class PsiphonCdnFrontingTest {
     fun ipParserRejectsWhatTheCoreWould() {
         val ok = listOf("1.2.3.4", "10.0.0.0/8", "23.12.147.13/32", "0.0.0.0")
         val bad = listOf("1.2.3", "1.2.3.4.5", "256.1.1.1", "01.2.3.4", "1.2.3.4/7", "1.2.3.4/33",
-            "1.2.3.4/", "1.2.3.4/a", "::1", "example.com", "1.2.3.4/24/1")
+            "1.2.3.4/", "1.2.3.4/a", "::1", "example.com", "1.2.3.4/24/1", "1234.1.1.1",
+            "1.2.3.4/08", "۱.۲.۳.۴")
         ok.forEach { assertTrue(PsiphonCdnFronting.isIpv4OrCidr(it), it) }
         bad.forEach { assertFalse(PsiphonCdnFronting.isIpv4OrCidr(it), it) }
     }
@@ -97,6 +109,21 @@ class PsiphonCdnFrontingTest {
     fun ipListIsCapped() {
         val many = (1..200).joinToString(",") { "10.0.${it / 250}.${it % 250}" }
         assertEquals(PsiphonCdnFronting.MAX_IP_CANDIDATES, PsiphonCdnFronting.parseIpCandidates(many).size)
+    }
+
+    @Test
+    fun persianKeyboardAndPastedTextAreUnderstood() {
+        // Persian digits, Persian comma / semicolon, RLM / LRM from a chat paste, NBSP.
+        assertEquals(
+            listOf("23.215.0.206", "104.16.0.0/24", "92.123.102.43", "1.2.3.4", "5.6.7.8"),
+            PsiphonCdnFronting.parseIpCandidates(
+                "۲۳.۲۱۵.۰.۲۰۶، 104.16.0.0/24؛\u200F92.123.102.43\u200E 1.2.3.4\u00A05.6.7.8",
+            ),
+        )
+        assertEquals(
+            listOf("cdn.example.com", "www.example.org"),
+            PsiphonCdnFronting.parseSniList("\u200FCDN.Example.com\u200E،www.example.org"),
+        )
     }
 
     @Test
