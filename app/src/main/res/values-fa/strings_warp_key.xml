@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- عیب‌یابی: دریافت دستی کلید WARP -->
+    <string name="warp_key_title">دریافت کلید WARP</string>
+    <string name="warp_key_vpn">VPN</string>
+    <string name="warp_key_idle">دریافت کلید</string>
+    <string name="warp_key_running">در حال دریافت…</string>
+    <string name="warp_key_done">کلید دریافت شد</string>
+    <string name="warp_key_failed">ناموفق · دوباره</string>
+    <string name="warp_key_get">دریافت کلید %1$s</string>
+    <string name="warp_key_cancel">لغو دریافت کلید %1$s</string>
+</resources>
