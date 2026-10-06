@@ -325,8 +325,9 @@ private fun rememberVpnActive(): Boolean {
     DisposableEffect(context) {
         val manager: ConnectivityManager? = context.getSystemService(ConnectivityManager::class.java)
         active = runCatching {
-            manager?.getNetworkCapabilities(manager.activeNetwork)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            manager?.let { cm ->
+                cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            } == true
         }.getOrDefault(false)
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
@@ -337,8 +338,9 @@ private fun rememberVpnActive(): Boolean {
                 active = false
             }
         }
-        val registered = manager != null &&
-            runCatching { manager.registerDefaultNetworkCallback(callback) }.isSuccess
+        val registered = manager?.let { cm ->
+            runCatching { cm.registerDefaultNetworkCallback(callback) }.isSuccess
+        } == true
         onDispose {
             if (registered) runCatching { manager?.unregisterNetworkCallback(callback) }
         }
