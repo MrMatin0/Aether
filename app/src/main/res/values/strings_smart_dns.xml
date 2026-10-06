@@ -25,4 +25,37 @@
     <string name="smart_dns_live_tunnel">Now: through the tunnel.</string>
     <string name="smart_dns_live_direct">Now: direct (provider rejected the tunnel). Proxy ranges detected: %1$d.</string>
     <string name="smart_dns_private_dns_hint">Android\'s Private DNS (Settings, Network, Private DNS) must be Off or Automatic; otherwise Smart DNS is ignored. IPv6 is unavailable to apps while it is on. Test with a covered site, not an IP checker.</string>
+
+    <!-- Connection tab: the Smart DNS card and its sheet. -->
+    <string name="sdns_open">open Smart DNS</string>
+    <string name="sdns_state_route">Aether route only</string>
+    <string name="sdns_state_none">No server chosen</string>
+    <string name="sdns_state_more">%1$s +%2$d</string>
+    <string name="sdns_path_tunnel">via tunnel</string>
+    <string name="sdns_path_direct">direct</string>
+    <string name="sdns_sheet_note">Opens Iran-blocked sites (Gemini, AI and developer tools) through a proxying resolver. Pick ready-made servers, add your own, or both.</string>
+    <string name="sdns_auto_note">UDP, DoH and DoT are detected automatically from each address. There is no protocol to pick.</string>
+    <string name="sdns_locked">Disconnect to change Smart DNS. Testing servers still works.</string>
+    <string name="sdns_presets_label">Ready-made servers</string>
+    <string name="sdns_presets_note">Built in and stored encrypted. Tap to add; the number is the order they are tried in.</string>
+    <string name="sdns_group_encrypted">Encrypted · DNS over HTTPS</string>
+    <string name="sdns_group_classic">Classic · UDP</string>
+    <string name="sdns_recommended">Recommended</string>
+    <string name="sdns_node">Node %1$s</string>
+    <string name="sdns_region_eu">Europe</string>
+    <string name="sdns_region_us">United States</string>
+    <string name="sdns_region_global">Worldwide</string>
+    <string name="sdns_kind_doh">Encrypted resolver</string>
+    <string name="sdns_kind_udp">Port 53</string>
+    <string name="sdns_test">Test</string>
+    <string name="sdns_testing">Testing</string>
+    <string name="sdns_test_all">Test all</string>
+    <string name="sdns_test_failed">No answer</string>
+    <string name="sdns_custom_label">Your own servers</string>
+    <string name="sdns_custom_hint">e.g. https://dns.example.com/dns-query, tls://dns.example.net, 203.0.113.53</string>
+    <string name="sdns_custom_help">Mix any kind, separated by commas or new lines: 1.2.3.4 is UDP, https://… is DoH, tls://… or :853 is DoT. Up to 8 servers in total, tried in order.</string>
+    <string name="sdns_custom_invalid">Nothing usable here yet. Check the address format.</string>
+    <string name="sdns_order_note">Servers in use: %1$d, asked in order until one answers.</string>
+    <string name="sdns_how_title">How it works</string>
+    <string name="sdns_test_note">A test asks each server a real question (gemini.google.com) straight from this phone and shows how long the answer took.</string>
 </resources>

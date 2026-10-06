@@ -97,6 +97,9 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  *                      per hop) ride the orbit with a tail
  *   quick controls     route, protocol, scan: the current value of each, one
  *                      tap from the sheet that changes it (QuickControls.kt)
+ *   smart dns          the resolver for geo-blocked sites: what is in use, the
+ *                      switch, and its own sheet with ready-made servers and a
+ *                      latency test for each (SmartDnsHome.kt)
  *   error strip        only on failure
  *   session stats      only while verified
  *   location card      exit, route path (roomy windows), IP footer
@@ -399,6 +402,7 @@ internal fun ConnectionHome(
                 density = density,
                 onOpenControl = { controls = it },
                 onOpenDiagnostics = onOpenDiagnostics,
+                onProfileChange = onProfileChange,
                 modifier = slot,
             )
         }
@@ -606,7 +610,8 @@ private fun HomeHero(
 /**
  * Everything below the hero, in one column, each fact once. The quick
  * controls lead: they are the next thing a user reaches for after the button
- * (and, after a failure, before trying it again).
+ * (and, after a failure, before trying it again). Smart DNS follows them for
+ * the same reason: whether Gemini & co. open is decided there.
  */
 @Composable
 private fun HomeDetails(
@@ -621,6 +626,7 @@ private fun HomeDetails(
     density: HomeDensity,
     onOpenControl: (QuickControl) -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onProfileChange: (ConnectionProfile) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val accents = LocalAetherAccents.current
@@ -637,6 +643,13 @@ private fun HomeDetails(
             editable = editable,
             compact = density >= HomeDensity.TIGHT,
             onOpen = onOpenControl,
+        )
+
+        SmartDnsHomeCard(
+            profile = profile,
+            editable = editable,
+            compact = density >= HomeDensity.TIGHT,
+            onProfileChange = onProfileChange,
         )
 
         if (state is ConnectionState.Error) {

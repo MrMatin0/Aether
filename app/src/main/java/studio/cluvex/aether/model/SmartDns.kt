@@ -1,17 +1,30 @@
 package studio.cluvex.aether.model
 
 /**
- * How the Smart DNS resolvers are spoken to.
+ * How ONE Smart DNS server is spoken to.
  *
  *  - [PLAIN] classic DNS: UDP, with a TCP retry when an answer is truncated.
  *  - [DOH]   DNS over HTTPS (RFC 8484): the query is the body of an HTTPS POST,
  *            so on the wire it is indistinguishable from ordinary web traffic.
  *  - [DOT]   DNS over TLS (RFC 7858): length-prefixed DNS inside TLS, port 853.
  *
- * The TUN never advertises the provider itself any more. It advertises the
- * virtual resolver [studio.cluvex.aether.core.TunnelConfig.SMART_DNS_RESOLVER],
- * which the Smart DNS front answers in-process, so the device's own resolver
- * does not have to speak DoH or DoT - and a resolver on any port works, which
+ * ### Not a setting any more
+ *
+ * The protocol used to be one choice for the whole list, which meant a user
+ * had to know which of three transports a provider spoke before typing its
+ * address, and could not mix a DoH resolver with a plain fallback. It is now
+ * DETECTED per entry by [SmartDnsServers.parse]: `1.2.3.4` is plain DNS,
+ * `https://...` is DoH, `tls://...` (or `:853`) is DoT, and a bare host name is
+ * DoH. One list can mix all three; they are tried in order.
+ *
+ * [studio.cluvex.aether.model.ConnectionProfile.smartDnsProtocol] survives only
+ * as a HINT for bare entries saved while it was a setting, so a profile that
+ * said "DoT" next to `dns.example.com` keeps meaning DoT.
+ *
+ * The TUN never advertises the provider itself. It advertises the virtual
+ * resolver [studio.cluvex.aether.core.TunnelConfig.SMART_DNS_RESOLVER], which
+ * the Smart DNS front answers in-process, so the device's own resolver does not
+ * have to speak DoH or DoT - and a resolver on any port works, which
  * `VpnService.Builder.addDnsServer` never allowed.
  */
 enum class SmartDnsProtocol(val defaultPort: Int) {
@@ -45,19 +58,32 @@ enum class SmartDnsProtocol(val defaultPort: Int) {
  * [host] is a unicast IPv4 literal for [SmartDnsProtocol.PLAIN], and an IPv4
  * literal or a host name for the encrypted protocols (the name is what the
  * certificate is verified against). [path] is only used by DoH.
+ *
+ * [alias] is set for a built-in preset ([SmartDnsPresets]): its token, e.g.
+ * `preset:geohide-eu`. The UI and the diagnostics log show that instead of the
+ * address, so the sealed preset list is not spelled out on screen or in a
+ * shared log.
  */
 data class SmartDnsServer(
     val protocol: SmartDnsProtocol,
     val host: String,
     val port: Int,
     val path: String = "",
+    val alias: String = "",
 ) {
     /** True when [host] is an address rather than a name. */
     val isIpLiteral: Boolean
         get() = SmartDnsServers.isIpv4(host)
 
-    /** The server as a user would write it: `1.2.3.4`, `tls://dns.example`, `https://dns.example/dns-query`. */
-    val label: String
+    /** True for a built-in preset. */
+    val isPreset: Boolean
+        get() = alias.isNotEmpty()
+
+    /**
+     * The server as a user would write it, scheme included so it parses back to
+     * the same transport: `1.2.3.4`, `tls://dns.example`, `https://dns.example/dns-query`.
+     */
+    val endpoint: String
         get() {
             val authority = if (port == protocol.defaultPort) host else "$host:$port"
             return when (protocol) {
@@ -66,12 +92,16 @@ data class SmartDnsServer(
                 SmartDnsProtocol.DOH -> "https://$authority$path"
             }
         }
+
+    /** What the UI and the log show: the preset token for a preset, otherwise [endpoint]. */
+    val label: String
+        get() = alias.ifEmpty { endpoint }
 }
 
 /**
  * Parses the Smart DNS server list. Pure Kotlin, no Android, no name lookups:
- * every entry is checked as TEXT, and anything that does not fit the selected
- * protocol's grammar is dropped rather than guessed at.
+ * every entry is checked as TEXT, and anything that does not fit a transport's
+ * grammar is dropped rather than guessed at.
  */
 object SmartDnsServers {
 
@@ -89,29 +119,90 @@ object SmartDnsServers {
     /** A DoH path: no query string, no fragment, no list separators. */
     private val DOH_PATH = Regex("^/[A-Za-z0-9._~!&'()*+=:@%/-]*$")
 
-    /**
-     * The usable servers in [raw] for [protocol], in order, without duplicates,
-     * at most [MAX_SERVERS]. Entries are separated by commas, spaces,
-     * semicolons or new lines.
-     */
-    fun parse(raw: String, protocol: SmartDnsProtocol): List<SmartDnsServer> = raw
+    /** `1.2.3.0/24`: a range somebody pasted, not a server. */
+    private val CIDR_SUFFIX = Regex("^/\\d{1,2}$")
+
+    /** The raw entries of a stored list: separated by commas, spaces, semicolons or new lines. */
+    fun entries(raw: String): List<String> = raw
         .split(',', ' ', ';', '\n', '\t', '\r')
         .map { it.trim() }
         .filter { it.isNotEmpty() }
-        .mapNotNull { parseOne(it, protocol) }
-        .distinct()
-        .take(MAX_SERVERS)
 
-    /** One entry, or null when it is not a server of [protocol]. */
+    /**
+     * The usable servers in [raw], in order, without duplicates, at most
+     * [MAX_SERVERS]. Each entry's transport is detected on its own (see
+     * [parseAuto]); [hint] only decides what a BARE entry meant in a profile
+     * saved while the protocol was still a setting.
+     */
+    fun parse(raw: String, hint: SmartDnsProtocol = SmartDnsProtocol.PLAIN): List<SmartDnsServer> =
+        entries(raw)
+            .mapNotNull { parseAuto(it, hint) }
+            .distinct()
+            .take(MAX_SERVERS)
+
+    /**
+     * One entry, its transport detected from the text:
+     *
+     *  - `preset:<id>`                  a built-in preset ([SmartDnsPresets])
+     *  - `https://...`                  DoH
+     *  - `tls://...`                    DoT
+     *  - `udp://...`, `dns://...`       plain DNS
+     *  - `host/path`                    DoH (only DoH has a path)
+     *  - bare `host[:port]`             by [hint] when it is DoH or DoT; otherwise
+     *                                   port 853 is DoT, port 443 is DoH, an IPv4
+     *                                   address is plain DNS and a name is DoH
+     *
+     * Any other scheme (`http://`, ...) is dropped, never downgraded.
+     */
+    fun parseAuto(entry: String, hint: SmartDnsProtocol = SmartDnsProtocol.PLAIN): SmartDnsServer? {
+        val text = entry.trim()
+        if (text.isEmpty()) return null
+        val lower = text.lowercase()
+        if (lower.startsWith(SmartDnsPresets.TOKEN_PREFIX)) return SmartDnsPresets.fromToken(text)?.server
+        return when {
+            lower.startsWith("https://") -> parseDoh(text)
+            lower.startsWith("tls://") -> parseDot(text)
+            lower.startsWith("udp://") || lower.startsWith("dns://") -> parsePlain(text)
+            text.contains("://") -> null
+            text.contains('/') -> parseBareWithPath(text)
+            else -> parseBare(text, hint)
+        }
+    }
+
+    /**
+     * One entry, read STRICTLY as [protocol]: the pre-auto grammar, kept for
+     * callers that already know what they hold (a preset's sealed address).
+     */
     fun parseOne(entry: String, protocol: SmartDnsProtocol): SmartDnsServer? = when (protocol) {
         SmartDnsProtocol.PLAIN -> parsePlain(entry)
         SmartDnsProtocol.DOT -> parseDot(entry)
         SmartDnsProtocol.DOH -> parseDoh(entry)
     }
 
-    /** `1.2.3.4`, `1.2.3.4:5353` or `udp://1.2.3.4`. IPv4 only. */
+    private fun parseBareWithPath(text: String): SmartDnsServer? {
+        val slash = text.indexOf('/')
+        if (CIDR_SUFFIX.matches(text.substring(slash))) return null
+        return parseDoh(text)
+    }
+
+    private fun parseBare(text: String, hint: SmartDnsProtocol): SmartDnsServer? {
+        when (hint) {
+            SmartDnsProtocol.DOT -> return parseDot(text)
+            SmartDnsProtocol.DOH -> return parseDoh(text)
+            SmartDnsProtocol.PLAIN -> Unit
+        }
+        val (host, port) = splitHostPort(text.lowercase(), SmartDnsProtocol.PLAIN.defaultPort) ?: return null
+        return when {
+            port == SmartDnsProtocol.DOT.defaultPort -> parseDot(text)
+            port == SmartDnsProtocol.DOH.defaultPort -> parseDoh(text)
+            isIpv4(host) -> parsePlain(text)
+            else -> parseDoh(text)
+        }
+    }
+
+    /** `1.2.3.4`, `1.2.3.4:5353`, `udp://1.2.3.4` or `dns://1.2.3.4`. IPv4 only. */
     private fun parsePlain(entry: String): SmartDnsServer? {
-        val text = entry.lowercase().removePrefix("udp://")
+        val text = entry.trim().lowercase().removePrefix("udp://").removePrefix("dns://")
         if (text.contains("://") || text.contains('/')) return null
         val (host, port) = splitHostPort(text, SmartDnsProtocol.PLAIN.defaultPort) ?: return null
         if (!isIpv4(host) || !isUsableUnicast(host)) return null
@@ -120,7 +211,7 @@ object SmartDnsServers {
 
     /** `dns.example.com`, `tls://dns.example.com:853`, `1.1.1.1`. */
     private fun parseDot(entry: String): SmartDnsServer? {
-        val text = entry.lowercase().removePrefix("tls://").trimEnd('/')
+        val text = entry.trim().lowercase().removePrefix("tls://").trimEnd('/')
         if (text.contains("://") || text.contains('/')) return null
         val (host, port) = splitHostPort(text, SmartDnsProtocol.DOT.defaultPort) ?: return null
         if (!isUsableHost(host)) return null

@@ -25,4 +25,37 @@
     <string name="smart_dns_live_tunnel">الان: از داخل تونل.</string>
     <string name="smart_dns_live_direct">اکنون: مستقیم (ارائه‌دهنده تونل را نپذیرفت). بازه‌های پراکسی شناسایی‌شده: %1$d.</string>
     <string name="smart_dns_private_dns_hint">«DNS خصوصی» اندروید (تنظیمات، شبکه، DNS خصوصی) باید خاموش یا خودکار باشد؛ وگرنه Smart DNS نادیده گرفته می‌شود. هنگام روشن بودن آن، IPv6 در اختیار برنامه‌ها نیست. برای آزمایش، سایت تحت پوشش را بررسی کنید، نه سایت نمایش IP.</string>
+
+    <!-- Connection tab: the Smart DNS card and its sheet. -->
+    <string name="sdns_open">باز کردن DNS هوشمند</string>
+    <string name="sdns_state_route">فقط در مسیر اتر</string>
+    <string name="sdns_state_none">سروری انتخاب نشده</string>
+    <string name="sdns_state_more">%1$s +%2$d</string>
+    <string name="sdns_path_tunnel">از تونل</string>
+    <string name="sdns_path_direct">مستقیم</string>
+    <string name="sdns_sheet_note">سایت‌های تحریم‌شده (Gemini، ابزارهای هوش مصنوعی و توسعه) را با یک DNS پراکسی‌کننده باز می‌کند. سرورهای آماده را انتخاب کنید، سرور خودتان را اضافه کنید، یا هر دو.</string>
+    <string name="sdns_auto_note">UDP، DoH و DoT از روی هر نشانی خودکار تشخیص داده می‌شوند؛ نیازی به انتخاب پروتکل نیست.</string>
+    <string name="sdns_locked">برای تغییر DNS هوشمند ابتدا اتصال را قطع کنید. تست سرورها همچنان کار می‌کند.</string>
+    <string name="sdns_presets_label">سرورهای آماده</string>
+    <string name="sdns_presets_note">داخل برنامه و به‌صورت رمزگذاری‌شده ذخیره شده‌اند. با لمس اضافه کنید؛ شماره، ترتیب امتحان شدن است.</string>
+    <string name="sdns_group_encrypted">رمزگذاری‌شده · DNS over HTTPS</string>
+    <string name="sdns_group_classic">کلاسیک · UDP</string>
+    <string name="sdns_recommended">پیشنهادی</string>
+    <string name="sdns_node">سرور %1$s</string>
+    <string name="sdns_region_eu">اروپا</string>
+    <string name="sdns_region_us">آمریکا</string>
+    <string name="sdns_region_global">سراسری</string>
+    <string name="sdns_kind_doh">حل‌کنندهٔ رمزگذاری‌شده</string>
+    <string name="sdns_kind_udp">پورت 53</string>
+    <string name="sdns_test">تست</string>
+    <string name="sdns_testing">در حال تست</string>
+    <string name="sdns_test_all">تست همه</string>
+    <string name="sdns_test_failed">بدون پاسخ</string>
+    <string name="sdns_custom_label">سرورهای خودتان</string>
+    <string name="sdns_custom_hint">مثلاً https://dns.example.com/dns-query, tls://dns.example.net, 203.0.113.53</string>
+    <string name="sdns_custom_help">هر نوعی را با ویرگول یا خط جدید وارد کنید: 1.2.3.4 یعنی UDP، https://… یعنی DoH و tls://… یا :853 یعنی DoT. در مجموع حداکثر ۸ سرور، به‌ترتیب امتحان می‌شوند.</string>
+    <string name="sdns_custom_invalid">هنوز نشانی قابل استفاده‌ای وارد نشده. قالب نشانی را بررسی کنید.</string>
+    <string name="sdns_order_note">سرورهای فعال: %1$d، به‌ترتیب پرسیده می‌شوند تا یکی پاسخ دهد.</string>
+    <string name="sdns_how_title">چطور کار می‌کند</string>
+    <string name="sdns_test_note">تست، یک پرسش واقعی (gemini.google.com) را مستقیم از همین گوشی از هر سرور می‌پرسد و زمان پاسخ را نشان می‌دهد.</string>
 </resources>
