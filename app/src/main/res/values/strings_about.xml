@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the redesigned About page (ui/AboutPanel.kt). Its own file so the
+     older about_* strings stay a stable diff. -->
+<resources>
+    <string name="aboutpage_summary">Aether+ is a fast, private tunnel for the open internet. No accounts, no logs: smart protocol selection and anti-censorship tools find a path that works on your network and connect you in one tap.</string>
+    <string name="aboutpage_chip_smart">Smart protocol</string>
+    <string name="aboutpage_chip_dpi">Anti-DPI</string>
+    <string name="aboutpage_chip_private">No logs</string>
+
+    <string name="aboutpage_section_core">Powered by</string>
+    <string name="aboutpage_core_title">Aether core by Cluvex Studio</string>
+    <string name="aboutpage_core_body">A heartfelt thank you to Cluvex Studio. Every connection in this app runs on the open-source Aether core they built and share.</string>
+
+    <string name="aboutpage_section_dev">Developer</string>
+    <string name="aboutpage_telegram_title">Developer on Telegram</string>
+    <string name="aboutpage_repo_title">Source code and releases</string>
+
+    <string name="aboutpage_section_thanks">Special thanks</string>
+    <string name="aboutpage_thanks_body">Big thanks to Ms. Taraneh and Mr. Sina for their contributions, ideas and the time they gave to make Aether+ better.</string>
+    <string name="aboutpage_taraneh">Ms. Taraneh</string>
+    <string name="aboutpage_taraneh_initial">T</string>
+    <string name="aboutpage_sina">Mr. Sina</string>
+    <string name="aboutpage_sina_initial">S</string>
+    <string name="aboutpage_contributor">Contributor</string>
+
+    <string name="aboutpage_footer">Made with ♥ for a free internet</string>
+</resources>

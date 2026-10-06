@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- متن صفحهٔ بازطراحی‌شدهٔ «درباره» (ui/AboutPanel.kt). -->
+<resources>
+    <string name="aboutpage_summary">Aether+ تونلی سریع و خصوصی برای اینترنت آزاد است. بدون حساب کاربری و بدون لاگ؛ انتخاب هوشمند پروتکل و ابزارهای ضدسانسور مسیری را که روی شبکهٔ شما کار می‌کند پیدا می‌کنند و با یک لمس وصلتان می‌کنند.</string>
+    <string name="aboutpage_chip_smart">پروتکل هوشمند</string>
+    <string name="aboutpage_chip_dpi">ضد DPI</string>
+    <string name="aboutpage_chip_private">بدون لاگ</string>
+
+    <string name="aboutpage_section_core">قدرت‌گرفته از</string>
+    <string name="aboutpage_core_title">هستهٔ اتر از Cluvex Studio</string>
+    <string name="aboutpage_core_body">صمیمانه از Cluvex Studio سپاسگزاریم. همهٔ اتصال‌های این برنامه روی هستهٔ متن‌باز اتر اجرا می‌شوند که آن‌ها ساخته و به اشتراک گذاشته‌اند.</string>
+
+    <string name="aboutpage_section_dev">سازنده</string>
+    <string name="aboutpage_telegram_title">سازنده در تلگرام</string>
+    <string name="aboutpage_repo_title">کد منبع و نسخه‌ها</string>
+
+    <string name="aboutpage_section_thanks">سپاس ویژه</string>
+    <string name="aboutpage_thanks_body">از خانم ترانه و آقای سینا بابت مشارکت، ایده‌ها و وقتی که برای بهتر شدن Aether+ گذاشتند صمیمانه سپاسگزاریم.</string>
+    <string name="aboutpage_taraneh">خانم ترانه</string>
+    <string name="aboutpage_taraneh_initial">ت</string>
+    <string name="aboutpage_sina">آقای سینا</string>
+    <string name="aboutpage_sina_initial">س</string>
+    <string name="aboutpage_contributor">مشارکت‌کننده</string>
+
+    <string name="aboutpage_footer">ساخته‌شده با ♥ برای اینترنت آزاد</string>
+</resources>
