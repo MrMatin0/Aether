@@ -160,6 +160,16 @@ const QUIC_V2_VERSION: u32 = 0x6b33_43cf;
 const QUIC_V2_BAIT_WAIT: Duration = Duration::from_millis(600);
 const QUIC_V2_BAIT_LEN: usize = 1200;
 
+/// Aether Mobile patch (perf/fast-connect): how long a SCAN probe waits for
+/// the bait's version-negotiation answer. It used to be 500 ms, on every one
+/// of the hundreds of candidates a sweep dials. What the bait is for - getting
+/// a v2-looking packet past a middlebox ahead of the real v1 Initial - is done
+/// the moment it is sent; the answer only tells us the path is open, and on
+/// most filtered paths none comes, so the wait was a flat +500 ms per probe,
+/// added to its RTT and to the time to the first usable gateway. The tunnel's
+/// own bait ([`QUIC_V2_BAIT_WAIT`], once per connection) is unchanged.
+const QUIC_V2_VERIFY_BAIT_WAIT: Duration = Duration::from_millis(120);
+
 pub(crate) fn quic_v2_bait_enabled() -> bool {
     !matches!(
         std::env::var("AETHER_QUIC_V2").as_deref(),
@@ -1097,7 +1107,8 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
     let deadline = start + p.timeout;
 
     if quic_v2_bait_enabled() {
-        send_version_bait(&sock, p.peer, Duration::from_millis(500), 1).await;
+        // Aether Mobile patch (perf/fast-connect): see QUIC_V2_VERIFY_BAIT_WAIT.
+        send_version_bait(&sock, p.peer, QUIC_V2_VERIFY_BAIT_WAIT, 1).await;
     }
 
     noize::pre_handshake(&sock, p.peer, &p.noize).await;
@@ -1281,6 +1292,13 @@ mod v2_bait_tests {
         std::env::set_var("AETHER_QUIC_V2", "1");
         assert!(quic_v2_bait_enabled());
         std::env::remove_var("AETHER_QUIC_V2");
+    }
+
+    /// perf/fast-connect: a scan probe must not pay the tunnel's bait wait.
+    #[test]
+    fn a_scan_probe_waits_far_less_for_the_bait_than_the_tunnel_does() {
+        assert!(QUIC_V2_VERIFY_BAIT_WAIT <= Duration::from_millis(150));
+        assert!(QUIC_V2_VERIFY_BAIT_WAIT < QUIC_V2_BAIT_WAIT);
     }
 
     #[tokio::test]
