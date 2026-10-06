@@ -22,30 +22,25 @@ import studio.cluvex.aether.core.probe.ProbeDefaults
  * DNS (SOCKS5 UDP ASSOCIATE / remote resolution) is broken - the usual reason a
  * WARP-style tunnel "connects but no site loads".
  *
- * SPEED: this self-test is the GATE for the Connected state, so every second it
- * wastes is a second the user stares at "connecting". Three structural choices
- * keep it short:
+ * GATE vs HEALTH CHECK (perf/fast-connect). The whole pipeline used to be the
+ * gate for the Connected state, and both outbound checks were retried for up to
+ * 90 s - a grace window for engines that opened their SOCKS5 port before their
+ * tunnel could carry anything. On a slow or partly filtered path that was a
+ * minute and a half of "Verifying" for EVERY attempt, on top of the scan. Two
+ * things changed:
  *
- *   1. The TCP and DNS+HTTP checks run CONCURRENTLY. They are independent probes
- *      of the same proxy; running them back-to-back doubled the cold-start wait
- *      for no benefit.
- *   2. Retries fire every 750 ms instead of every 3 s. The engine's inner tunnel
- *      becomes ready at an unpredictable instant inside the warm-up window; a 3 s
- *      poll added up to ~3 s of pure detection latency PER CHECK after the
- *      tunnel was already usable.
- *   3. The DNS+HTTP probe races all geolocation providers in parallel instead of
- *      trying them one by one. Individual providers are often filtered or slow
- *      in ways that differ per operator and region, so a serial chain could burn
- *      20-30 s of timeouts before reaching the one that answers.
+ *   1. The service no longer starts TUN/hev on an open port alone: it waits for
+ *      a real CONNECT through the engine first (vpn/session/Readiness), so the
+ *      cold-start window this grace existed for is already behind us here.
+ *   2. The gate ([runGate]) is now port + handshake + ONE outbound TCP check
+ *      with a short grace. That proves the exact path the user's traffic takes.
+ *      The DNS + HTTP / exit-IP check ([runHealthCheck]) runs in the BACKGROUND
+ *      after Connected: it still fills in the panel and the IP badge, and a
+ *      tunnel that really stops carrying traffic is the watchdog's job.
  *
- * WHAT IS NEW HERE: every step is TIMED on the monotonic clock and records the
- * handful of facts a reader actually wants (which endpoint, which target, where
- * DNS was resolved, which exit IP answered). The panel renders those as latency
- * badges and drill-downs, so "it failed" becomes "it failed after 4003 ms
- * against 1.1.1.1:80" without anyone reading the console. [runCheck] re-runs a
- * SINGLE step, because once a reader knows which node is broken, re-running the
- * whole pipeline to retest it is 90 seconds of waiting for information they
- * already have.
+ * Every step is TIMED on the monotonic clock and records the handful of facts a
+ * reader actually wants (which endpoint, which target, where DNS was resolved,
+ * which exit IP answered). [runCheck] re-runs a SINGLE step.
  */
 object Diagnostics {
     const val C_PORT = "socks_port"
@@ -58,18 +53,23 @@ object Diagnostics {
 
     private const val TAG = "diag"
 
-    // How long we keep retrying the outbound checks after connect. Warp-in-warp
-    // (GOOL) keeps building its INNER tunnel for a while after the SOCKS5 port
-    // is already open; during that window every CONNECT is rejected with rep=1.
-    // That is a COLD START, not a failure, so give the engine a grace window
-    // instead of failing on the very first attempt.
-    private const val OUTBOUND_GRACE_MS = 90_000L
+    /**
+     * Grace for the gate's single outbound TCP check. Short on purpose: the
+     * engine's data plane was already proven before TUN/hev came up, so what is
+     * left to wait for here is the chain entry / front, not a cold tunnel.
+     */
+    private const val GATE_GRACE_MS = 10_000L
 
     /**
-     * Grace window for a MANUAL single-node retest. Deliberately short: the
-     * cold-start window exists for the automatic run right after connect, and a
-     * reader who taps "retest" is waiting for an answer, not for a tunnel to
-     * warm up.
+     * Grace for the background DNS + HTTP health check. It no longer holds the
+     * Connected state, so it can afford patience: a slow first resolution on a
+     * Tor exit is not a reason to tear a working tunnel down.
+     */
+    private const val HEALTH_GRACE_MS = 60_000L
+
+    /**
+     * Grace for a MANUAL single-node retest. Deliberately short: a reader who
+     * taps "retest" is waiting for an answer, not for a tunnel to warm up.
      */
     private const val SINGLE_GRACE_MS = 12_000L
 
@@ -96,7 +96,59 @@ object Diagnostics {
         )
     }
 
-    /** Runs all checks (steps 3+4 concurrently). Safe to call from any coroutine. */
+    /**
+     * The CONNECT GATE: port, handshake and one outbound TCP check. True means
+     * the entry the user's traffic goes through can open a real outbound
+     * connection right now. DNS + HTTP is left to [runHealthCheck].
+     */
+    suspend fun runGate(
+        host: String = TunnelConfig.SOCKS_HOST,
+        port: Int = TunnelConfig.SOCKS_PORT,
+    ): Boolean = withContext(Dispatchers.IO) {
+        resetChecks(host, port)
+        DiagnosticsLog.i(TAG, "Starting connect gate (port, handshake, outbound TCP)\u2026")
+
+        if (!probePort(host, port)) {
+            failRemaining(C_HANDSHAKE, C_TCP, C_DNS)
+            return@withContext false
+        }
+        if (!probeHandshake(host, port)) {
+            failRemaining(C_TCP, C_DNS)
+            return@withContext false
+        }
+        val deadline = SystemClock.elapsedRealtime() + GATE_GRACE_MS
+        val tcp = probeTcp(host, port, deadline)
+        if (!tcp) {
+            failRemaining(C_DNS)
+            DiagnosticsLog.w(TAG, "Proxy cannot open outbound connections \u2192 engine has no upstream route.")
+        }
+        tcp
+    }
+
+    /**
+     * The BACKGROUND health check: DNS + HTTP end to end, which also discovers
+     * the exit IP for the badge. Never gates Connected; the caller only logs
+     * the result.
+     */
+    suspend fun runHealthCheck(
+        host: String = TunnelConfig.SOCKS_HOST,
+        port: Int = TunnelConfig.SOCKS_PORT,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val deadline = SystemClock.elapsedRealtime() + HEALTH_GRACE_MS
+        val info = probeDns(host, port, deadline)
+        if (info == null) {
+            DiagnosticsLog.w(
+                TAG,
+                "TCP works but DNS/HTTP fails \u2192 likely broken remote DNS (SOCKS5 UDP ASSOCIATE).",
+            )
+        }
+        info != null
+    }
+
+    /**
+     * The full pipeline (steps 3+4 concurrently), for the panel's manual
+     * "run all". NOT the connect gate any more - see the class doc.
+     */
     suspend fun run(
         host: String = TunnelConfig.SOCKS_HOST,
         port: Int = TunnelConfig.SOCKS_PORT,
@@ -117,10 +169,9 @@ object Diagnostics {
         }
 
         // 3 + 4. TCP-via-proxy and DNS+HTTP end-to-end - CONCURRENT, each with
-        // its own fast retry loop over the shared cold-start grace window.
-        // Monotonic clock: a wall-clock jump must not cut the grace window short
-        // or stretch it on a device that resyncs NTP mid-connect.
-        val deadline = SystemClock.elapsedRealtime() + OUTBOUND_GRACE_MS
+        // its own fast retry loop. Monotonic clock: a wall-clock jump must not
+        // cut the window short or stretch it.
+        val deadline = SystemClock.elapsedRealtime() + HEALTH_GRACE_MS
         val (tcp, info) = coroutineScope {
             val tcpJob = async { probeTcp(host, port, deadline) }
             val dnsJob = async { probeDns(host, port, deadline) }
@@ -271,8 +322,7 @@ object Diagnostics {
 
         // The self-test already discovered the real exit IP through the tunnel.
         // Feed it straight into the badge so the UI never has to race a second,
-        // independent lookup right after connect - the IP + flag is visible the
-        // INSTANT the app reports Connected.
+        // independent lookup.
         if (info != null) {
             AetherController.offerTunnelIpInfo(IpEndpoint(info.ip, info.countryCode, true))
             AetherController.setIpLoading(false)

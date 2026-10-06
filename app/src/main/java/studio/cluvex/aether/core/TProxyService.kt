@@ -62,9 +62,9 @@ object TProxyService {
             System.loadLibrary("aethertun")
             // Build marker: lets diagnostics logs prove WHICH build is on the
             // device (versionName alone cannot distinguish rebuilds of 1.2.0).
-            Log.i("aether-tunnel", "native bridge libaethertun r3 loaded")
+            Log.i("aether-tunnel", "native bridge libaethertun r4 loaded")
             runCatching {
-                DiagnosticsLog.i("tunnel", "native bridge libaethertun r3 loaded")
+                DiagnosticsLog.i("tunnel", "native bridge libaethertun r4 loaded")
             }
             loadFailure = null
             true
@@ -82,16 +82,28 @@ object TProxyService {
 
     /**
      * Starts the tunnel event loop on a native pthread created by the bridge.
-     * Returns true when the tunnel thread was spawned (or is already running),
-     * false when spawning failed.
+     * Returns true when a NEW tunnel thread was spawned, false when spawning
+     * failed or a previous loop is still alive (r4: stop it first).
      */
     @JvmStatic
     @Suppress("FunctionName")
     external fun TProxyStartService(configPath: String, fd: Int): Boolean
 
+    /**
+     * Asks the loop to quit and BLOCKS (bounded, ~3 s in the bridge) until it
+     * has returned and its thread has been joined.
+     */
     @JvmStatic
     @Suppress("FunctionName")
     external fun TProxyStopService()
+
+    /**
+     * True while a tunnel loop is running in the bridge (r4+). Older bridges do
+     * not export it; callers must treat UnsatisfiedLinkError as "unknown".
+     */
+    @JvmStatic
+    @Suppress("FunctionName")
+    external fun TProxyIsRunning(): Boolean
 
     /** [tx_packets, tx_bytes, rx_packets, rx_bytes] from hev's stats API. */
     @JvmStatic
