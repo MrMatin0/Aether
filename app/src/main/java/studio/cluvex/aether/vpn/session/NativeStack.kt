@@ -117,8 +117,12 @@ internal class NativeStack(private val service: VpnService) {
     /**
      * Brings up the non-Aether hops and returns the chain ENTRY port. The
      * engine, when the mode uses one, must already be listening.
+     *
+     * [deadline] (elapsedRealtime) bounds the WHOLE chain - see ChainStack;
+     * null means the chain's own budget from now.
      */
-    suspend fun startChain(profile: ConnectionProfile): Int = chain.start(profile)
+    suspend fun startChain(profile: ConnectionProfile, deadline: Long? = null): Int =
+        chain.start(profile, deadline)
 
     /**
      * True while every core this session needs is still running.
@@ -248,6 +252,8 @@ internal class NativeStack(private val service: VpnService) {
         bridge?.let { runCatching { it.stop() } }
         bridge = null
         if (tunnelStarted) {
+            // Blocks (bounded) until hev's loop has exited and been joined, so
+            // the next session never starts on top of it.
             runCatching { HevTunnel.stop() }
             tunnelStarted = false
         }

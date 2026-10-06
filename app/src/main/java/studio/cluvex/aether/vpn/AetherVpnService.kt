@@ -2,6 +2,7 @@ package studio.cluvex.aether.vpn
 
 import android.content.Intent
 import android.net.VpnService
+import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.AutoCandidate
@@ -23,6 +25,7 @@ import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
+import studio.cluvex.aether.core.auto.StrategyLadder
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.data.SecretStore
 import studio.cluvex.aether.model.ChainMode
@@ -34,6 +37,7 @@ import studio.cluvex.aether.vpn.session.ChainException
 import studio.cluvex.aether.vpn.session.ChainFailure
 import studio.cluvex.aether.vpn.session.ConnectionPlanner
 import studio.cluvex.aether.vpn.session.NativeStack
+import studio.cluvex.aether.vpn.session.Readiness
 import studio.cluvex.aether.vpn.session.TunnelHealth
 import studio.cluvex.aether.vpn.session.TunnelWatchdog
 import studio.cluvex.aether.vpn.session.VpnTunables
@@ -43,11 +47,17 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  *   1. launches the cores the chosen chain needs - the bundled `aether` engine
  *      (SOCKS5 on 127.0.0.1:1819), Psiphon and/or Tor, each dialling through
  *      the one before it,
- *   2. waits until the chain ENTRY port is actually reachable (ground truth),
+ *   2. waits until the chain ENTRY can actually carry a connection (a real
+ *      SOCKS5 CONNECT through the engine, each overlay core's own readiness
+ *      signal, a warmed front) - an open port alone is not "ready",
  *   3. builds the VPN TUN interface,
  *   4. starts the embedded hev-socks5-tunnel core (libhev-socks5-tunnel.so) to
  *      forward all traffic through that entry - replacing v2rayNG entirely,
  *   5. supervises every core and auto-reconnects on failure.
+ *
+ * Every ladder of attempts runs under ONE session deadline (perf/fast-connect):
+ * a failing session used to take the SUM of every rung's budget plus a 90 s
+ * self-test per rung, which on Smart Auto was about twelve minutes.
  *
  * This class is now ONLY the session state machine: intent contract, connect
  * flow, retry/kill-switch policy and teardown ORDER. The parts it used to carry
@@ -57,6 +67,7 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  *  - ChainStack           - the Psiphon / Tor hops and the DNS-capable SOCKS front
  *  - TunFactory           - the TUN builders: routing, DNS, split tunneling
  *  - [ConnectionPlanner]  - the attempt ladder for a hand-picked protocol
+ *  - [Readiness]          - "does this port really carry traffic yet?"
  *  - [TunnelWatchdog]     - end-to-end health probing of a live tunnel
  *  - [VpnNotifications]   - the shade, the speed card, the tile and the widgets
  *  - [VpnTunables]        - every timeout and budget, with its reason
@@ -79,6 +90,13 @@ class AetherVpnService : VpnService() {
      */
     @Volatile
     private var stopJob: Job? = null
+
+    /**
+     * The background DNS/HTTP health check of the live session (see
+     * [startHealthCheck]). Cancelled with the natives it probes.
+     */
+    @Volatile
+    private var healthJob: Job? = null
 
     /**
      * Last profile the service ran with (kill-switch decisions). Written by the
@@ -271,6 +289,7 @@ class AetherVpnService : VpnService() {
                 runLadder(
                     ConnectionPlanner.chainOnly(profile),
                     getString(R.string.err_chain_failed),
+                    VpnTunables.chainBudgetMs(profile.chain) + VpnTunables.SESSION_SLACK_MS,
                 )
             }
             profile.protocol == Protocol.AUTO -> connectSmartAuto(profile)
@@ -278,9 +297,14 @@ class AetherVpnService : VpnService() {
                 // An explicitly chosen protocol keeps that protocol; the
                 // engine still selects its own endpoint.
                 AetherController.setState(ConnectionState.Launching)
+                val plan = ConnectionPlanner.manualProtocol(profile)
                 runLadder(
-                    ConnectionPlanner.manualProtocol(profile),
+                    plan,
                     getString(R.string.err_protocol_failed),
+                    // The first pass keeps its FULL budget (fix/masque-scan);
+                    // the anti-DPI pass only gets what is left of the extra.
+                    plan.first().timeoutMs + VpnTunables.MANUAL_SESSION_EXTRA_MS +
+                        VpnTunables.overlayBudgetMs(profile.chain),
                 )
             }
         }
@@ -301,7 +325,8 @@ class AetherVpnService : VpnService() {
         notifications.startTrafficMeter()
         AetherController.setState(ConnectionState.Connected(VpnTunables.entryEndpoint))
         notifications.update(getString(R.string.state_connected))
-        DiagnosticsLog.i(TAG, "All checks passed - tunnel is ready.")
+        DiagnosticsLog.i(TAG, "Connect gate passed - tunnel is ready.")
+        startHealthCheck(resolved)
 
         superviseCores(resolved)
     }
@@ -336,32 +361,63 @@ class AetherVpnService : VpnService() {
      * SMART AUTO (root-cause rework of the broken Auto protocol): fingerprint
      * the network's DPI first (see [SmartAuto]), then walk an ordered ladder
      * of concrete strategies - protocol + obfuscation + the IP ranges that
-     * actually answered on THIS network - until one passes the full 4-step
-     * self-test. Returns the strategy that won so the supervisor restarts the
-     * engine with the SAME working configuration.
+     * actually answered on THIS network - until one passes the connect gate,
+     * all inside [StrategyLadder.SESSION_BUDGET_MS]. Returns the strategy that
+     * won so the supervisor restarts the engine with the SAME working
+     * configuration.
      */
     private suspend fun connectSmartAuto(userProfile: ConnectionProfile): ConnectionProfile {
         AetherController.setState(ConnectionState.Launching)
         notifications.update(getString(R.string.state_analyzing))
         val fingerprint = SmartAuto.fingerprint(this)
         val plan = SmartAuto.buildPlan(userProfile, fingerprint)
-        return runLadder(plan, getString(R.string.err_auto_failed))
+        return runLadder(
+            plan,
+            getString(R.string.err_auto_failed),
+            StrategyLadder.SESSION_BUDGET_MS + VpnTunables.overlayBudgetMs(userProfile.chain),
+        )
     }
 
     /**
-     * Walks a ladder of strategies until one comes up and passes the full
-     * self-test. Each failed rung is torn down before the next is tried.
+     * Walks a ladder of strategies until one comes up and passes the connect
+     * gate. Each failed rung is torn down before the next is tried.
+     *
+     * ONE DEADLINE for the whole ladder ([sessionBudgetMs]). Each rung's engine
+     * wait is min(its own budget, what is left), the rung as a whole is cut off
+     * when it runs past the deadline, and a rung that cannot get
+     * [VpnTunables.MIN_RUNG_BUDGET_MS] is not started at all. Without this the
+     * worst case was the sum of every rung's budget plus a 90 s self-test each.
      */
     private suspend fun runLadder(
         plan: List<AutoCandidate>,
         failureMessage: String,
+        sessionBudgetMs: Long,
     ): ConnectionProfile {
         var lastError: Exception? = null
+        val deadline = SystemClock.elapsedRealtime() + sessionBudgetMs
+        DiagnosticsLog.i(TAG, "Session budget: ${sessionBudgetMs / 1000}s for ${plan.size} attempt(s).")
 
-        plan.forEachIndexed { index, candidate ->
+        for ((index, candidate) in plan.withIndex()) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining < VpnTunables.MIN_RUNG_BUDGET_MS) {
+                DiagnosticsLog.w(
+                    TAG,
+                    "Session budget of ${sessionBudgetMs / 1000}s is spent - " +
+                        "skipping the remaining ${plan.size - index} strategy(ies).",
+                )
+                break
+            }
             DiagnosticsLog.i(TAG, "Attempt ${index + 1}/${plan.size} → ${candidate.label}")
             try {
-                connectAttempt(candidate.profile, candidate.timeoutMs)
+                val engineBudget = minOf(candidate.timeoutMs, remaining)
+                val finished = withTimeoutOrNull(remaining) {
+                    connectAttempt(candidate.profile, engineBudget, deadline)
+                    true
+                }
+                if (finished == null) {
+                    DiagnosticsLog.e(TAG, "${candidate.label} ran past the session budget - stopping it.")
+                    throw IllegalStateException(getString(R.string.err_engine_timeout))
+                }
                 DiagnosticsLog.i(TAG, "Connected using ${candidate.label}")
                 return candidate.profile
             } catch (e: CancellationException) {
@@ -400,10 +456,14 @@ class AetherVpnService : VpnService() {
 
     /**
      * One full connect attempt: launch the cores this chain needs, wait for the
-     * chain entry, bring up TUN/proxy, and gate on the 4-step self-test.
-     * Throws on any failure; the caller decides whether to retry differently.
+     * chain entry to really carry traffic, bring up TUN/proxy, and gate on the
+     * connect gate. Throws on any failure; the caller decides whether to retry
+     * differently.
+     *
+     * [timeoutMs] is the engine's port budget for this rung; [sessionDeadline]
+     * (elapsedRealtime) bounds everything after it, the chain included.
      */
-    private suspend fun connectAttempt(profile: ConnectionProfile, timeoutMs: Long) {
+    private suspend fun connectAttempt(profile: ConnectionProfile, timeoutMs: Long, sessionDeadline: Long) {
         AetherController.setState(ConnectionState.Launching)
         notifications.update(getString(R.string.state_launching))
         // 1.2.2 PROTOCOL-SWITCH FIX, generalised to the chain: never start a
@@ -435,7 +495,8 @@ class AetherVpnService : VpnService() {
             AetherController.setState(ConnectionState.Connecting)
             notifications.update(getString(R.string.state_connecting))
             // Timeout comes from the caller: the profile's scan-mode budget for a
-            // direct connect, or the per-candidate budget in the Smart Auto ladder.
+            // direct connect, or the per-candidate budget in the Smart Auto
+            // ladder - both already bounded by the session deadline.
             DiagnosticsLog.i(
                 TAG,
                 "Waiting for the engine's SOCKS5 on " +
@@ -458,23 +519,55 @@ class AetherVpnService : VpnService() {
                 )
                 throw IllegalStateException(getString(R.string.err_engine_timeout))
             }
-            DiagnosticsLog.i(TAG, "Engine SOCKS5 port is up.")
+
+            // READINESS, NOT AN OPEN PORT (perf/fast-connect). TUN and hev used
+            // to come up the moment the port answered, and the 90 s self-test
+            // then waited out whatever the engine still had to do. One real
+            // CONNECT through the engine is the actual "ready" signal; a port
+            // that never carries one fails THIS rung in seconds instead.
+            DiagnosticsLog.i(TAG, "Engine SOCKS5 port is up - checking it carries a real connection…")
+            val dataplaneBudget = minOf(
+                VpnTunables.ENGINE_DATAPLANE_WAIT_MS,
+                (sessionDeadline - SystemClock.elapsedRealtime())
+                    .coerceAtLeast(VpnTunables.DATAPLANE_MIN_WAIT_MS),
+            )
+            val carries = Readiness.awaitDataplane(
+                VpnTunables.SOCKS_HOST,
+                VpnTunables.ENGINE_SOCKS_PORT,
+                dataplaneBudget,
+            ) { natives.engineAlive }
+            if (!carries) {
+                if (!natives.engineAlive) {
+                    DiagnosticsLog.e(TAG, "Engine exited before its tunnel carried a connection.")
+                    throw IllegalStateException(getString(R.string.err_engine_died))
+                }
+                DiagnosticsLog.e(
+                    TAG,
+                    "Engine SOCKS5 is open but no CONNECT got through in " +
+                        "${dataplaneBudget / 1000}s - not starting TUN on a dead tunnel.",
+                )
+                throw IllegalStateException(getString(R.string.err_selftest))
+            }
         }
 
-        // The overlay hops, each dialling through the previous one. Throws a
+        // The overlay hops, each dialling through the previous one, under the
+        // tighter of the session deadline and the chain's own budget. Throws a
         // ChainException naming the core that failed.
         AetherController.setState(ConnectionState.Connecting)
         notifications.update(getString(R.string.state_connecting))
-        val entryPort = natives.startChain(profile)
+        val chainDeadline = minOf(
+            sessionDeadline,
+            SystemClock.elapsedRealtime() + VpnTunables.chainBudgetMs(profile.chain),
+        )
+        val entryPort = natives.startChain(profile, chainDeadline)
 
         if (profile.proxyMode) startLocalProxy(profile) else startFullTunnel(profile, entryPort)
 
-        // GATING FIX: the app used to report Connected the moment the TUN /
-        // proxy was up while the 4-step self-test still ran in the background -
-        // users saw "Connected" long before the tunnel could actually carry
-        // traffic (and before the IP + flag appeared). The state is now held at
-        // Verifying, and Connected is reported ONLY after all four checks pass,
-        // so Connected == genuinely ready to browse.
+        // GATING: Connected is reported ONLY after the connect gate passes -
+        // port, handshake and a real outbound TCP connection through the entry
+        // the user's traffic takes. DNS + HTTP and the exit IP follow in the
+        // background (startHealthCheck) instead of holding the button on
+        // "Verifying" for up to 90 s.
         AetherController.setState(ConnectionState.Verifying)
         notifications.update(getString(R.string.state_verifying))
         DiagnosticsLog.i(
@@ -484,21 +577,8 @@ class AetherVpnService : VpnService() {
         )
 
         if (!selfTest(profile)) {
-            DiagnosticsLog.e(TAG, "Self-test failed - refusing to report Connected.")
+            DiagnosticsLog.e(TAG, "Connect gate failed - refusing to report Connected.")
             throw IllegalStateException(getString(R.string.err_selftest))
-        }
-
-        // Informational only: report where the tunnel actually came out.
-        // WARP edges are anycast, so the exit location is decided by the
-        // engine's endpoint selection and the operator's routing, not by the
-        // app. With a chain, the exit belongs to the LAST hop (Tor's exit relay,
-        // Psiphon's server), which is why this line is worth logging at all.
-        val exit = AetherController.ipInfo.value?.takeIf { it.viaTunnel }
-        if (exit != null) {
-            DiagnosticsLog.i(
-                TAG,
-                "Exit verified through the tunnel: ${exit.ip} (${exit.countryCode ?: "??"})",
-            )
         }
     }
 
@@ -535,20 +615,67 @@ class AetherVpnService : VpnService() {
     }
 
     /**
-     * The 4-step self-test, run against the endpoint that actually carries the
-     * user's traffic.
+     * The port the self-tests run against: the endpoint that actually carries
+     * the user's traffic.
      *
      * In proxy mode that is the SHARED SOCKS5 listener - the exact port external
      * apps connect to - so a dead bridge can no longer hide behind a passing
      * chain-entry test. The initial connect got this right while the
      * post-restart check in [superviseCores] did not, which is why the port
-     * decision now lives in one function that both call.
+     * decision lives in one function that both call.
      */
+    private fun selfTestPort(profile: ConnectionProfile): Int =
+        if (profile.proxyMode) ShareBridge.socksPort.value ?: VpnTunables.entryPort
+        else VpnTunables.entryPort
+
+    /** The connect gate (see [Diagnostics.runGate]) against [selfTestPort]. */
     private suspend fun selfTest(profile: ConnectionProfile): Boolean {
-        val port =
-            if (profile.proxyMode) ShareBridge.socksPort.value ?: VpnTunables.entryPort
-            else VpnTunables.entryPort
-        return runCatching { Diagnostics.run(port = port) }.getOrDefault(false)
+        val port = selfTestPort(profile)
+        return try {
+            Diagnostics.runGate(port = port)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * The DNS + HTTP / exit-IP check, in the BACKGROUND of a live session. It
+     * fills in the panel and the IP badge; it never tears the tunnel down - a
+     * session that really stops carrying traffic is the watchdog's to judge.
+     */
+    private fun startHealthCheck(profile: ConnectionProfile) {
+        healthJob?.cancel()
+        val port = selfTestPort(profile)
+        healthJob = scope.launch {
+            val healthy = try {
+                Diagnostics.runHealthCheck(port = port)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (healthy) {
+                // Informational only: report where the tunnel actually came out.
+                // WARP edges are anycast, so the exit location is decided by the
+                // engine's endpoint selection and the operator's routing, not by
+                // the app. With a chain, the exit belongs to the LAST hop.
+                val exit = AetherController.ipInfo.value?.takeIf { it.viaTunnel }
+                if (exit != null) {
+                    DiagnosticsLog.i(
+                        TAG,
+                        "Exit verified through the tunnel: ${exit.ip} (${exit.countryCode ?: "??"})",
+                    )
+                }
+            } else {
+                DiagnosticsLog.w(
+                    TAG,
+                    "Background health check: DNS/HTTP through the tunnel did not answer yet. " +
+                        "The tunnel stays up; the watchdog decides whether it is really dead.",
+                )
+            }
+        }
     }
 
     // =============================================================== supervise
@@ -609,8 +736,9 @@ class AetherVpnService : VpnService() {
                 notifications.startTrafficMeter()
                 AetherController.setState(ConnectionState.Connected(VpnTunables.entryEndpoint))
                 notifications.update(getString(R.string.state_connected))
+                startHealthCheck(profile)
             } else {
-                DiagnosticsLog.w(TAG, "Self-test failed after a core restart - retrying.")
+                DiagnosticsLog.w(TAG, "Connect gate failed after a core restart - retrying.")
                 natives.stopCores()
             }
         }
@@ -636,6 +764,14 @@ class AetherVpnService : VpnService() {
                 profile.connectTimeoutMs(),
             ) { natives.engineAlive }
             if (!opened) return false
+            // Same readiness rule as the first connect: an open port is not a
+            // tunnel. The chain above it must not start against a dead engine.
+            val carries = Readiness.awaitDataplane(
+                VpnTunables.SOCKS_HOST,
+                VpnTunables.ENGINE_SOCKS_PORT,
+                VpnTunables.ENGINE_DATAPLANE_WAIT_MS,
+            ) { natives.engineAlive }
+            if (!carries) return false
         }
         return runCatching { natives.startChain(profile) }
             .onFailure { error ->
@@ -704,6 +840,8 @@ class AetherVpnService : VpnService() {
         runJob = null
         job?.cancel()
         launchTeardown {
+            healthJob?.cancel()
+            healthJob = null
             // The speed meter polls hev's and the bridge's counters, so it has
             // to stop BEFORE the natives it reads are torn down.
             notifications.stopTrafficMeter()
@@ -750,6 +888,9 @@ class AetherVpnService : VpnService() {
 
     /** Stops every native piece of the session, including the TUN. */
     private fun cleanupNatives() {
+        // The background health check probes the natives below.
+        healthJob?.cancel()
+        healthJob = null
         // Meter first: it polls counters that belong to the natives below.
         notifications.stopTrafficMeter()
         natives.teardown()

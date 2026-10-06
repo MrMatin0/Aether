@@ -8,7 +8,7 @@ use rand::RngExt;
 
 use crate::aethernoize::AetherNoizeConfig;
 use crate::error::{AetherError, Result};
-use crate::prober::IpScan;
+use crate::prober::{IpScan, UserRanges};
 use crate::wireguard;
 
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +48,11 @@ impl WgScanMode {
         }
     }
 
+    /// Aether Mobile patch (perf/fast-connect): the quiet window now starts at
+    /// the FIRST verified endpoint (see hunt_wg_endpoints) and is a few seconds
+    /// long. Balanced used to collect five endpoints and only then wait 12 s of
+    /// silence, so on a filtered network where one or two edges answer the scan
+    /// sat out its whole 80 s deadline with a working endpoint in hand.
     fn strategy(&self) -> WgStrategy {
         match self {
             WgScanMode::Turbo => WgStrategy {
@@ -65,7 +70,7 @@ impl WgScanMode {
                 concurrency: 8,
                 per_probe_timeout: Duration::from_millis(7000),
                 overall_deadline: Duration::from_secs(80),
-                quiet_after_first: Duration::from_secs(12),
+                quiet_after_first: Duration::from_secs(3),
                 target_successes: 5,
                 early_exit_first: false,
                 full_subnet: false,
@@ -87,7 +92,7 @@ impl WgScanMode {
                 concurrency: 10,
                 per_probe_timeout: Duration::from_millis(5000),
                 overall_deadline: Duration::from_secs(60),
-                quiet_after_first: Duration::from_secs(8),
+                quiet_after_first: Duration::from_secs(3),
                 target_successes: 6,
                 early_exit_first: false,
                 full_subnet: false,
@@ -98,7 +103,7 @@ impl WgScanMode {
                 concurrency: 4,
                 per_probe_timeout: Duration::from_millis(15000),
                 overall_deadline: Duration::from_secs(180),
-                quiet_after_first: Duration::from_secs(15),
+                quiet_after_first: Duration::from_secs(5),
                 target_successes: 3,
                 early_exit_first: false,
                 full_subnet: false,
@@ -227,18 +232,35 @@ pub async fn hunt_wg_endpoints(
                         verified.push(pr);
                         found += 1;
 
-                        if distinct_by_ip(&verified).len() >= want && want > 1 {
+                        let distinct = distinct_by_ip(&verified).len();
+                        if want > 1 && distinct >= want {
                             log::info!("[+] found {want} endpoints on separate addresses");
                             break;
                         }
 
-
-                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
-                            log::info!("[+] reached target of {} endpoints, selecting best", st.target_successes);
-                            if !st.quiet_after_first.is_zero() {
+                        // Aether Mobile patch (perf/fast-connect): the quiet
+                        // window used to be armed only once target_successes
+                        // endpoints had answered. It now starts as soon as we
+                        // hold enough usable endpoints and restarts with each
+                        // new one until the target, the same rule prober.rs
+                        // uses for MASQUE (after_success). From the target on
+                        // the final window is not stretched any further.
+                        if st.target_successes > 0 && distinct >= want {
+                            if st.quiet_after_first.is_zero() {
+                                if found >= st.target_successes {
+                                    log::info!("[+] reached target of {} endpoints, selecting best", st.target_successes);
+                                    break;
+                                }
+                            } else if found <= st.target_successes || quiet_until.is_none() {
+                                if quiet_until.is_none() {
+                                    log::info!(
+                                        "[+] endpoint found; finalizing once none new answers for {:?}",
+                                        st.quiet_after_first
+                                    );
+                                } else if found == st.target_successes {
+                                    log::info!("[+] reached target of {} endpoints, selecting best", st.target_successes);
+                                }
                                 quiet_until = Some(Instant::now() + st.quiet_after_first);
-                            } else {
-                                break;
                             }
                         }
                     }
@@ -337,11 +359,24 @@ async fn verify_one_wg(
     }
 }
 
+/// The sweep for this scan: the user's own ranges when AETHER_WG_CIDRS (or
+/// AETHER_SCAN_CIDRS) names any, the built-in WARP ranges otherwise.
 fn build_wg_candidates(
     st: &WgStrategy,
     ports: &[u16],
     ip: IpScan,
     excluded: &HashSet<SocketAddr>,
+) -> Vec<(IpAddr, u16)> {
+    let user = crate::prober::user_ranges_from_env("AETHER_WG_CIDRS");
+    build_wg_candidates_in(st, ports, ip, excluded, &user)
+}
+
+fn build_wg_candidates_in(
+    st: &WgStrategy,
+    ports: &[u16],
+    ip: IpScan,
+    excluded: &HashSet<SocketAddr>,
+    user: &UserRanges,
 ) -> Vec<(IpAddr, u16)> {
     let ports: Vec<u16> = {
         let mut seen_port: HashSet<u16> = HashSet::new();
@@ -360,52 +395,101 @@ fn build_wg_candidates(
     let mut anchors: Vec<IpAddr> = Vec::new();
     let mut pool: Vec<IpAddr> = Vec::new();
 
-    if ip.want_v4() {
-        for s in wireguard::wg_seeds_v4() {
-            if let Ok(a) = s.parse::<Ipv4Addr>() {
-                anchors.push(IpAddr::V4(a));
+    if !user.is_empty() {
+        // Aether Mobile patch (perf/fast-connect): MANUAL RANGES ARE HONOURED.
+        // The app sends AETHER_WG_CIDRS for "Manual range" (and for Smart
+        // Auto's probe-narrowed rungs), but since the core 2.0.0 sync nothing
+        // read it, so the scan kept sweeping the built-in ranges and the
+        // setting promised a speed-up it never delivered. Only the user's
+        // ranges are swept now - no built-in anchors in front of them.
+        log::info!(
+            "[*] wireguard scan restricted to your ranges: {}",
+            user.describe()
+        );
+        if ip.want_v4() {
+            let per: Vec<Vec<Ipv4Addr>> = user
+                .v4
+                .iter()
+                .map(|c| crate::prober::user_range_hosts_v4(c))
+                .collect();
+            let max_len = per.iter().map(|v| v.len()).max().unwrap_or(0);
+            for i in 0..max_len {
+                for hosts in &per {
+                    if let Some(a) = hosts.get(i) {
+                        pool.push(IpAddr::V4(*a));
+                    }
+                }
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wireguard::wg_prefixes_v4()
-            .iter()
-            .map(|c| {
-                if st.full_subnet {
-                    enumerate_cidr_v4(c)
-                } else {
-                    sample_cidr_v4(c, st.sample_per_cidr)
-                }
-            })
-            .collect();
-        let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
-        for i in 0..max_len {
-            for hosts in &cidr_hosts {
-                if let Some(a) = hosts.get(i) {
-                    pool.push(IpAddr::V4(*a));
+        if ip.want_v6() {
+            let per: Vec<Vec<Ipv6Addr>> = user
+                .v6
+                .iter()
+                .map(|c| crate::prober::user_range_hosts_v6(c, crate::prober::USER_RANGE_MAX_HOSTS_V6))
+                .collect();
+            let max_len = per.iter().map(|v| v.len()).max().unwrap_or(0);
+            for i in 0..max_len {
+                for hosts in &per {
+                    if let Some(a) = hosts.get(i) {
+                        pool.push(IpAddr::V6(*a));
+                    }
                 }
             }
         }
-    }
+        if pool.is_empty() {
+            log::warn!(
+                "[-] none of your ranges match the {} scan; nothing to probe",
+                ip.label()
+            );
+        }
+    } else {
+        if ip.want_v4() {
+            for s in wireguard::wg_seeds_v4() {
+                if let Ok(a) = s.parse::<Ipv4Addr>() {
+                    anchors.push(IpAddr::V4(a));
+                }
+            }
+            let cidr_hosts: Vec<Vec<Ipv4Addr>> = wireguard::wg_prefixes_v4()
+                .iter()
+                .map(|c| {
+                    if st.full_subnet {
+                        enumerate_cidr_v4(c)
+                    } else {
+                        sample_cidr_v4(c, st.sample_per_cidr)
+                    }
+                })
+                .collect();
+            let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
+            for i in 0..max_len {
+                for hosts in &cidr_hosts {
+                    if let Some(a) = hosts.get(i) {
+                        pool.push(IpAddr::V4(*a));
+                    }
+                }
+            }
+        }
 
-    if ip.want_v6() {
-        for s in wireguard::WG_SEEDS_V6 {
-            if let Ok(a) = s.parse::<Ipv6Addr>() {
-                anchors.push(IpAddr::V6(a));
+        if ip.want_v6() {
+            for s in wireguard::WG_SEEDS_V6 {
+                if let Ok(a) = s.parse::<Ipv6Addr>() {
+                    anchors.push(IpAddr::V6(a));
+                }
             }
-        }
-        let per = if st.sample_per_cidr == 0 {
-            80
-        } else {
-            st.sample_per_cidr
-        };
-        let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::wg_prefixes_v6()
-            .iter()
-            .map(|c| sample_cidr_v6(c, per, wireguard::WG_PREFIXES_V4))
-            .collect();
-        let max6 = cidr6.iter().map(|v| v.len()).max().unwrap_or(0);
-        for i in 0..max6 {
-            for hosts in &cidr6 {
-                if let Some(a) = hosts.get(i) {
-                    pool.push(IpAddr::V6(*a));
+            let per = if st.sample_per_cidr == 0 {
+                80
+            } else {
+                st.sample_per_cidr
+            };
+            let cidr6: Vec<Vec<Ipv6Addr>> = wireguard::wg_prefixes_v6()
+                .iter()
+                .map(|c| sample_cidr_v6(c, per, wireguard::WG_PREFIXES_V4))
+                .collect();
+            let max6 = cidr6.iter().map(|v| v.len()).max().unwrap_or(0);
+            for i in 0..max6 {
+                for hosts in &cidr6 {
+                    if let Some(a) = hosts.get(i) {
+                        pool.push(IpAddr::V6(*a));
+                    }
                 }
             }
         }
@@ -626,6 +710,43 @@ mod tests {
             ports_per_ip.values().any(|ports| ports.len() >= 3),
             "sampled IPs should be tried across multiple port waves"
         );
+    }
+
+    #[test]
+    fn user_ranges_replace_the_built_in_wireguard_sweep() {
+        let strategy = WgScanMode::Turbo.strategy();
+        let user = crate::prober::parse_user_ranges("188.114.97.0/30");
+        let candidates = build_wg_candidates_in(
+            &strategy,
+            &[2408, 500],
+            IpScan::V4,
+            &HashSet::new(),
+            &user,
+        );
+        assert!(!candidates.is_empty());
+        let seeds: HashSet<IpAddr> = wireguard::wg_seeds_v4()
+            .into_iter()
+            .map(|seed| IpAddr::V4(seed.parse().expect("wireguard seed")))
+            .collect();
+        assert!(
+            candidates.iter().all(|(ip, _)| !seeds.contains(ip)),
+            "no built-in anchor may be probed when the user named ranges"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|(ip, _)| matches!(ip, IpAddr::V4(v4) if v4.octets()[..3] == [188, 114, 97])),
+            "every candidate must come from the user's range"
+        );
+    }
+
+    #[test]
+    fn balanced_settles_shortly_after_the_first_working_endpoint() {
+        for mode in [WgScanMode::Balanced, WgScanMode::Verified] {
+            let st = mode.strategy();
+            assert!(st.quiet_after_first <= Duration::from_secs(5), "{}", mode.label());
+            assert!(st.quiet_after_first < st.overall_deadline, "{}", mode.label());
+        }
     }
 
     fn result(ip: &str, port: u16, rtt_ms: u64) -> WgProbeResult {

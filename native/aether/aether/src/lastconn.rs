@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 
 pub const RECENT_CAP: usize = 8;
 
+/// Aether Mobile patch (perf/fast-connect): how many remembered gateways are
+/// handed back for re-verification before a fresh scan. lib.rs checks them one
+/// at a time (5 s each on MASQUE, 6 s on WireGuard), so the full ring of
+/// [`RECENT_CAP`] cost about 40 s of dead time on a network that had just
+/// blocked them, every connect. The newest few are the ones that matter; the
+/// file still remembers [`RECENT_CAP`].
+pub const VERIFY_CAP: usize = 3;
+
 pub const CARRIER_MASQUE_H3: &str = "masque-h3";
 pub const CARRIER_MASQUE_H2: &str = "masque-h2";
 pub const CARRIER_WIREGUARD: &str = "wireguard";
@@ -57,6 +65,8 @@ pub fn save(path: &str, peer: &str, profile: &str, carrier: &str) {
     }
 }
 
+/// The remembered gateways worth re-verifying before a scan, newest first, at
+/// most [`VERIFY_CAP`] of them.
 pub fn usable_peers(cached: &LastConnection, carrier: &str) -> Vec<SocketAddr> {
     if !cached.carrier.is_empty() && cached.carrier != carrier {
         log::debug!(
@@ -69,6 +79,9 @@ pub fn usable_peers(cached: &LastConnection, carrier: &str) -> Vec<SocketAddr> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for raw in std::iter::once(&cached.peer).chain(cached.recent.iter()) {
+        if out.len() >= VERIFY_CAP {
+            break;
+        }
         if let Ok(addr) = raw.parse::<SocketAddr>() {
             if seen.insert(addr) {
                 out.push(addr);
@@ -116,6 +129,20 @@ mod tests {
         assert_eq!(loaded.recent.len(), RECENT_CAP);
         assert_eq!(loaded.recent[0], "10.0.0.19:443");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn only_the_newest_few_gateways_are_reverified() {
+        let cached = LastConnection {
+            peer: "10.0.0.9:443".to_string(),
+            profile: String::new(),
+            carrier: CARRIER_MASQUE_H3.to_string(),
+            recent: (0..8u8).rev().map(|n| format!("10.0.0.{n}:443")).collect(),
+        };
+        let peers = usable_peers(&cached, CARRIER_MASQUE_H3);
+        assert_eq!(peers.len(), VERIFY_CAP);
+        assert_eq!(peers[0], "10.0.0.9:443".parse::<SocketAddr>().expect("an address"));
+        assert_eq!(peers[1], "10.0.0.7:443".parse::<SocketAddr>().expect("an address"));
     }
 
     #[test]

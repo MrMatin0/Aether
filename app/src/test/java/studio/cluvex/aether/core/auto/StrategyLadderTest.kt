@@ -115,8 +115,9 @@ class StrategyLadderTest {
     }
 
     /**
-     * Every rung scans on turbo (45 s in the engine), and engine 2.1.0 walks up
-     * to 8 remembered gateways at 5 s each before that sweep even starts.
+     * Every rung scans on turbo (45 s in the engine). perf/fast-connect capped
+     * the engine's remembered-gateway re-check at lastconn::VERIFY_CAP = 3
+     * gateways (5 s each), so a rung must outlast 45 s + 15 s.
      */
     @Test
     fun `masque turbo rungs outlast the remembered gateway ring plus the sweep`() {
@@ -124,7 +125,27 @@ class StrategyLadderTest {
             val rungs = StrategyLadder.build(ConnectionProfile(), fingerprint(dpi))
                 .filter { it.profile.protocol.isMasque && it.profile.scanMode == ScanMode.TURBO }
             assertTrue(rungs.isNotEmpty(), "$dpi")
-            rungs.forEach { assertTrue(it.timeoutMs > 45_000L + 8 * 5_000L, "$dpi: ${it.label}") }
+            rungs.forEach { assertTrue(it.timeoutMs > 45_000L + 3 * 5_000L, "$dpi: ${it.label}") }
+        }
+    }
+
+    /**
+     * perf/fast-connect: no single rung - the last resort included - may wait
+     * as long as the whole session is allowed to take, and the turbo rungs
+     * must leave room for more than one of them inside it.
+     */
+    @Test
+    fun `every rung fits inside the session budget`() {
+        for (dpi in DpiClass.entries) {
+            for (mode in ScanMode.entries) {
+                val plan = StrategyLadder.build(ConnectionProfile(scanMode = mode), fingerprint(dpi))
+                plan.forEach {
+                    assertTrue(it.timeoutMs < StrategyLadder.SESSION_BUDGET_MS, "$dpi/$mode: ${it.label}")
+                }
+                plan.filter { !it.label.contains("last resort") }.forEach {
+                    assertTrue(it.timeoutMs * 2 <= StrategyLadder.SESSION_BUDGET_MS, "$dpi/$mode: ${it.label}")
+                }
+            }
         }
     }
 }

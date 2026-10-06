@@ -253,16 +253,32 @@ val fetchTorBridges = tasks.register("fetchTorBridges") {
 //   * missing, no toolchain, strict    -> FAIL with the exact command to run
 //   * missing, no toolchain, otherwise -> a loud warning naming what is missing
 //
-// Strict is -PrequirePluggableTransports=true or AETHER_REQUIRE_PT=1, and a
-// release pipeline should set it: bridges are ON by default now (see
-// model/Profile.kt), so an APK without these cannot honour its own default
-// configuration on the networks this app exists for.
+// STRICT IS THE DEFAULT FOR A RELEASE PACKAGE (perf/fast-connect). It used to
+// be opt-in (-PrequirePluggableTransports=true / AETHER_REQUIRE_PT=1), so any
+// release built outside the CI pipeline came out with a warning and without
+// the transports. Bridges are ON by default (see model/Profile.kt), so such an
+// APK cannot honour its own default configuration: every obfuscated bridge is
+// dropped, the Tor hop goes to the public relays, and on the networks this app
+// exists for that is minutes of a bootstrap stuck at 5% before the bridge
+// ladder gives up - which users see as "connecting takes forever". Now any
+// requested task that PACKAGES a release (assemble*/bundle*/package*...Release)
+// makes this strict. Debug builds and unit tests (testReleaseUnitTest) keep the
+// warning, and -PallowMissingPluggableTransports=true / AETHER_ALLOW_MISSING_PT=1
+// is the explicit, visible escape hatch.
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
 val ptBinaries = listOf("liblyrebird.so", "libsnowflake.so", "libwebtunnel.so")
 val buildPtScript = rootProject.file("scripts/build-pt-transports.sh")
+val allowMissingPt: Boolean =
+    providers.gradleProperty("allowMissingPluggableTransports").orNull?.toBoolean() == true ||
+        providers.environmentVariable("AETHER_ALLOW_MISSING_PT").orNull == "1"
+val packagesRelease: Boolean = gradle.startParameter.taskNames.any { requested ->
+    val task = requested.substringAfterLast(':')
+    task.contains("Release") && listOf("assemble", "bundle", "package").any { task.startsWith(it) }
+}
 val requirePt: Boolean =
     providers.gradleProperty("requirePluggableTransports").orNull?.toBoolean() == true ||
-        providers.environmentVariable("AETHER_REQUIRE_PT").orNull == "1"
+        providers.environmentVariable("AETHER_REQUIRE_PT").orNull == "1" ||
+        (packagesRelease && !allowMissingPt)
 
 val buildPtTransports = tasks.register("buildPtTransports") {
     group = "build setup"
@@ -326,7 +342,13 @@ val buildPtTransports = tasks.register("buildPtTransports") {
                 "webtunnel or meek in this build - every such bridge line is dropped before " +
                 "the torrc (see core/PluggableTransports.kt), so the Tor hop will connect to " +
                 "the public relays. $advice"
-        if (strict) throw GradleException(message)
+        if (strict) {
+            throw GradleException(
+                "$message (Refusing to package a release without them; pass " +
+                    "-PallowMissingPluggableTransports=true or AETHER_ALLOW_MISSING_PT=1 to " +
+                    "build one anyway.)",
+            )
+        }
         logger.warn("WARNING: $message")
     }
 }
