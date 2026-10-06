@@ -18,8 +18,40 @@ import studio.cluvex.aether.model.ScanMode
  * now a declarative table of [Step]s, and merging a step with the user's own
  * profile is one small function - which is what makes the merge rules (below)
  * reviewable at all.
+ *
+ * TIME (perf/fast-connect). The ladder used to have no ceiling at all: each
+ * rung waited its profile's full connect budget (Turbo plus the MASQUE
+ * remembered-gateway allowance, 105 s) and then a 90 s self-test, and the last
+ * resort ran on the user's own scan mode (Precise, 190 s+). Walking a network
+ * where nothing works took around twelve minutes. Now:
+ *
+ *  - every rung's engine wait is capped at [RUNG_BUDGET_CAP_MS] and the last
+ *    resort's at [LAST_RESORT_BUDGET_CAP_MS];
+ *  - the whole session runs under [SESSION_BUDGET_MS], enforced by the service
+ *    (AetherVpnService.runLadder): a rung gets min(its cap, what is left) and a
+ *    rung that cannot fit is skipped;
+ *  - the probe-narrowed ranges a rung asks for really reach the engine again
+ *    (prober.rs / wg_prober.rs honour AETHER_*_CIDRS), so a rung IS the short,
+ *    narrow scan it was designed to be.
  */
 internal object StrategyLadder {
+
+    /**
+     * Hard ceiling for a whole Smart Auto session, every rung included. Three
+     * minutes is long enough for a Turbo sweep on each of the rungs that can
+     * actually work on the fingerprinted network, and short enough that a
+     * network where nothing works is reported as such instead of spinning.
+     */
+    const val SESSION_BUDGET_MS = 180_000L
+
+    /**
+     * Most one rung waits for the engine. Comfortably above the engine's 45 s
+     * Turbo sweep plus its (now capped) remembered-gateway re-check.
+     */
+    private const val RUNG_BUDGET_CAP_MS = 75_000L
+
+    /** The last resort scans the full built-in ranges on the user's own mode. */
+    private const val LAST_RESORT_BUDGET_CAP_MS = 120_000L
 
     /** One rung, before it is merged with the user's profile. */
     private data class Step(
@@ -120,7 +152,7 @@ internal object StrategyLadder {
         }
         return AutoCandidate(
             profile = profile,
-            timeoutMs = profile.connectTimeoutMs(),
+            timeoutMs = profile.connectTimeoutMs().coerceAtMost(RUNG_BUDGET_CAP_MS),
             label = describe(profile, if (keepUserEndpoint) "" else narrowedRanges),
         )
     }
@@ -146,7 +178,11 @@ internal object StrategyLadder {
             if (!keepUserEndpoint) append(" · full built-in ranges")
             append(" (last resort)")
         }
-        return AutoCandidate(profile, profile.connectTimeoutMs(), description)
+        return AutoCandidate(
+            profile,
+            profile.connectTimeoutMs().coerceAtMost(LAST_RESORT_BUDGET_CAP_MS),
+            description,
+        )
     }
 
     /** OFF is a veto, not the weakest level to upgrade automatically. */
