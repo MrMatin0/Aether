@@ -117,7 +117,7 @@ class StrategyLadderTest {
     /**
      * Every rung scans on turbo (45 s in the engine). perf/fast-connect capped
      * the engine's remembered-gateway re-check at lastconn::VERIFY_CAP = 3
-     * gateways (5 s each), so a rung must outlast 45 s + 15 s - and no more.
+     * gateways (5 s each), so a rung must outlast 45 s + 15 s.
      */
     @Test
     fun `masque turbo rungs outlast the remembered gateway ring plus the sweep`() {
@@ -131,8 +131,8 @@ class StrategyLadderTest {
 
     /**
      * perf/fast-connect: no single rung - the last resort included - may wait
-     * longer than the whole session is allowed to take, and the turbo rungs
-     * together must leave room for more than one of them.
+     * as long as the whole session is allowed to take, and the turbo rungs
+     * must leave room for more than one of them inside it.
      */
     @Test
     fun `every rung fits inside the session budget`() {
@@ -142,8 +142,7 @@ class StrategyLadderTest {
                 plan.forEach {
                     assertTrue(it.timeoutMs < StrategyLadder.SESSION_BUDGET_MS, "$dpi/$mode: ${it.label}")
                 }
-                val turbo = plan.filter { it.profile.scanMode == ScanMode.TURBO }
-                turbo.forEach {
+                plan.filter { !it.label.contains("last resort") }.forEach {
                     assertTrue(it.timeoutMs * 2 <= StrategyLadder.SESSION_BUDGET_MS, "$dpi/$mode: ${it.label}")
                 }
             }
