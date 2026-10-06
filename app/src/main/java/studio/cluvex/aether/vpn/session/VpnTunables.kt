@@ -1,6 +1,5 @@
 package studio.cluvex.aether.vpn.session
 
-import studio.cluvex.aether.core.BridgePlan
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ChainMode
@@ -83,7 +82,61 @@ internal object VpnTunables {
     // attempt was killed mid-scan on exactly the networks where the scan was
     // slow but working. See ConnectionPlanner.manualProtocol.
 
+    // --------------------------------------------------------- session budgets
+    //
+    // perf/fast-connect. Every ladder used to be a plain loop over candidates,
+    // each with its own full budget, so the time a FAILING session took was the
+    // SUM of every rung's scan budget plus a 90 s self-test per rung - up to
+    // about twelve minutes on Smart Auto. Each ladder now runs under ONE
+    // session deadline (AetherVpnService.runLadder): a rung gets
+    // min(its own budget, what is left), and a rung that cannot fit is skipped.
+
+    /**
+     * What a session needs on top of the engine/chain budgets: the data-plane
+     * check, TUN + hev, and the connect gate.
+     */
+    const val SESSION_SLACK_MS = 30_000L
+
+    /**
+     * Session budget of a hand-picked protocol beyond its FULL first pass: room
+     * for the anti-DPI (HTTP/2 + fragment) pass, and for the slack above.
+     */
+    const val MANUAL_SESSION_EXTRA_MS = 90_000L
+
+    /** Smallest remaining session budget worth launching another rung with. */
+    const val MIN_RUNG_BUDGET_MS = 15_000L
+
+    // ------------------------------------------------------------- readiness
+
+    /**
+     * After the engine's SOCKS5 port opens: how long a real CONNECT through it
+     * gets to succeed before TUN/hev are started. The engine binds its listener
+     * only once a tunnel validated, so this is normally a single round trip;
+     * the window covers a gool / masque-in-masque inner hop that is still
+     * settling, without the old 90 s self-test grace.
+     */
+    const val ENGINE_DATAPLANE_WAIT_MS = 25_000L
+
+    /** Never less than this, even when the session budget is nearly spent. */
+    const val DATAPLANE_MIN_WAIT_MS = 5_000L
+
+    /** One CONNECT probe of the data-plane check. */
+    const val DATAPLANE_PROBE_TIMEOUT_MS = 3_000
+
+    /** Gap between two data-plane probes. */
+    const val DATAPLANE_RETRY_MS = 500L
+
+    /**
+     * Warm-up of a DNS front / Smart DNS front before its port is published as
+     * the chain entry. Bounded and non-fatal: it only moves the first lookup's
+     * cost from the user's first request to the connect.
+     */
+    const val FRONT_WARMUP_MS = 6_000L
+
     // ------------------------------------------------------------ chain hops
+
+    /** Fixed allowance in every chain budget for the fronts to bind and warm. */
+    const val CHAIN_SLACK_MS = 15_000L
 
     /**
      * How long Psiphon's local SOCKS5 listener gets to appear. Short on
@@ -95,61 +148,73 @@ internal object VpnTunables {
     /**
      * How long Psiphon gets to establish an actual tunnel. Generous, because
      * this is server discovery over a filtered network - the same class of
-     * work the engine's own endpoint scan does, and the engine is allowed up
-     * to 300 s for it.
+     * work the engine's own endpoint scan does.
      */
     const val PSIPHON_READY_WAIT_MS = 180_000L
+
+    /**
+     * The FIRST pass of a hand-picked Psiphon region, when an automatic-exit
+     * retry is still planned behind it. Shorter than [PSIPHON_READY_WAIT_MS] so
+     * that retry fits inside the same chain deadline instead of being a second
+     * full budget.
+     */
+    const val PSIPHON_REGION_ATTEMPT_WAIT_MS = 90_000L
+
+    /** Psiphon's automatic-exit retry is only started with at least this left. */
+    const val PSIPHON_RETRY_MIN_MS = 45_000L
 
     /** Same reasoning as [PSIPHON_PORT_WAIT_MS]: tor binds its ports at once. */
     const val TOR_PORT_WAIT_MS = 20_000L
 
     /**
-     * How long tor gets to reach `Bootstrapped 100%`.
+     * How long tor gets to reach `Bootstrapped 100%` on the LAST rung of the
+     * bridge ladder, the one with no fallback behind it - bounded by whatever
+     * is left of [TOR_CHAIN_BUDGET_MS].
      *
      * A first bootstrap on a hostile mobile network regularly takes over two
      * minutes: tor has to fetch a consensus and build a circuit, and when it is
-     * chained it does all of that THROUGH another tunnel's added latency. Four
-     * minutes is the difference between "Tor is slow here" and a false "Tor is
-     * blocked here".
-     *
-     * This is the budget for the LAST rung of the bridge ladder, i.e. the one
-     * that has no fallback left behind it.
+     * chained it does all of that THROUGH another tunnel's added latency.
      */
     const val TOR_BOOTSTRAP_WAIT_MS = 240_000L
 
     /**
      * How long a rung of the bridge ladder that still HAS a fallback gets.
      *
-     * Deliberately much shorter than [TOR_BOOTSTRAP_WAIT_MS], because the two
-     * answer different questions. "Is Tor reachable from this network at all"
-     * deserves four patient minutes. "Is THIS transport getting through" does
-     * not: a transport that is going to work is normally past 50% inside a
-     * minute, and one that is being filtered sits at 5% forever. Spending the
-     * full window on each rung would turn a three-rung ladder into twelve
-     * minutes of spinner, which is a worse outcome than not falling back.
+     * "Is THIS transport getting through" does not deserve four minutes: a
+     * transport that is going to work is normally past 50% inside a minute,
+     * and one that is being filtered sits at 5% forever.
      */
     const val TOR_BRIDGE_ATTEMPT_WAIT_MS = 90_000L
 
     /**
-     * Total budget for a chain-only attempt (no Aether hop, so no endpoint
-     * scan): the sum of what each core is allowed, plus a little slack for the
-     * front to bind and the self-test to run.
-     *
-     * The Tor term is the WORST CASE of a full bridge ladder
-     * ([BridgePlan.MAX_ATTEMPTS] rungs), not of one attempt. It is a ceiling
-     * that only a session in which every transport failed ever reaches; each
-     * individual wait is bounded by the constants above.
+     * The WHOLE Tor hop, every rung of the bridge ladder included. Before
+     * perf/fast-connect each rung brought its own full budget and nothing
+     * bounded their sum.
+     */
+    const val TOR_CHAIN_BUDGET_MS = 300_000L
+
+    /** A later Tor rung is only launched with at least this much left. */
+    const val TOR_RUNG_MIN_MS = 30_000L
+
+    /**
+     * Total budget for the overlay hops of [mode]: what ChainStack's deadline
+     * is set to, and therefore a REAL ceiling now, not the sum of worst cases
+     * it used to be (that number was passed on as an engine timeout and never
+     * bounded the chain at all).
      */
     fun chainBudgetMs(mode: ChainMode): Long {
-        var budget = 15_000L
+        var budget = CHAIN_SLACK_MS
         if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
-        if (mode.usesTor) {
-            budget += TOR_PORT_WAIT_MS + TOR_BOOTSTRAP_WAIT_MS
-            budget += (BridgePlan.MAX_ATTEMPTS - 1) *
-                (TOR_PORT_WAIT_MS + TOR_BRIDGE_ATTEMPT_WAIT_MS)
-        }
+        if (mode.usesTor) budget += TOR_CHAIN_BUDGET_MS
         return budget
     }
+
+    /**
+     * What a session with an Aether hop adds to its own ladder budget for the
+     * Psiphon / Tor hops on top of it; zero for an Aether-only chain.
+     */
+    fun overlayBudgetMs(mode: ChainMode): Long =
+        if (mode.usesPsiphon || mode.usesTor) chainBudgetMs(mode) else 0L
 }
 
 /**

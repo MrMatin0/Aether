@@ -1,6 +1,7 @@
 package studio.cluvex.aether.vpn.session
 
 import android.content.Context
+import android.os.SystemClock
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.CoreAvailability
@@ -29,6 +30,9 @@ private const val PSIPHON_PORT_RELEASE_MS = 1_500L
 /** Same, for a tor being replaced between two rungs of the bridge ladder. */
 private const val TOR_STOP_WAIT_MS = 5_000L
 private const val TOR_PORT_RELEASE_MS = 1_500L
+
+/** Lower bound for the entry warm-up, even with almost no chain budget left. */
+private const val WARMUP_FLOOR_MS = 1_000L
 
 /** Why a chain could not be brought up. Mapped to a user-facing string by the service. */
 internal enum class ChainFailure {
@@ -81,6 +85,13 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
  * both bind their listener seconds to minutes before they can carry traffic
  * (see [PsiphonCore.awaitReady] and [TorCore.awaitReady]).
+ *
+ * ONE DEADLINE (perf/fast-connect). [start] runs under a single deadline, and
+ * every wait inside it - port, Psiphon readiness, every Tor rung - is
+ * min(its own budget, what is left). The budget the service computed for a
+ * chain used to be handed to the ENGINE port wait only, which a chain without
+ * an Aether hop never even performs, so Psiphon's region retry and the Tor
+ * bridge ladder could each spend several full budgets back to back.
  */
 internal class ChainStack(
     private val context: Context,
@@ -126,11 +137,15 @@ internal class ChainStack(
      * The Aether hop, when the mode uses one, must already be up and listening
      * on [TunnelConfig.ENGINE_SOCKS_PORT] before this is called.
      *
+     * [deadline] is on the [SystemClock.elapsedRealtime] clock; null means
+     * "now + [VpnTunables.chainBudgetMs]" (the supervisor's restarts).
+     *
      * @throws ChainException with the specific reason, so the user is told which
      *   core failed rather than "could not connect".
      */
-    suspend fun start(profile: ConnectionProfile): Int {
+    suspend fun start(profile: ConnectionProfile, deadline: Long? = null): Int {
         val mode = profile.chain
+        val until = deadline ?: (SystemClock.elapsedRealtime() + VpnTunables.chainBudgetMs(mode))
         ChainRuntime.begin(mode)
         if (mode.usesAether) ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
 
@@ -138,10 +153,10 @@ internal class ChainStack(
         var upstream: Int? = if (mode.usesAether) TunnelConfig.ENGINE_SOCKS_PORT else null
 
         if (mode.usesPsiphon) {
-            upstream = startPsiphon(profile, upstream)
+            upstream = startPsiphon(profile, upstream, until)
         }
         if (mode.usesTor) {
-            upstream = startTor(profile, upstream)
+            upstream = startTor(profile, upstream, until)
         }
 
         val entry = when (mode.entryHop) {
@@ -156,6 +171,14 @@ internal class ChainStack(
             }
             Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
         }
+
+        // READINESS BEFORE PUBLISHING (perf/fast-connect): a front's port is
+        // open the instant it binds, long before its resolver has chosen a
+        // path or the hop behind it has built a first circuit. One bounded
+        // DNS query through it moves that warm-up from the user's first
+        // request to here. The engine's own port was already proven by the
+        // service's data-plane check.
+        if (entry != TunnelConfig.ENGINE_SOCKS_PORT) warmEntry(entry, until)
 
         ChainRuntime.publish(mode, entry)
         DiagnosticsLog.i(TAG, "Chain ready: ${mode.pathLabel()} (entry 127.0.0.1:$entry)")
@@ -210,11 +233,16 @@ internal class ChainStack(
      * ONE retry with the filter removed and a fresh datastore. Nothing is retried
      * when the user already chose Automatic - there is no filter left to relax.
      *
+     * BUDGET: both passes share [deadline]. The pinned-region pass gets
+     * [VpnTunables.PSIPHON_REGION_ATTEMPT_WAIT_MS] so the retry still fits, and
+     * the retry is skipped when less than [VpnTunables.PSIPHON_RETRY_MIN_MS] is
+     * left - it used to be a second full 180 s budget after the first.
+     *
      * The retry uses a NEW core rather than restarting the old one: the previous
      * attempt's datastore is wiped between passes, and a child that is still on
      * its way out must not be the thing that owns it.
      */
-    private suspend fun startPsiphon(profile: ConnectionProfile, upstream: Int?): Int {
+    private suspend fun startPsiphon(profile: ConnectionProfile, upstream: Int?, deadline: Long): Int {
         var core = PsiphonCore(context, filesDir)
         if (!core.isAvailable) {
             ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED, "not bundled")
@@ -231,6 +259,15 @@ internal class ChainStack(
 
         for ((index, egress) in attempts.withIndex()) {
             if (index > 0) {
+                val left = remainingMs(deadline)
+                if (left < VpnTunables.PSIPHON_RETRY_MIN_MS) {
+                    DiagnosticsLog.w(
+                        TAG,
+                        "Psiphon found no usable server in ${PsiphonRegions.name(wanted)}, and only " +
+                            "${left / 1000}s of the chain budget is left - not retrying with an automatic exit.",
+                    )
+                    break
+                }
                 DiagnosticsLog.w(
                     TAG,
                     "Psiphon found no usable server in ${PsiphonRegions.name(wanted)} - " +
@@ -256,9 +293,15 @@ internal class ChainStack(
             val listening = PortProbe.awaitOpen(
                 TunnelConfig.SOCKS_HOST,
                 TunnelConfig.PSIPHON_SOCKS_PORT,
-                VpnTunables.PSIPHON_PORT_WAIT_MS,
+                minOf(VpnTunables.PSIPHON_PORT_WAIT_MS, remainingMs(deadline)),
             ) { attempt.isAlive }
-            if (listening && attempt.awaitReady(VpnTunables.PSIPHON_READY_WAIT_MS)) {
+            val ownBudget = if (index < attempts.lastIndex) {
+                VpnTunables.PSIPHON_REGION_ATTEMPT_WAIT_MS
+            } else {
+                VpnTunables.PSIPHON_READY_WAIT_MS
+            }
+            val readyBudget = minOf(ownBudget, remainingMs(deadline))
+            if (listening && readyBudget > 0 && attempt.awaitReady(readyBudget)) {
                 ChainRuntime.update(
                     Hop.PSIPHON,
                     ChainRuntime.HopState.READY,
@@ -287,12 +330,13 @@ internal class ChainStack(
      * outgoing process must be reaped before its replacement binds the same local
      * ports.
      *
-     * BUDGETS: only the LAST rung gets the full bootstrap window. An earlier one
-     * gets [VpnTunables.TOR_BRIDGE_ATTEMPT_WAIT_MS], which is long enough to tell
-     * a working transport from a filtered one and short enough that three rungs
-     * are not a ten-minute spinner.
+     * BUDGETS: every rung shares [deadline] (at most
+     * [VpnTunables.TOR_CHAIN_BUDGET_MS] for the whole ladder). An earlier rung
+     * gets at most [VpnTunables.TOR_BRIDGE_ATTEMPT_WAIT_MS], the last one at
+     * most [VpnTunables.TOR_BOOTSTRAP_WAIT_MS], and a rung that cannot get
+     * [VpnTunables.TOR_RUNG_MIN_MS] is not started at all.
      */
-    private suspend fun startTor(profile: ConnectionProfile, upstream: Int?): Int {
+    private suspend fun startTor(profile: ConnectionProfile, upstream: Int?, deadline: Long): Int {
         var core = TorCore(context, filesDir)
         if (!core.isAvailable) {
             ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.FAILED, "not bundled")
@@ -303,6 +347,15 @@ internal class ChainStack(
         val ladder = core.attempts(profile)
         for ((index, attempt) in ladder.withIndex()) {
             if (index > 0) {
+                val left = remainingMs(deadline)
+                if (left < VpnTunables.TOR_RUNG_MIN_MS) {
+                    DiagnosticsLog.w(
+                        TAG,
+                        "Tor did not bootstrap with ${ladder[index - 1].label}, and only ${left / 1000}s " +
+                            "of the chain budget is left - not trying ${attempt.label}.",
+                    )
+                    break
+                }
                 DiagnosticsLog.w(
                     TAG,
                     "Tor did not bootstrap with ${ladder[index - 1].label} - " +
@@ -323,14 +376,15 @@ internal class ChainStack(
             val listening = PortProbe.awaitOpen(
                 TunnelConfig.SOCKS_HOST,
                 TunnelConfig.TOR_SOCKS_PORT,
-                VpnTunables.TOR_PORT_WAIT_MS,
+                minOf(VpnTunables.TOR_PORT_WAIT_MS, remainingMs(deadline)),
             ) { rung.isAlive }
-            val budget = if (index == ladder.lastIndex) {
+            val ownBudget = if (index == ladder.lastIndex) {
                 VpnTunables.TOR_BOOTSTRAP_WAIT_MS
             } else {
                 VpnTunables.TOR_BRIDGE_ATTEMPT_WAIT_MS
             }
-            if (listening && rung.awaitReady(budget)) {
+            val budget = minOf(ownBudget, remainingMs(deadline))
+            if (listening && budget > 0 && rung.awaitReady(budget)) {
                 ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.READY, "100%")
                 return TunnelConfig.TOR_SOCKS_PORT
             }
@@ -391,4 +445,21 @@ internal class ChainStack(
         synchronized(lock) { smartFront = smart }
         return TunnelConfig.SMART_DNS_FRONT_PORT
     }
+
+    /**
+     * One bounded DNS query through the front on [entry], to the resolver the
+     * TUN will advertise for it. Non-fatal by design; see [Readiness.warmDns].
+     */
+    private suspend fun warmEntry(entry: Int, deadline: Long) {
+        val resolver = if (entry == TunnelConfig.SMART_DNS_FRONT_PORT) {
+            TunnelConfig.SMART_DNS_RESOLVER
+        } else {
+            TunnelConfig.DNS_SERVERS.first()
+        }
+        val budget = remainingMs(deadline).coerceIn(WARMUP_FLOOR_MS, VpnTunables.FRONT_WARMUP_MS)
+        Readiness.warmDns(TunnelConfig.SOCKS_HOST, entry, resolver, budget)
+    }
+
+    private fun remainingMs(deadline: Long): Long =
+        (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
 }
