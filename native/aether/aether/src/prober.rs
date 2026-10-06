@@ -103,6 +103,259 @@ pub const MASQUE_SEEDS_V6: &[&str] = &[
     "2606:4700:d0::a29f:c001",
 ];
 
+// ------------------------------------------------------------ user ranges
+//
+// Aether Mobile patch (perf/fast-connect): MANUAL RANGES ARE HONOURED AGAIN.
+// The app hands the user's "Manual range" (and Smart Auto's probe-narrowed
+// rungs) to the engine as AETHER_MASQUE_CIDRS / AETHER_WG_CIDRS /
+// AETHER_SCAN_CIDRS. The patch that read them (prober/scan.rs) was dropped by
+// the core 2.0.0 sync, so ever since then the setting promised a faster,
+// narrower scan while the candidate builders swept the hard-coded ranges
+// anyway. When any usable range is set, the sweep is now ONLY those ranges.
+
+/// Most hosts taken from one user IPv4 range per sweep. A /24 is swept whole
+/// (in random order); a wider range is sampled.
+pub const USER_RANGE_MAX_HOSTS_V4: usize = 1024;
+
+/// Hosts sampled from one user IPv6 range per sweep.
+pub const USER_RANGE_MAX_HOSTS_V6: usize = 256;
+
+/// Address ranges the user asked the scanner to stay inside, normalised to
+/// `base/prefix` with the host bits cleared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserRanges {
+    pub v4: Vec<String>,
+    pub v6: Vec<String>,
+}
+
+impl UserRanges {
+    pub fn is_empty(&self) -> bool {
+        self.v4.is_empty() && self.v6.is_empty()
+    }
+
+    pub fn describe(&self) -> String {
+        self.v4
+            .iter()
+            .chain(self.v6.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The user's ranges for one transport: `primary` (AETHER_MASQUE_CIDRS or
+/// AETHER_WG_CIDRS) first, then the shared AETHER_SCAN_CIDRS. Empty when
+/// neither holds a usable range, which means "the built-in ranges".
+pub fn user_ranges_from_env(primary: &str) -> UserRanges {
+    for key in [primary, "AETHER_SCAN_CIDRS"] {
+        let Ok(raw) = std::env::var(key) else {
+            continue;
+        };
+        let parsed = parse_user_ranges(&raw);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+        if !raw.trim().is_empty() {
+            log::warn!(
+                "[-] {key}='{}' holds no usable range; scanning the built-in ranges",
+                raw.trim()
+            );
+        }
+    }
+    UserRanges::default()
+}
+
+/// Parses a list separated by commas, semicolons or whitespace. Accepted:
+/// `188.114.96.0/24`, `8.6.112.x` (or `*`; trailing octets only), a single
+/// address such as `162.159.192.7`, and IPv6 CIDRs or addresses. Anything else
+/// is logged and skipped.
+pub fn parse_user_ranges(raw: &str) -> UserRanges {
+    let mut out = UserRanges::default();
+    for token in raw.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some(cidr) = normalize_v4_range(token) {
+            if !out.v4.contains(&cidr) {
+                out.v4.push(cidr);
+            }
+        } else if let Some(cidr) = normalize_v6_range(token) {
+            if !out.v6.contains(&cidr) {
+                out.v6.push(cidr);
+            }
+        } else {
+            log::warn!("[-] ignoring unreadable scan range '{token}'");
+        }
+    }
+    out
+}
+
+fn normalize_v4_range(token: &str) -> Option<String> {
+    let (addr, prefix) = match token.split_once('/') {
+        Some((a, p)) => (a, Some(p.trim().parse::<u8>().ok().filter(|p| *p <= 32)?)),
+        None => (token, None),
+    };
+    let parts: Vec<&str> = addr.trim().split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    let mut wild_from: Option<usize> = None;
+    for (i, part) in parts.iter().enumerate() {
+        let part = part.trim();
+        if part.eq_ignore_ascii_case("x") || part == "*" {
+            if wild_from.is_none() {
+                wild_from = Some(i);
+            }
+            continue;
+        }
+        if wild_from.is_some() {
+            // A fixed octet after a wildcard is not a range.
+            return None;
+        }
+        octets[i] = part.parse::<u8>().ok()?;
+    }
+    let bits: u8 = match (wild_from, prefix) {
+        (Some(_), Some(_)) => return None,
+        (Some(i), None) => (i as u8) * 8,
+        (None, Some(p)) => p,
+        (None, None) => 32,
+    };
+    if bits == 0 {
+        // "Everything" is not a range anybody means to scan.
+        return None;
+    }
+    let base = u32::from(Ipv4Addr::from(octets));
+    let mask = if bits >= 32 {
+        u32::MAX
+    } else {
+        u32::MAX << (32 - u32::from(bits))
+    };
+    Some(format!("{}/{}", Ipv4Addr::from(base & mask), bits))
+}
+
+fn normalize_v6_range(token: &str) -> Option<String> {
+    let (addr, prefix) = match token.split_once('/') {
+        Some((a, p)) => (
+            a,
+            p.trim().parse::<u8>().ok().filter(|p| *p > 0 && *p <= 128)?,
+        ),
+        None => (token, 128),
+    };
+    let addr = addr.trim().trim_start_matches('[').trim_end_matches(']');
+    let base = u128::from(addr.parse::<Ipv6Addr>().ok()?);
+    let mask = if prefix >= 128 {
+        u128::MAX
+    } else {
+        u128::MAX << (128 - u32::from(prefix))
+    };
+    Some(format!("{}/{}", Ipv6Addr::from(base & mask), prefix))
+}
+
+/// Hosts to probe in one user IPv4 range, in random order: every host of a
+/// range up to [`USER_RANGE_MAX_HOSTS_V4`], a sample of a wider one.
+pub fn user_range_hosts_v4(cidr: &str) -> Vec<Ipv4Addr> {
+    let Some((base, prefix)) = parse_cidr_v4(cidr) else {
+        return Vec::new();
+    };
+    match 32u32.saturating_sub(u32::from(prefix)) {
+        0 => vec![Ipv4Addr::from(base)],
+        1 => vec![Ipv4Addr::from(base), Ipv4Addr::from(base.wrapping_add(1))],
+        _ => sample_cidr_v4(cidr, USER_RANGE_MAX_HOSTS_V4),
+    }
+}
+
+/// Up to `n` distinct random hosts inside one user IPv6 range.
+pub fn user_range_hosts_v6(cidr: &str, n: usize) -> Vec<Ipv6Addr> {
+    let Some((base, prefix)) = parse_cidr_v6(cidr) else {
+        return Vec::new();
+    };
+    let host_bits = 128u32.saturating_sub(u32::from(prefix));
+    if host_bits == 0 {
+        return vec![Ipv6Addr::from(base)];
+    }
+    let host_mask: u128 = if host_bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << host_bits) - 1
+    };
+    let cap = if host_bits < 16 {
+        n.min(1usize << host_bits)
+    } else {
+        n
+    };
+    let mut rng = rand::rng();
+    let mut seen: HashSet<u128> = HashSet::with_capacity(cap);
+    let mut out = Vec::with_capacity(cap);
+    let mut tries = 0usize;
+    while out.len() < cap && tries < cap.saturating_mul(8) {
+        tries += 1;
+        let host = rng.random::<u128>() & host_mask;
+        if seen.insert(host) {
+            out.push(Ipv6Addr::from((base & !host_mask) | host));
+        }
+    }
+    out
+}
+
+/// The MASQUE sweep over the user's ranges only: every host on the primary
+/// port first (ranges interleaved), then the other ports.
+pub(crate) fn build_user_candidates(
+    user: &UserRanges,
+    ports: &[u16],
+    ip: IpScan,
+) -> Vec<(IpAddr, u16)> {
+    let primary = ports.first().copied().unwrap_or(443);
+    let mut hosts: Vec<IpAddr> = Vec::new();
+
+    if ip.want_v4() {
+        let per: Vec<Vec<Ipv4Addr>> = user.v4.iter().map(|c| user_range_hosts_v4(c)).collect();
+        let max_len = per.iter().map(|v| v.len()).max().unwrap_or(0);
+        for i in 0..max_len {
+            for range in &per {
+                if let Some(a) = range.get(i) {
+                    hosts.push(IpAddr::V4(*a));
+                }
+            }
+        }
+    }
+    if ip.want_v6() {
+        let per: Vec<Vec<Ipv6Addr>> = user
+            .v6
+            .iter()
+            .map(|c| user_range_hosts_v6(c, USER_RANGE_MAX_HOSTS_V6))
+            .collect();
+        let max_len = per.iter().map(|v| v.len()).max().unwrap_or(0);
+        for i in 0..max_len {
+            for range in &per {
+                if let Some(a) = range.get(i) {
+                    hosts.push(IpAddr::V6(*a));
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<(IpAddr, u16)> = Vec::new();
+    let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
+    for host in &hosts {
+        if seen.insert((*host, primary)) {
+            out.push((*host, primary));
+        }
+    }
+    for &port in ports {
+        if port == primary {
+            continue;
+        }
+        for host in &hosts {
+            if seen.insert((*host, port)) {
+                out.push((*host, port));
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ProbeResult {
     pub ip: IpAddr,
@@ -173,6 +426,12 @@ impl ScanMode {
         }
     }
 
+    /// Aether Mobile patch (perf/fast-connect): the quiet windows of the modes
+    /// with a target are a few seconds now. Balanced waited 20 s of silence
+    /// after EVERY new gateway (up to six), so the first healthy gateway could
+    /// not be used for 20 s or more, and on a network where one edge answers
+    /// that was pure wait. A better gateway that answers in the same burst is
+    /// still preferred.
     fn strategy(&self) -> Strategy {
         match self {
             ScanMode::Turbo => Strategy {
@@ -189,7 +448,7 @@ impl ScanMode {
                 concurrency: 16,
                 per_probe_timeout: Duration::from_millis(6000),
                 overall_deadline: Duration::from_secs(120),
-                quiet_after_first: Duration::from_secs(20),
+                quiet_after_first: Duration::from_secs(3),
                 target_successes: 6,
                 early_exit_first: false,
                 full_subnet: false,
@@ -209,7 +468,7 @@ impl ScanMode {
                 concurrency: 16,
                 per_probe_timeout: Duration::from_millis(5000),
                 overall_deadline: Duration::from_secs(60),
-                quiet_after_first: Duration::from_secs(8),
+                quiet_after_first: Duration::from_secs(3),
                 target_successes: 4,
                 early_exit_first: false,
                 full_subnet: false,
@@ -219,7 +478,7 @@ impl ScanMode {
                 concurrency: 4,
                 per_probe_timeout: Duration::from_millis(15000),
                 overall_deadline: Duration::from_secs(180),
-                quiet_after_first: Duration::from_secs(15),
+                quiet_after_first: Duration::from_secs(5),
                 target_successes: 3,
                 early_exit_first: false,
                 full_subnet: false,
@@ -255,6 +514,7 @@ struct Strategy {
 /// gateways recently" log line describe. From the target on nothing changes:
 /// one final window, not stretched by later answers. Turbo (first answer wins)
 /// and thorough (no target, sweep everything) behave exactly as before.
+/// (perf/fast-connect then shortened the windows themselves; see strategy().)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterSuccess {
     /// Target reached and no quiet window configured: pick the best now.
@@ -584,6 +844,25 @@ async fn verify_one(
 }
 
 fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u16)> {
+    // Aether Mobile patch (perf/fast-connect): the user's own ranges, when
+    // set, replace the built-in sweep entirely (see "user ranges" above).
+    let user = user_ranges_from_env("AETHER_MASQUE_CIDRS");
+    if !user.is_empty() {
+        let out = build_user_candidates(&user, ports, ip);
+        log::info!(
+            "[*] masque scan restricted to your ranges: {} ({} candidates)",
+            user.describe(),
+            out.len()
+        );
+        if out.is_empty() {
+            log::warn!(
+                "[-] none of your ranges match the {} scan; nothing to probe",
+                ip.label()
+            );
+        }
+        return out;
+    }
+
     let primary = ports.first().copied().unwrap_or(443);
     let mut out: Vec<(IpAddr, u16)> = Vec::new();
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
@@ -893,6 +1172,64 @@ mod tests {
             let st = mode.strategy();
             assert!(st.quiet_after_first < st.overall_deadline, "{}", mode.label());
         }
+    }
+
+    /// perf/fast-connect: the first healthy gateway is used within seconds.
+    #[test]
+    fn balanced_and_verified_settle_within_seconds_of_a_gateway() {
+        for mode in [ScanMode::Balanced, ScanMode::Verified] {
+            assert!(
+                mode.strategy().quiet_after_first <= Duration::from_secs(5),
+                "{}",
+                mode.label()
+            );
+        }
+    }
+
+    #[test]
+    fn user_ranges_accept_cidrs_wildcards_and_single_addresses() {
+        let parsed = parse_user_ranges(
+            "188.114.96.5/24, 8.6.112.x;162.159.192.7\n10.1.x.x  2606:4700:d0::/48 junk 1.2.3.4/40 x.x.x.x 8.6.x.5",
+        );
+        assert_eq!(
+            parsed.v4,
+            vec!["188.114.96.0/24", "8.6.112.0/24", "162.159.192.7/32", "10.1.0.0/16"]
+        );
+        assert_eq!(parsed.v6, vec!["2606:4700:d0::/48"]);
+        assert!(parse_user_ranges("  ,; ").is_empty());
+    }
+
+    #[test]
+    fn user_ranges_replace_the_built_in_sweep() {
+        let user = parse_user_ranges("188.114.97.0/30, 162.159.192.9");
+        let candidates = build_user_candidates(&user, &[443, 500], IpScan::V4);
+        assert_eq!(candidates.len(), 6, "{candidates:?}");
+        assert!(
+            candidates[..3].iter().all(|(_, port)| *port == 443),
+            "every address is tried on the primary port first"
+        );
+        assert!(candidates.iter().all(|(ip, _)| match ip {
+            IpAddr::V4(v4) => {
+                in_cidr_v4(*v4, "188.114.97.0/30") || *v4 == Ipv4Addr::new(162, 159, 192, 9)
+            }
+            IpAddr::V6(_) => false,
+        }));
+        assert!(
+            candidates.iter().all(|(ip, _)| {
+                let seed = ip.to_string();
+                !MASQUE_SEEDS.contains(&seed.as_str())
+            }),
+            "no built-in seed may be probed when the user named ranges"
+        );
+    }
+
+    #[test]
+    fn user_ranges_of_the_other_family_yield_no_candidates() {
+        let user = parse_user_ranges("2606:4700:d0::/120");
+        assert!(build_user_candidates(&user, MASQUE_PORTS, IpScan::V4).is_empty());
+        let v6 = build_user_candidates(&user, &[443], IpScan::V6);
+        assert!(!v6.is_empty());
+        assert!(v6.len() <= USER_RANGE_MAX_HOSTS_V6);
     }
 
     #[test]
