@@ -357,8 +357,9 @@ async fn fallback_call(
     jwt: Option<&str>,
 ) -> Result<AccountData> {
     log::info!(
-        "[*] {label} retrying over a camouflaged route: random cloudflare edge address, \
-         no dns lookup, split client hello, alternate tls fingerprints"
+        "[*] {label} over the camouflaged route: ech first when the core has a key, then a \
+         random cloudflare edge address, no dns lookup, split client hello, alternate tls \
+         fingerprints"
     );
 
     let request = apifront::ApiRequest {
@@ -394,6 +395,99 @@ async fn fallback_call(
         return Err(AetherError::IdentityRefused(described));
     }
     Err(AetherError::Api(described))
+}
+
+/// What the camouflaged route needs to repeat a call: the request line, the
+/// body, and the credentials that go with it.
+struct FrontCall<'a> {
+    method: &'a str,
+    path: &'a str,
+    body: Option<Vec<u8>>,
+    bearer: Option<&'a str>,
+    jwt: Option<&'a str>,
+}
+
+/// One call to the account api, over both routes (fix/ech-from-core).
+///
+/// Without ECH the direct route goes first and the camouflaged one follows, as
+/// before. With --ech (AETHER_ECH) the camouflaged route goes first, so its ECH
+/// handshake, with the key from the core (dns.rs), is the first thing the
+/// network sees, and the direct route, whose ClientHello names the api in
+/// plaintext, is only the last resort. That is what the ECH switch does on
+/// WireGuard and gool, which have no ClientHello of their own, and the first
+/// part of what it does on MASQUE.
+///
+/// A refused identity (401, 404, 410) is the api's own answer and final on
+/// either route: the other route reaches the same api and would only get the
+/// same answer after a long sweep. It also stays an IdentityRefused, so the
+/// caller replaces the identity instead of giving up.
+async fn call_api<F>(label: &str, front: FrontCall<'_>, build: F) -> Result<AccountData>
+where
+    F: Fn() -> Result<reqwest::RequestBuilder>,
+{
+    let FrontCall {
+        method,
+        path,
+        body,
+        bearer,
+        jwt,
+    } = front;
+
+    if crate::dns::ech_requested() {
+        log::info!(
+            "[*] {label}: ech was asked for, so the camouflaged route and its ech handshake go \
+             first and the plaintext direct route only last"
+        );
+        let camouflaged = match fallback_call(label, method, path, body, bearer, jwt).await {
+            Ok(account) => return Ok(account),
+            Err(error @ AetherError::IdentityRefused(_)) => return Err(error),
+            Err(error) => error,
+        };
+        log::warn!(
+            "[!] {label} failed over the camouflaged route: {camouflaged}; trying the direct \
+             route as a last resort"
+        );
+        return match send_with_retry(label, build).await {
+            Ok(account) => Ok(account),
+            Err(direct) => Err(combine(
+                label,
+                ("camouflaged route", camouflaged),
+                ("direct route", direct),
+            )),
+        };
+    }
+
+    let primary = match send_with_retry(label, build).await {
+        Ok(account) => return Ok(account),
+        Err(error @ AetherError::IdentityRefused(_)) => return Err(error),
+        Err(error) => error,
+    };
+    log::warn!("[!] {label} failed over the direct route: {primary}");
+    match fallback_call(label, method, path, body, bearer, jwt).await {
+        Ok(account) => Ok(account),
+        Err(secondary) => Err(combine(
+            label,
+            ("direct route", primary),
+            ("camouflaged route", secondary),
+        )),
+    }
+}
+
+/// Both routes failed. A refused identity wins over everything else, because
+/// it is the one failure the caller acts on (lib.rs registers a fresh identity
+/// for it); the rest is reported together.
+fn combine(label: &str, first: (&str, AetherError), second: (&str, AetherError)) -> AetherError {
+    let (first_route, first) = first;
+    let (second_route, second) = second;
+    if matches!(first, AetherError::IdentityRefused(_)) {
+        return first;
+    }
+    if matches!(second, AetherError::IdentityRefused(_)) {
+        return second;
+    }
+    AetherError::Api(format!(
+        "{label}: {first_route} -> {first}; {second_route} -> {second}"
+    ))
 }
 
 fn describe_status(status: u16, body: &str) -> String {
@@ -487,7 +581,7 @@ where
                 if cut {
                     log::warn!(
                         "[!] {label}: the direct route was cut before any http answer; \
-                         skipping the remaining retries and moving to the camouflaged route"
+                         skipping its remaining retries"
                     );
                     return Err(last_error);
                 }
@@ -597,7 +691,14 @@ pub async fn register(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    let direct = send_with_retry("registration", || {
+    let front = FrontCall {
+        method: "POST",
+        path: &path,
+        body: Some(encoded),
+        bearer: None,
+        jwt,
+    };
+    let account = call_api("registration", front, || {
         let mut req = http_client()?
             .post(&url)
             .headers(base_headers())
@@ -607,22 +708,7 @@ pub async fn register(
         }
         Ok(req)
     })
-    .await;
-
-    let account = match direct {
-        Ok(account) => account,
-        Err(primary) => {
-            log::warn!("[!] registration failed over the direct route: {primary}");
-            match fallback_call("registration", "POST", &path, Some(encoded), None, jwt).await {
-                Ok(account) => account,
-                Err(secondary) => {
-                    return Err(AetherError::Api(format!(
-                        "registration: direct route -> {primary}; camouflaged route -> {secondary}"
-                    )));
-                }
-            }
-        }
-    };
+    .await?;
 
     Ok((account, wg_private))
 }
@@ -645,36 +731,21 @@ pub async fn enroll_key(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    let direct = send_with_retry("key enrollment", || {
+    let front = FrontCall {
+        method: "PATCH",
+        path: &path,
+        body: Some(encoded),
+        bearer: Some(token),
+        jwt: None,
+    };
+    call_api("key enrollment", front, || {
         Ok(http_client()?
             .patch(&url)
             .headers(base_headers())
             .bearer_auth(token)
             .json(&body))
     })
-    .await;
-
-    match direct {
-        Ok(account) => Ok(account),
-        Err(primary) => {
-            log::warn!("[!] key enrollment failed over the direct route: {primary}");
-            match fallback_call(
-                "key enrollment",
-                "PATCH",
-                &path,
-                Some(encoded),
-                Some(token),
-                None,
-            )
-            .await
-            {
-                Ok(account) => Ok(account),
-                Err(secondary) => Err(AetherError::Api(format!(
-                    "key enrollment: direct route -> {primary}; camouflaged route -> {secondary}"
-                ))),
-            }
-        }
-    }
+    .await
 }
 
 fn extract_wg_peer(reg: &AccountData) -> Result<[u8; 32]> {
@@ -705,39 +776,21 @@ pub async fn register_with_team(
     let encoded =
         serde_json::to_vec(&body).map_err(|e| AetherError::Api(format!("encode: {e}")))?;
 
-    let direct = send_with_retry("team registration", || {
+    let front = FrontCall {
+        method: "POST",
+        path: &path,
+        body: Some(encoded),
+        bearer: None,
+        jwt: Some(token),
+    };
+    let account = call_api("team registration", front, || {
         Ok(http_client()?
             .post(&url)
             .headers(base_headers())
             .header("CF-Access-Jwt-Assertion", token)
             .json(&body))
     })
-    .await;
-
-    let account = match direct {
-        Ok(account) => account,
-        Err(primary) => {
-            log::warn!("[!] team registration failed over the direct route: {primary}");
-            match fallback_call(
-                "team registration",
-                "POST",
-                &path,
-                Some(encoded),
-                None,
-                Some(token),
-            )
-            .await
-            {
-                Ok(account) => account,
-                Err(secondary) => {
-                    return Err(AetherError::Api(format!(
-                        "team registration: direct route -> {primary}; \
-                         camouflaged route -> {secondary}"
-                    )));
-                }
-            }
-        }
-    };
+    .await?;
 
     Ok((account, wg_private))
 }
@@ -761,21 +814,20 @@ pub async fn fetch_device(device_id: &str, token: &str) -> Result<AccountData> {
     let path = format!("/{}/reg/{}", consts::API_VERSION, device_id);
     let url = format!("{}{}", consts::API_URL, path);
 
-    let direct = send_with_retry("device refresh", || {
+    let front = FrontCall {
+        method: "GET",
+        path: &path,
+        body: None,
+        bearer: Some(token),
+        jwt: None,
+    };
+    call_api("device refresh", front, || {
         Ok(http_client()?
             .get(&url)
             .headers(base_headers())
             .bearer_auth(token))
     })
-    .await;
-
-    match direct {
-        Ok(account) => Ok(account),
-        Err(primary) => {
-            log::debug!("[!] device refresh failed over the direct route: {primary}");
-            fallback_call("device refresh", "GET", &path, None, Some(token), None).await
-        }
-    }
+    .await
 }
 
 pub fn endpoint_from(reg: &AccountData) -> String {
@@ -1127,6 +1179,35 @@ mod tests {
         assert!(worth_retrying(reqwest::StatusCode::BAD_GATEWAY));
         assert!(!worth_retrying(reqwest::StatusCode::FORBIDDEN));
         assert!(!worth_retrying(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn a_refused_identity_survives_the_second_route() {
+        // REGRESSION (fix/ech-from-core): both failures used to be rewrapped as
+        // a plain Api error, so a refused MASQUE identity stopped the engine
+        // instead of being replaced.
+        let refused = || AetherError::IdentityRefused("key enrollment: status 404".into());
+        let cut = || AetherError::Api("key enrollment: connection reset".into());
+
+        for combined in [
+            combine("key enrollment", ("direct route", refused()), ("camouflaged route", cut())),
+            combine("key enrollment", ("direct route", cut()), ("camouflaged route", refused())),
+        ] {
+            assert!(matches!(combined, AetherError::IdentityRefused(_)), "{combined}");
+        }
+    }
+
+    #[test]
+    fn two_plain_failures_are_reported_together() {
+        let combined = combine(
+            "registration",
+            ("camouflaged route", AetherError::Api("no ech key".into())),
+            ("direct route", AetherError::Api("connection reset".into())),
+        );
+        let text = combined.to_string();
+        assert!(matches!(combined, AetherError::Api(_)));
+        assert!(text.contains("camouflaged route -> "), "{text}");
+        assert!(text.contains("direct route -> "), "{text}");
     }
 
     #[tokio::test]
