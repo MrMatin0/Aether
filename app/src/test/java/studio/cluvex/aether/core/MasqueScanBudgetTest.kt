@@ -12,6 +12,10 @@ import studio.cluvex.aether.model.ScanMode
  * fix/masque-scan: what the app sends a MASQUE engine, and how long it waits
  * for it. Both were wrong in ways that looked like "MASQUE does not scan" from
  * the outside. See docs/MASQUE_SCAN.md.
+ *
+ * fix/ech-from-core: the ECH part of that contract. ECH is the engine's own,
+ * reaches every protocol when switched on, and every session tells the engine
+ * where to look its key up. See docs/ECH.md.
  */
 class MasqueScanBudgetTest {
 
@@ -31,6 +35,8 @@ class MasqueScanBudgetTest {
      * time, 5 s each.
      */
     private val ringMs = 8 * 5_000L
+
+    private val identityProtocols = listOf(Protocol.MASQUE, Protocol.MIM, Protocol.WIREGUARD, Protocol.GOOL)
 
     @Test
     fun a_masque_budget_outlasts_the_ring_plus_the_sweep_in_every_mode() {
@@ -61,24 +67,54 @@ class MasqueScanBudgetTest {
         }
     }
 
+    /**
+     * REGRESSION (fix/ech-from-core): the switch used to reach no engine that
+     * could use it. MASQUE never got --ech, and WireGuard / Gool got it with
+     * nothing in the engine reading it.
+     */
     @Test
-    fun ech_never_reaches_a_masque_transport() {
-        for (protocol in listOf(Protocol.MASQUE, Protocol.MIM)) {
+    fun ech_reaches_every_protocol_when_switched_on() {
+        for (protocol in identityProtocols) {
             for (http2 in listOf(false, true)) {
-                val profile = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = true)
-                assertFalse(profile.sendsEch, "$protocol h2=$http2")
-                assertFalse("--ech" in profile.toArgs(core21), "$protocol h2=$http2")
+                val on = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = true)
+                assertTrue(on.sendsEch, "$protocol h2=$http2")
+                assertTrue(on.toArgs(core21).windowed(2).contains(listOf("--ech", "auto")), "$protocol h2=$http2")
+                assertEquals("auto", on.toEnv()["AETHER_ECH"], "$protocol h2=$http2")
             }
         }
     }
 
     @Test
-    fun ech_still_reaches_wireguard_and_gool() {
-        for (protocol in listOf(Protocol.WIREGUARD, Protocol.GOOL)) {
-            val on = ConnectionProfile(protocol = protocol, ech = true)
-            assertTrue(on.sendsEch, "$protocol")
-            assertTrue(on.toArgs(core21).windowed(2).contains(listOf("--ech", "auto")), "$protocol")
-            assertFalse("--ech" in ConnectionProfile(protocol = protocol).toArgs(core21), "$protocol")
+    fun ech_stays_off_until_switched_on() {
+        for (protocol in Protocol.entries) {
+            val off = ConnectionProfile(protocol = protocol)
+            assertFalse(off.sendsEch, "$protocol")
+            assertFalse("--ech" in off.toArgs(core21), "$protocol")
+            assertFalse(off.toEnv().containsKey("AETHER_ECH"), "$protocol")
         }
+    }
+
+    /**
+     * The WARP API's camouflaged route offers ECH whether or not the switch is
+     * on, so every session says where the key lives: ip.gs over 8.8.8.8, which
+     * answers from Iran.
+     */
+    @Test
+    fun every_session_tells_the_engine_where_the_ech_key_lives() {
+        for (protocol in Protocol.entries) {
+            for (ech in listOf(false, true)) {
+                val env = ConnectionProfile(protocol = protocol, ech = ech).toEnv()
+                assertEquals("ip.gs", env["AETHER_ECH_DOMAIN"], "$protocol ech=$ech")
+                assertEquals("udp://8.8.8.8", env["AETHER_ECH_DNS"], "$protocol ech=$ech")
+            }
+        }
+    }
+
+    /** The lookup settings are environment only: an older core ignores them instead of refusing to start. */
+    @Test
+    fun the_ech_lookup_never_becomes_an_argument() {
+        val args = ConnectionProfile(protocol = Protocol.MASQUE, ech = true).toArgs(core21)
+        assertFalse(args.any { it.startsWith("--ech-") }, "$args")
+        assertFalse(args.any { it.contains("ip.gs") || it.contains("8.8.8.8") }, "$args")
     }
 }

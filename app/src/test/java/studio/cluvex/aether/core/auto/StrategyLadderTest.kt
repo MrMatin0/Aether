@@ -98,19 +98,23 @@ class StrategyLadderTest {
     }
 
     /**
-     * fix/masque-scan: three MASQUE rungs asked for ECH, which the engine then
-     * fetched over DNS before scanning and put on an HTTP/3 tunnel handshake
-     * its scan had never tested - and the WARP MASQUE endpoint does not accept
-     * it. A user who switched ECH on still does not get it on MASQUE.
+     * fix/masque-scan took ECH off the MASQUE rungs the ladder had added it to
+     * on its own, and that stays: no rung switches ECH on by itself. What
+     * changed with fix/ech-from-core is the user's own switch, which now
+     * reaches the MASQUE rungs as it reaches every other protocol.
      */
     @Test
-    fun `no masque rung asks the engine for ech`() {
+    fun `masque rungs carry ech only when the user switched it on`() {
         for (dpi in DpiClass.entries) {
-            val plan = StrategyLadder.build(ConnectionProfile(ech = true), fingerprint(dpi))
-            plan.filter { it.profile.protocol.isMasque }.forEach {
-                assertFalse("--ech" in it.profile.toArgs(), "$dpi: ${it.label}")
-                assertFalse(it.label.contains("· ech"), "$dpi: ${it.label}")
-            }
+            StrategyLadder.build(ConnectionProfile(), fingerprint(dpi))
+                .filter { it.profile.protocol.isMasque }
+                .forEach {
+                    assertFalse("--ech" in it.profile.toArgs(), "$dpi: ${it.label}")
+                    assertFalse(it.label.contains("· ech"), "$dpi: ${it.label}")
+                }
+            StrategyLadder.build(ConnectionProfile(ech = true), fingerprint(dpi))
+                .filter { it.profile.protocol.isMasque }
+                .forEach { assertTrue(it.profile.sendsEch, "$dpi: ${it.label}") }
         }
     }
 
