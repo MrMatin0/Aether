@@ -127,14 +127,21 @@ BASELINE="1.5.0"
 #
 #   Cargo.toml    -> arc-swap (wg_experiments), smoltcp socket-tcp-cubic/-reno
 #   account.rs    -> keep the registration before enrolling, cut-on-the-wire
-#                    detection, no short connect timeout on a proxied path
+#                    detection, no short connect timeout on a proxied path,
+#                    ECH-first api calls with --ech, refusals kept final
 #   api.rs        -> follows account.rs / apifront.rs
-#   apifront.rs   -> ECH route first, Android trust store, early stop on a real
-#                    API answer. Upstream 2.3.0 DELETES this file (its https.rs
-#                    and --enroll-address replace the camouflaged route), so the
-#                    sync drops it and keeps a copy under .core-conflicts/.
+#   apifront.rs   -> ECH route first (its key from dns.rs), Android trust
+#                    store, early stop on a real API answer. Upstream 2.3.0
+#                    DELETES this file (its https.rs and --enroll-address
+#                    replace the camouflaged route), so the sync drops it and
+#                    keeps a copy under .core-conflicts/.
 #   cli.rs        -> --precise / --ultra accepted as aliases of --balanced /
 #                    --ironclad (the 1.4.6 scan-mode names), plus parser tests.
+#   dns.rs        -> the core's one ECH key: AETHER_ECH_DOMAIN / AETHER_ECH_DNS
+#                    (upstream 2.3.0's own variables), cached once per process
+#                    for the api and the tunnel. Upstream 2.3.0 rewrites dns.rs
+#                    around the same variables, so a conflict here resolves to
+#                    upstream's file.
 #   masque_h2.rs  -> backpressure instead of drops, SpoofingStream, custom SNI
 #   netstack.rs   -> TCP congestion control, no tx drops, event-driven waits
 #   prober.rs     -> quiet window from the first gateway, DoH ranges last,
@@ -159,6 +166,7 @@ PATCHED_FILES=(
   "aether/src/api.rs"
   "aether/src/apifront.rs"
   "aether/src/cli.rs"
+  "aether/src/dns.rs"
   "aether/src/masque_h2.rs"
   "aether/src/netstack.rs"
   "aether/src/prober.rs"

@@ -13,12 +13,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.TeamAuth
 
 /** Where one protocol's manual key request stands. */
 enum class WarpKeyPhase { IDLE, RUNNING, DONE, FAILED }
@@ -51,6 +54,12 @@ data class WarpKeyState(
  * `aether-masque.toml` for MASQUE, and a `-secondary` sibling for the second
  * hop of Gool and MASQUE-in-MASQUE.
  *
+ * WITH THE USER'S SETTINGS (fix/ech-from-core). The request used to run a bare
+ * [ConnectionProfile], so it never had the ECH switch and always took the
+ * plaintext route to the API first. It now runs the saved profile through
+ * [keyProfile]: the same ECH, IP family and obfuscation a session would use,
+ * plus the ECH key lookup every session gets (see [ConnectionProfile.toEnv]).
+ *
  * A request always produces a FRESH identity: existing files are set aside
  * first and are only discarded once the new ones are complete. On failure,
  * timeout, cancel, or a session starting, they are put back untouched.
@@ -60,7 +69,14 @@ object WarpKeyFetcher {
 
     private const val TAG = "warp-key"
     private const val BIND = "127.0.0.1:1839"
-    private const val TIMEOUT_MS = 150_000L
+
+    /**
+     * MASQUE makes two API calls (registration, then key enrollment) and on a
+     * filtered network either can need the camouflaged route, whose sweep is
+     * an ECH lookup plus several edges and fingerprints. 150 s ended requests
+     * that were still on their way through it.
+     */
+    private const val TIMEOUT_MS = 240_000L
     private const val POLL_MS = 400L
     private const val BACKUP_SUFFIX = ".warpkey-bak"
 
@@ -80,6 +96,25 @@ object WarpKeyFetcher {
     /** Only with no session: the session engine reads and writes the same files. */
     fun canRun(connection: ConnectionState): Boolean =
         connection is ConnectionState.Idle || connection is ConnectionState.Error
+
+    /**
+     * The profile a key request for [protocol] runs with: the user's [saved]
+     * settings - ECH above all, so the registration takes the route a session
+     * would - on [protocol], with a turbo scan and no quick reconnect, since
+     * the engine is stopped the moment the identity is on disk.
+     *
+     * Always consumer WARP: a Zero Trust identity is saved under a
+     * team-specific name (`aether-team-<team>.toml`) this fetcher does not
+     * watch, so a request with a team set could only ever time out.
+     */
+    internal fun keyProfile(saved: ConnectionProfile, protocol: Protocol): ConnectionProfile =
+        saved.copy(
+            protocol = protocol,
+            scanMode = ScanMode.TURBO,
+            quickReconnect = false,
+            teamAuth = TeamAuth.OFF,
+            team = "",
+        )
 
     @Synchronized
     fun start(context: Context, protocol: Protocol) {
@@ -104,6 +139,16 @@ object WarpKeyFetcher {
         job?.cancel()
     }
 
+    /** The saved profile, or the defaults when it cannot be read. */
+    private suspend fun savedProfile(context: Context): ConnectionProfile {
+        val saved = runCatching { ProfileStore(context).profile.first() }
+        (saved.exceptionOrNull() as? CancellationException)?.let { throw it }
+        saved.exceptionOrNull()?.let {
+            DiagnosticsLog.w(TAG, "saved settings unreadable (${it::class.java.simpleName}); using defaults")
+        }
+        return saved.getOrNull() ?: ConnectionProfile()
+    }
+
     private suspend fun fetch(context: Context, protocol: Protocol): Boolean {
         val dir = context.filesDir
         val bin = File(context.applicationInfo.nativeLibraryDir, "libaether.so")
@@ -111,6 +156,8 @@ object WarpKeyFetcher {
             DiagnosticsLog.e(TAG, "engine binary missing: ${bin.absolutePath}")
             return false
         }
+
+        val profile = keyProfile(savedProfile(context), protocol)
 
         recover(dir)
         val masque = protocol.isMasque
@@ -131,11 +178,6 @@ object WarpKeyFetcher {
         var process: Process? = null
         var ok = false
         try {
-            val profile = ConnectionProfile(
-                protocol = protocol,
-                scanMode = ScanMode.TURBO,
-                quickReconnect = false,
-            )
             val command = buildList {
                 add(bin.absolutePath)
                 addAll(profile.toArgs())
@@ -152,7 +194,11 @@ object WarpKeyFetcher {
                 put("TMPDIR", dir.absolutePath)
             }
 
-            DiagnosticsLog.i(TAG, "requesting a fresh ${protocol.name} identity")
+            DiagnosticsLog.i(
+                TAG,
+                "requesting a fresh ${protocol.name} identity" +
+                    if (profile.sendsEch) " (ech first)" else "",
+            )
             val proc = builder.start()
             process = proc
             drain(proc)

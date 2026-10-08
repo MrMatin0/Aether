@@ -45,18 +45,24 @@ class ConnectionPlannerTest {
         assertTrue(hardened.toArgs().windowed(2).contains(listOf("--noize", "off")))
         assertTrue(hardened.masqueHttp2, "the anti-DPI pass turns HTTP/2 on for MASQUE")
         assertTrue(hardened.fragment, "the anti-DPI pass fragments the TLS handshake")
-        assertFalse("--ech" in hardened.toArgs(), "the WARP MASQUE endpoint does not accept ECH")
+        assertFalse("--ech" in hardened.toArgs(), "the anti-DPI pass never switches ECH on by itself")
     }
 
-    /** Not even when the user switched ECH on: see ConnectionProfile.sendsEch. */
+    /**
+     * ECH is the user's switch (fix/ech-from-core): no MASQUE attempt turns it
+     * on by itself, and a switched-on ECH reaches the first pass as it was set.
+     */
     @Test
-    fun `no masque attempt ever sends ech`() {
+    fun `ech on masque attempts follows the switch`() {
         for (protocol in listOf(Protocol.MASQUE, Protocol.MIM)) {
             for (http2 in listOf(false, true)) {
-                val profile = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = true)
-                ConnectionPlanner.manualProtocol(profile).forEach {
+                val off = ConnectionProfile(protocol = protocol, masqueHttp2 = http2)
+                ConnectionPlanner.manualProtocol(off).forEach {
                     assertFalse("--ech" in it.profile.toArgs(), it.label)
                 }
+
+                val first = ConnectionPlanner.manualProtocol(off.copy(ech = true)).first()
+                assertTrue(first.profile.toArgs().windowed(2).contains(listOf("--ech", "auto")), first.label)
             }
         }
     }
