@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::ffi::{c_void, CStr};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::raw::{c_char, c_int, c_long};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use boring::ssl::{SslConnector, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
@@ -30,9 +30,6 @@ const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 512 * 1024;
-
-/// Base64 ECHConfigList override, for networks where the dns lookup is tampered with.
-const ECH_ENV: &str = "AETHER_API_ECH";
 
 /// Extra trust anchors: a directory of PEM/DER files, or one PEM bundle.
 /// This is also the only way to trust a user installed CA on purpose.
@@ -70,11 +67,6 @@ const SYSTEM_CA_FILES: &[&str] = &[
 /// settings, per android user. `{user}` is replaced with the current one.
 const REMOVED_CA_DIR: &str = "/data/misc/user/{user}/cacerts-removed";
 
-/// The smallest ECHConfig contents worth considering: config id, kem, an x25519
-/// public key, one cipher suite, max name length, a public name and extensions
-/// come to well over this.
-const MIN_ECH_CONFIG: usize = 32;
-
 const LEGACY_CIPHERS: &str = "ECDHE-ECDSA-CHACHA20-POLY1305:\
 ECDHE-ECDSA-AES128-GCM-SHA256:\
 ECDHE-RSA-AES128-GCM-SHA256:\
@@ -89,7 +81,6 @@ const ECH_GROUPS: &str = "X25519:P-256";
 
 const ALPN_HTTP1: &[u8] = b"\x08http/1.1";
 
-static ECH_CACHE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static TRUST_ROOTS: OnceLock<Vec<X509>> = OnceLock::new();
 
 /// Reads every certificate in a PEM bundle (Android's cacerts files carry a
@@ -498,80 +489,29 @@ async fn candidates(host: &str) -> Vec<SocketAddr> {
     list
 }
 
-/// An ECHConfigList is a 2 byte length followed by at least one ECHConfig
-/// (2 byte version, 2 byte length, then the contents). A list whose prefix does
-/// not match its size, or that is too short to hold a real config, is refused
-/// by boring anyway; caching it would poison every later attempt.
-fn plausible_ech_list(list: &[u8]) -> bool {
-    if list.len() < 2 + 4 + MIN_ECH_CONFIG {
-        return false;
-    }
-
-    let declared = u16::from_be_bytes([list[0], list[1]]) as usize;
-    if declared != list.len() - 2 {
-        return false;
-    }
-
-    let first_config = u16::from_be_bytes([list[4], list[5]]) as usize;
-    first_config >= MIN_ECH_CONFIG && 4 + first_config <= declared
-}
-
+/// The key the core already has for this process (see dns.rs).
 fn cached_ech() -> Option<Vec<u8>> {
-    ECH_CACHE.lock().ok().and_then(|guard| guard.clone())
+    crate::dns::cached_key()
 }
 
-/// Caches a key set, but only one that looks like a real ECHConfigList.
-/// Returns whether it was kept.
+/// Hands a key an edge sent back to the core, which keeps it for every later
+/// ECH handshake of the process, the MASQUE tunnel's included. Returns whether
+/// it was kept: only a plausible ECHConfigList is.
 fn remember_ech(list: Vec<u8>) -> bool {
-    if !plausible_ech_list(&list) {
-        return false;
-    }
-    if let Ok(mut guard) = ECH_CACHE.lock() {
-        *guard = Some(list);
-    }
-    true
+    crate::dns::remember(list)
 }
 
-/// Where the ECH keys come from, in order: what an edge last handed back,
-/// an operator supplied override, then the same dns lookup the masque path uses.
-/// Cloudflare publishes one shared key set, so the keys for cloudflare-ech.com
-/// also encrypt a client hello meant for the api.
+/// The ECH keys come from the core, never from here (fix/ech-from-core): the
+/// key the session already has, the base64 list --ech was given, or the
+/// lookup AETHER_ECH_DOMAIN / AETHER_ECH_DNS configure. Cloudflare publishes
+/// one shared key set, so the keys of any name it fronts with ECH also
+/// encrypt a client hello meant for the api.
 async fn ech_config_list() -> Option<Vec<u8>> {
-    if let Some(list) = cached_ech() {
-        return Some(list);
+    let list = crate::dns::session_key().await;
+    if list.is_none() {
+        log::info!("[apifront] the core has no ECHConfigList for the api; skipping the ech route");
     }
-
-    if let Ok(raw) = std::env::var(ECH_ENV) {
-        let raw = raw.trim();
-        if !raw.is_empty() {
-            match crate::tls::decode_ech_config_list(raw) {
-                Ok(list) if remember_ech(list.clone()) => {
-                    log::info!("[apifront] using the ECHConfigList from {ECH_ENV}");
-                    return Some(list);
-                }
-                Ok(list) => log::warn!(
-                    "[apifront] {ECH_ENV} holds {} bytes that are not an ECHConfigList; ignoring it",
-                    list.len()
-                ),
-                Err(e) => log::warn!("[apifront] {ECH_ENV} is not valid base64 ({e}); ignoring it"),
-            }
-        }
-    }
-
-    match crate::dns::fetch_ech_config().await {
-        Ok(list) if remember_ech(list.clone()) => Some(list),
-        Ok(list) => {
-            log::info!(
-                "[apifront] the dns answer held {} bytes that are not an ECHConfigList; skipping the ech route",
-                list.len()
-            );
-            None
-        }
-        Err(e) => {
-            log::info!("[apifront] no ECHConfigList for the api ({e}); skipping the ech route");
-            None
-        }
-    }
+    list
 }
 
 fn render_request(request: &ApiRequest) -> Vec<u8> {
@@ -1207,31 +1147,11 @@ mod tests {
         assert!(crate::tls::set_ech_config_list(&mut config, &[]).is_err());
     }
 
-    fn sample_ech_list(config_len: usize) -> Vec<u8> {
-        let mut list = vec![0u8, 0, 0xfe, 0x0d];
-        list.extend_from_slice(&(config_len as u16).to_be_bytes());
-        list.extend(std::iter::repeat(0xab).take(config_len));
-        let declared = (list.len() - 2) as u16;
-        list[..2].copy_from_slice(&declared.to_be_bytes());
-        list
-    }
-
     #[test]
-    fn a_truncated_ech_key_set_is_never_taken_for_a_real_one() {
-        assert!(!plausible_ech_list(&[]));
-        assert!(!plausible_ech_list(&[0, 3, 0xfe, 0x0d, 0]));
-        assert!(!plausible_ech_list(&sample_ech_list(8)));
-
-        let mut wrong_prefix = sample_ech_list(65);
-        wrong_prefix[1] ^= 0x01;
-        assert!(!plausible_ech_list(&wrong_prefix));
-    }
-
-    #[test]
-    fn a_cloudflare_sized_ech_key_set_is_accepted() {
-        let list = sample_ech_list(65);
-        assert_eq!(list.len(), 71);
-        assert!(plausible_ech_list(&list));
+    fn the_api_route_keeps_no_ech_key_of_its_own() {
+        // fix/ech-from-core: the keys live in dns.rs, so a key set the core
+        // would refuse cannot reach the api route through a side door either.
+        assert!(!remember_ech(vec![0, 3, 0xfe, 0x0d, 0]));
     }
 
     #[test]
@@ -1289,7 +1209,11 @@ mod tests {
         };
 
         let mut ech = ech_config_list().await;
-        assert!(ech.is_some(), "no ECHConfigList; set {ECH_ENV} to a base64 list");
+        assert!(
+            ech.is_some(),
+            "no ECHConfigList; set AETHER_ECH to a base64 list, or AETHER_ECH_DOMAIN / \
+             AETHER_ECH_DNS to a lookup that answers here (e.g. ip.gs, udp://8.8.8.8)"
+        );
 
         let address = random_edge_address();
         let response = attempt_ech(&request, address, &mut ech)
