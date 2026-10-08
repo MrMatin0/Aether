@@ -134,6 +134,15 @@ refused to run, or with `CORE_SYNC_ALLOW_DRIFT=1` deleted the rest. See
   silently dropped handshake, handed over at once instead of retried; and no
   short connect timeout through an upstream proxy. `api.rs` follows them.
   Upstream 2.3.0 deletes `apifront.rs`.
+- `native/aether/aether/src/dns.rs`, `apifront.rs` and `account.rs`
+  (2026-10-08, `fix/ech-from-core`): ECH comes from the core. `dns.rs` holds
+  the one ECHConfigList of the process, looked up where `AETHER_ECH_DOMAIN` /
+  `AETHER_ECH_DNS` say (upstream 2.3.0's variables; the app sends `ip.gs` and
+  `udp://8.8.8.8`), cached and shared by the API route and the MASQUE tunnel.
+  `apifront.rs` lost its own key source (`AETHER_API_ECH`, cache, lookup).
+  With `--ech` every account API call goes ECH-first and plaintext last, and
+  a refused identity stays `IdentityRefused` across both routes. See
+  `docs/ECH.md`.
 - `native/aether/aether/src/netstack.rs` (2026-09-26): TCP congestion control
   in smoltcp (CUBIC by default, `AETHER_TCP_CC`), no outbound drops under
   pressure, event-driven backpressure, fewer allocations. `Cargo.toml` turns
