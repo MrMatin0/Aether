@@ -1,26 +1,44 @@
 //! Where the core gets its ECH key.
 //!
-//! Aether Mobile patch (fix/ech-from-core, 2026-10-08). One ECHConfigList per
-//! process, looked up once and shared by everything that offers ECH: the
-//! camouflaged route to the WARP API (apifront.rs) on every protocol, and the
-//! MASQUE tunnel (lib.rs resolve_ech). The lookup is configured with upstream
-//! 2.3.0's variables, so the next core sync lands on the same settings:
+//! Aether Mobile patch (fix/ech-from-core, 2026-10-08; fix/ech-doh, 2026-10-09).
+//! One ECHConfigList per process, looked up once and shared by everything that
+//! offers ECH: the camouflaged route to the WARP API (apifront.rs) on every
+//! protocol, and the MASQUE tunnel (lib.rs resolve_ech). The lookup is
+//! configured with upstream 2.3.0's variables, so the next core sync lands on
+//! the same settings:
 //!
 //!   AETHER_ECH         --ech: auto, or a base64 ECHConfigList
-//!   AETHER_ECH_DOMAIN  the name whose HTTPS record holds the key
-//!                      (upstream's --ech-domain)
-//!   AETHER_ECH_DNS     the resolver it is asked of, udp://ip[:port] or
-//!                      tcp://ip[:port] (upstream's --ech-dns)
+//!   AETHER_ECH_DOMAIN  the name(s) whose HTTPS record holds the key
+//!                      (upstream's --ech-domain), comma separated
+//!   AETHER_ECH_DNS     the resolver(s) it is asked of, comma separated:
+//!                      udp://ip[:port], tcp://ip[:port] or
+//!                      https://ip[:port][/path] (DNS over HTTPS, RFC 8484)
+//!                      (upstream's --ech-dns)
 //!
-//! With neither of the last two set the lookup is the one every core before
-//! this made: cloudflare-ech.com and crypto.cloudflare.com, each asked of
-//! 1.1.1.1, 1.0.0.1 and 8.8.8.8 over UDP. DNS-over-HTTPS needs upstream's
-//! https.rs (core 2.3.0) and is refused here with a message that says so.
+//! fix/ech-doh: ONE plain-DNS resolver was a single point of failure. UDP and
+//! TCP on port 53 are exactly what a filtered network drops, rewrites or
+//! answers late, and then the API route had no key and the tunnel no ECH. So,
+//! the way Xray-based clients do it (`echConfigList: "https://1.1.1.1/dns-query"`):
+//!
+//!  - the configured lookups are made together with DoH on port 443 to
+//!    1.1.1.1 and 8.8.8.8 ([DOH_FALLBACK]), for the configured domain and for
+//!    cloudflare-ech.com. DoH by IP address sends no SNI and hides the name
+//!    that is asked about, so a DPI box sees one more TLS session to 1.1.1.1;
+//!  - every lookup runs AT THE SAME TIME and the first plausible
+//!    ECHConfigList wins, so the slowest resolver never decides how long a
+//!    connect waits (at most [ECH_LOOKUP_TIMEOUT], instead of one lookup after
+//!    the other);
+//!  - a failure says what every lookup answered, not only the last one.
+//!
+//! With neither of the two variables set the lookup is the one every core
+//! before this made (cloudflare-ech.com and crypto.cloudflare.com, each asked
+//! of 1.1.1.1, 1.0.0.1 and 8.8.8.8 over UDP), plus the same DoH lookups.
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout_at;
 
@@ -29,22 +47,35 @@ use crate::error::{AetherError, Result};
 pub const BOOTSTRAP_DNS: &[&str] = &["1.1.1.1:53", "1.0.0.1:53", "8.8.8.8:53"];
 pub const ECH_HOSTS: &[&str] = &["cloudflare-ech.com", "crypto.cloudflare.com"];
 
+/// DNS-over-HTTPS resolvers asked next to whatever is configured. By IP
+/// address on purpose: no name to resolve first and no SNI on the wire; both
+/// certificates carry their IP address.
+pub const DOH_FALLBACK: &[&str] = &["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
+
 /// --ech: `auto`, or a base64 ECHConfigList.
 pub const ECH_VARIABLE: &str = "AETHER_ECH";
-/// The resolver the ECHConfigList is asked of (upstream's --ech-dns).
+/// The resolver(s) the ECHConfigList is asked of (upstream's --ech-dns).
 pub const ECH_DNS_VARIABLE: &str = "AETHER_ECH_DNS";
-/// The domain whose ECHConfigList is offered (upstream's --ech-domain).
+/// The domain(s) whose ECHConfigList is offered (upstream's --ech-domain).
 pub const ECH_DOMAIN_VARIABLE: &str = "AETHER_ECH_DOMAIN";
 
 /// The resolver when only the domain is configured.
 pub const DEFAULT_ECH_DNS: &str = "udp://1.1.1.1";
-/// The domain when only the resolver is configured.
+/// The domain when only the resolver is configured, and the one always asked
+/// for next to a configured domain: it carries Cloudflare's shared key set.
 pub const DEFAULT_ECH_DOMAIN: &str = "cloudflare-ech.com";
 
 const RR_HTTPS: u16 = 65;
 const SVCPARAM_ECH: u16 = 5;
 
-/// How long a configured lookup may take, over either transport.
+/// The path of a DoH resolver given without one.
+const DOH_PATH: &str = "/dns-query";
+/// RFC 8484's media type, for the question and the answer.
+const DOH_MEDIA_TYPE: &str = "application/dns-message";
+/// A DoH answer bigger than this is no single HTTPS record.
+const MAX_DOH_ANSWER: usize = 64 * 1024;
+
+/// How long a configured lookup may take, over any transport.
 const ECH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long each step of the unconfigured cascade may take.
 const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -70,24 +101,42 @@ static LAST_FAILURE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
 pub enum EchDns {
     Udp(SocketAddr),
     Tcp(SocketAddr),
+    /// DNS over HTTPS (RFC 8484, POST), to an IP address.
+    Https { address: SocketAddr, path: String },
 }
 
 impl EchDns {
-    /// `udp://ip[:port]` or `tcp://ip[:port]`, on port 53 unless one is given,
-    /// an IPv6 address in brackets.
+    /// `udp://ip[:port]` or `tcp://ip[:port]`, on port 53 unless one is given;
+    /// `https://ip[:port][/path]`, on port 443 and `/dns-query` unless given.
+    /// An IPv6 address goes in brackets.
     pub fn parse(value: &str) -> std::result::Result<Self, String> {
         let value = value.trim();
-        if strip_scheme(value, "https://").is_some() {
-            return Err(format!(
-                "{value}: DNS-over-HTTPS for the ECH key needs core 2.3.0; use udp:// or tcp://"
-            ));
+        if let Some(rest) = strip_scheme(value, "https://") {
+            let (authority, path) = match rest.find('/') {
+                Some(at) => rest.split_at(at),
+                None => (rest, ""),
+            };
+            let address = socket_address(authority, 443).ok_or_else(|| {
+                format!(
+                    "{value}: DNS-over-HTTPS for the ECH key needs the resolver's IP address \
+                     (https://1.1.1.1/dns-query); a name would need a lookup of its own"
+                )
+            })?;
+            let path = match path {
+                "" | "/" => DOH_PATH.to_string(),
+                other => other.to_string(),
+            };
+            if !path.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(format!("{value}: {path} is no URL path"));
+            }
+            return Ok(EchDns::Https { address, path });
         }
         let (rest, tcp) = if let Some(rest) = strip_scheme(value, "udp://") {
             (rest, false)
         } else if let Some(rest) = strip_scheme(value, "tcp://") {
             (rest, true)
         } else {
-            return Err(format!("{value} is no udp:// or tcp:// address"));
+            return Err(format!("{value} is no udp://, tcp:// or https:// address"));
         };
         let address = socket_address(rest.trim_end_matches('/'), 53)
             .ok_or_else(|| format!("{value} names no IP address"))?;
@@ -104,6 +153,7 @@ impl std::fmt::Display for EchDns {
         match self {
             EchDns::Udp(address) => write!(f, "udp://{address}"),
             EchDns::Tcp(address) => write!(f, "tcp://{address}"),
+            EchDns::Https { address, path } => write!(f, "https://{address}{path}"),
         }
     }
 }
@@ -170,7 +220,25 @@ fn configured(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// The lookups to make, in order, as the environment configures them.
+/// The entries of a comma (or space) separated setting.
+fn entries(value: &str) -> Vec<&str> {
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+/// The DoH resolvers every plan races next to the rest.
+fn doh_fallback() -> Vec<EchDns> {
+    DOH_FALLBACK
+        .iter()
+        .filter_map(|resolver| EchDns::parse(resolver).ok())
+        .collect()
+}
+
+/// The lookups to make, as the environment configures them. They all run at
+/// once (see [fetch_ech_config]).
 pub fn lookup_plan() -> Result<Vec<EchLookup>> {
     plan_for(
         configured(ECH_DNS_VARIABLE).as_deref(),
@@ -178,11 +246,15 @@ pub fn lookup_plan() -> Result<Vec<EchLookup>> {
     )
 }
 
-/// A configured resolver or domain means exactly that one lookup, the other
-/// half taking its default. Neither means the cascade older cores made.
+/// Configured resolvers and domains come first, every resolver asked about
+/// every domain, the other half taking its default; then the DoH fallback and
+/// cloudflare-ech.com. Neither configured means the cascade older cores made,
+/// plus the DoH fallback. A configured value with no usable entry at all is an
+/// error; a single bad entry in a list is left out with a warning.
 fn plan_for(dns: Option<&str>, domain: Option<&str>) -> Result<Vec<EchLookup>> {
+    let mut plan = Vec::new();
+
     if dns.is_none() && domain.is_none() {
-        let mut plan = Vec::with_capacity(ECH_HOSTS.len() * BOOTSTRAP_DNS.len());
         for host in ECH_HOSTS {
             for server in BOOTSTRAP_DNS {
                 if let Ok(address) = server.parse::<SocketAddr>() {
@@ -194,22 +266,88 @@ fn plan_for(dns: Option<&str>, domain: Option<&str>) -> Result<Vec<EchLookup>> {
                 }
             }
         }
+        for resolver in doh_fallback() {
+            for host in ECH_HOSTS {
+                plan.push(EchLookup {
+                    dns: resolver.clone(),
+                    domain: (*host).to_string(),
+                    budget: ECH_LOOKUP_TIMEOUT,
+                });
+            }
+        }
         return Ok(plan);
     }
 
-    let dns = EchDns::parse(dns.unwrap_or(DEFAULT_ECH_DNS))
-        .map_err(|e| AetherError::Ech(format!("{ECH_DNS_VARIABLE}: {e}")))?;
-    let name = domain.unwrap_or(DEFAULT_ECH_DOMAIN);
-    if !valid_domain(name) {
+    let mut resolvers: Vec<EchDns> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    for entry in entries(dns.unwrap_or(DEFAULT_ECH_DNS)) {
+        match EchDns::parse(entry) {
+            Ok(resolver) => {
+                if !resolvers.contains(&resolver) {
+                    resolvers.push(resolver);
+                }
+            }
+            Err(error) => refused.push(error),
+        }
+    }
+    if resolvers.is_empty() {
+        let why = if refused.is_empty() {
+            "names no resolver".to_string()
+        } else {
+            refused.join("; ")
+        };
+        return Err(AetherError::Ech(format!("{ECH_DNS_VARIABLE}: {why}")));
+    }
+    for error in &refused {
+        log::warn!("[-] {ECH_DNS_VARIABLE}: {error}; left out");
+    }
+
+    let mut domains: Vec<String> = Vec::new();
+    let mut invalid: Vec<String> = Vec::new();
+    for name in entries(domain.unwrap_or(DEFAULT_ECH_DOMAIN)) {
+        if valid_domain(name) {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            if !domains.contains(&name) {
+                domains.push(name);
+            }
+        } else {
+            invalid.push(name.to_string());
+        }
+    }
+    if domains.is_empty() {
+        let names = if invalid.is_empty() {
+            "nothing".to_string()
+        } else {
+            invalid.join(", ")
+        };
         return Err(AetherError::Ech(format!(
-            "{ECH_DOMAIN_VARIABLE}: {name} is no domain name"
+            "{ECH_DOMAIN_VARIABLE}: {names} is no domain name"
         )));
     }
-    Ok(vec![EchLookup {
-        dns,
-        domain: name.trim_end_matches('.').to_ascii_lowercase(),
-        budget: ECH_LOOKUP_TIMEOUT,
-    }])
+    for name in &invalid {
+        log::warn!("[-] {ECH_DOMAIN_VARIABLE}: {name} is no domain name; left out");
+    }
+
+    for resolver in doh_fallback() {
+        if !resolvers.contains(&resolver) {
+            resolvers.push(resolver);
+        }
+    }
+    let fallback = DEFAULT_ECH_DOMAIN.to_string();
+    if !domains.contains(&fallback) {
+        domains.push(fallback);
+    }
+
+    for resolver in &resolvers {
+        for name in &domains {
+            plan.push(EchLookup {
+                dns: resolver.clone(),
+                domain: name.clone(),
+                budget: ECH_LOOKUP_TIMEOUT,
+            });
+        }
+    }
+    Ok(plan)
 }
 
 /// What the session asked for with --ech.
@@ -306,9 +444,10 @@ fn reason_of(error: AetherError) -> String {
     }
 }
 
-/// The ECHConfigList of this process: the one it already has, else the one the
-/// configured lookup finds (see the module doc). Through the upstream proxy
-/// when there is one.
+/// The ECHConfigList of this process: the one it already has, else the first
+/// plausible one any lookup of the plan finds (see the module doc). All
+/// lookups run at once; the rest are dropped as soon as one answers. Through
+/// the upstream proxy when there is one.
 pub async fn fetch_ech_config() -> Result<Vec<u8>> {
     if let Some(list) = cached_key() {
         return Ok(list);
@@ -328,9 +467,17 @@ pub async fn fetch_ech_config() -> Result<Vec<u8>> {
         }
     };
 
-    let mut last = String::from("no lookup to make");
-    for lookup in &plan {
-        match run_lookup(lookup).await {
+    let mut pending: FuturesUnordered<_> = plan
+        .iter()
+        .map(|lookup| async move {
+            let outcome = run_lookup(lookup).await;
+            (lookup, outcome)
+        })
+        .collect();
+
+    let mut reasons: Vec<String> = Vec::new();
+    while let Some((lookup, outcome)) = pending.next().await {
+        match outcome {
             Ok(list) if remember(list.clone()) => {
                 log::info!(
                     "fetched ECHConfigList ({} bytes) for {} via {}",
@@ -341,26 +488,28 @@ pub async fn fetch_ech_config() -> Result<Vec<u8>> {
                 return Ok(list);
             }
             Ok(list) => {
-                last = format!(
+                let reason = format!(
                     "{lookup} answered {} bytes that are no ECHConfigList",
                     list.len()
                 );
-                log::debug!("ech lookup: {last}");
+                log::debug!("ech lookup: {reason}");
+                reasons.push(reason);
             }
             Err(error) => {
-                last = reason_of(error);
-                log::debug!("ech lookup: {last}");
+                let reason = reason_of(error);
+                log::debug!("ech lookup: {reason}");
+                reasons.push(reason);
             }
         }
     }
 
-    let reason = if plan.len() > 1 {
-        format!(
-            "no ECHConfigList resolved in {} lookups (last: {last})",
-            plan.len()
-        )
-    } else {
-        last
+    let reason = match reasons.len() {
+        0 => "no lookup to make".to_string(),
+        1 => reasons.remove(0),
+        n => format!(
+            "no ECHConfigList resolved in {n} lookups: {}",
+            reasons.join("; ")
+        ),
     };
     note_failure(&reason);
     Err(AetherError::Ech(reason))
@@ -401,9 +550,12 @@ pub async fn session_key() -> Option<Vec<u8>> {
 
 async fn run_lookup(lookup: &EchLookup) -> Result<Vec<u8>> {
     let work = async {
-        match lookup.dns {
-            EchDns::Udp(server) => query_udp(server, &lookup.domain).await,
-            EchDns::Tcp(server) => query_tcp(server, &lookup.domain).await,
+        match &lookup.dns {
+            EchDns::Udp(server) => query_udp(*server, &lookup.domain).await,
+            EchDns::Tcp(server) => query_tcp(*server, &lookup.domain).await,
+            EchDns::Https { address, path } => {
+                query_https(*address, path, &lookup.domain, lookup.budget).await
+            }
         }
     };
     match tokio::time::timeout(lookup.budget, work).await {
@@ -461,6 +613,69 @@ async fn query_tcp(server: SocketAddr, domain: &str) -> Result<Vec<u8>> {
         ));
     }
     answer_ech(&msg, domain)
+}
+
+/// The URL of a DoH resolver at `address`.
+fn doh_url(address: SocketAddr, path: &str) -> String {
+    format!("https://{address}{path}")
+}
+
+/// The HTTPS record of `domain`, asked of the DoH resolver at `address` (RFC
+/// 8484, POST). The certificate is checked against the bundled web roots and
+/// the resolver's IP address; no SNI is sent for an address. Through the
+/// upstream proxy when there is one.
+async fn query_https(
+    address: SocketAddr,
+    path: &str,
+    domain: &str,
+    budget: Duration,
+) -> Result<Vec<u8>> {
+    let url = doh_url(address, path);
+    let builder = reqwest::Client::builder()
+        .connect_timeout(budget)
+        .timeout(budget);
+    let builder = match crate::upstream::configured() {
+        Some(proxy) => builder.proxy(proxy.as_reqwest_proxy()?),
+        None => builder.no_proxy(),
+    };
+    let client = builder
+        .build()
+        .map_err(|e| AetherError::Ech(format!("{url}: no DoH client: {e}")))?;
+
+    let (query, id) = build_query(domain, RR_HTTPS);
+    let response = client
+        .post(url.as_str())
+        .header(reqwest::header::CONTENT_TYPE, DOH_MEDIA_TYPE)
+        .header(reqwest::header::ACCEPT, DOH_MEDIA_TYPE)
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AetherError::Ech(format!(
+            "{url} answered HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| AetherError::Ech(format!("{url}: {e}")))?;
+    if body.len() > MAX_DOH_ANSWER {
+        return Err(AetherError::Ech(format!(
+            "{url} answered {} bytes, too many for one HTTPS record",
+            body.len()
+        )));
+    }
+
+    if !response_matches(&body, id, domain, RR_HTTPS) {
+        return Err(AetherError::Ech(format!(
+            "{url}: the reply does not match the query"
+        )));
+    }
+    answer_ech(&body, domain)
 }
 
 /// `msg` as it goes over TCP: behind its length, in two bytes in network order (RFC
@@ -676,6 +891,13 @@ mod tests {
         list
     }
 
+    fn doh(address: &str, path: &str) -> EchDns {
+        EchDns::Https {
+            address: address.parse().unwrap(),
+            path: path.to_string(),
+        }
+    }
+
     #[test]
     fn the_ech_dns_names_a_resolver_over_udp_or_tcp() {
         let at = |text: &str| text.parse::<SocketAddr>().unwrap();
@@ -710,6 +932,51 @@ mod tests {
     }
 
     #[test]
+    fn the_ech_dns_names_a_doh_resolver_by_its_address() {
+        assert_eq!(
+            EchDns::parse("https://1.1.1.1/dns-query"),
+            Ok(doh("1.1.1.1:443", "/dns-query"))
+        );
+        assert_eq!(
+            EchDns::parse("HTTPS://8.8.8.8"),
+            Ok(doh("8.8.8.8:443", "/dns-query"))
+        );
+        assert_eq!(
+            EchDns::parse("https://8.8.4.4/"),
+            Ok(doh("8.8.4.4:443", "/dns-query"))
+        );
+        assert_eq!(
+            EchDns::parse("https://1.0.0.1:8443/resolve"),
+            Ok(doh("1.0.0.1:8443", "/resolve"))
+        );
+        assert_eq!(
+            EchDns::parse("https://[2606:4700:4700::1111]/dns-query"),
+            Ok(doh("[2606:4700:4700::1111]:443", "/dns-query"))
+        );
+        assert_eq!(
+            EchDns::parse("https://1.1.1.1/dns-query")
+                .unwrap()
+                .to_string(),
+            "https://1.1.1.1:443/dns-query"
+        );
+        for fallback in DOH_FALLBACK {
+            assert!(EchDns::parse(fallback).is_ok(), "{fallback}");
+        }
+    }
+
+    #[test]
+    fn the_doh_url_brackets_an_ipv6_resolver() {
+        assert_eq!(
+            doh_url("1.1.1.1:443".parse().unwrap(), "/dns-query"),
+            "https://1.1.1.1:443/dns-query"
+        );
+        assert_eq!(
+            doh_url("[2606:4700:4700::1111]:443".parse().unwrap(), "/dns-query"),
+            "https://[2606:4700:4700::1111]:443/dns-query"
+        );
+    }
+
+    #[test]
     fn an_ech_dns_this_core_cannot_ask_is_refused() {
         for text in [
             "1.1.1.1",
@@ -719,13 +986,15 @@ mod tests {
             "tcp://",
             "udp://1.1.1.1:99999",
             "https://dns.google/dns-query",
+            "https://",
+            "https://1.1.1.1/dns query",
             "",
         ] {
             assert!(EchDns::parse(text).is_err(), "{text}");
         }
         assert!(EchDns::parse("https://dns.google/dns-query")
             .unwrap_err()
-            .contains("2.3.0"));
+            .contains("IP address"));
     }
 
     #[test]
@@ -754,35 +1023,70 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_configured_the_lookup_is_the_one_older_cores_made() {
+    fn with_nothing_configured_the_old_cascade_races_the_doh_fallback() {
         let plan = plan_for(None, None).expect("a plan");
-        assert_eq!(plan.len(), ECH_HOSTS.len() * BOOTSTRAP_DNS.len());
+        let udp = ECH_HOSTS.len() * BOOTSTRAP_DNS.len();
+        assert_eq!(plan.len(), udp + ECH_HOSTS.len() * DOH_FALLBACK.len());
         assert_eq!(plan[0].domain, "cloudflare-ech.com");
         assert_eq!(plan[0].dns, EchDns::Udp("1.1.1.1:53".parse().unwrap()));
-        assert!(plan
+        assert!(plan[..udp]
             .iter()
             .all(|lookup| lookup.budget == BOOTSTRAP_LOOKUP_TIMEOUT));
+        assert!(plan[udp..]
+            .iter()
+            .all(|lookup| matches!(lookup.dns, EchDns::Https { .. })));
     }
 
     #[test]
-    fn a_configured_lookup_is_the_only_one_made() {
+    fn a_configured_lookup_comes_first_and_doh_is_asked_alongside() {
         let plan = plan_for(Some("udp://8.8.8.8"), Some("IP.GS.")).expect("a plan");
-        assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].domain, "ip.gs");
         assert_eq!(plan[0].dns, EchDns::Udp("8.8.8.8:53".parse().unwrap()));
         assert_eq!(plan[0].budget, ECH_LOOKUP_TIMEOUT);
         assert_eq!(plan[0].to_string(), "ip.gs via udp://8.8.8.8:53");
 
+        // One configured resolver and the two DoH ones, each asked about the
+        // configured domain and cloudflare-ech.com.
+        assert_eq!(plan.len(), (1 + DOH_FALLBACK.len()) * 2);
+        for resolver in DOH_FALLBACK {
+            let resolver = EchDns::parse(resolver).unwrap();
+            for name in ["ip.gs", DEFAULT_ECH_DOMAIN] {
+                assert!(
+                    plan.iter().any(|l| l.dns == resolver && l.domain == name),
+                    "{name} via {resolver}"
+                );
+            }
+        }
+        assert!(plan.iter().all(|l| l.budget == ECH_LOOKUP_TIMEOUT));
+
         let domain_only = plan_for(None, Some("ip.gs")).expect("a plan");
         assert_eq!(domain_only[0].dns, EchDns::parse(DEFAULT_ECH_DNS).unwrap());
         let dns_only = plan_for(Some("tcp://8.8.8.8"), None).expect("a plan");
         assert_eq!(dns_only[0].domain, DEFAULT_ECH_DOMAIN);
+        assert_eq!(dns_only.len(), 1 + DOH_FALLBACK.len());
+    }
+
+    #[test]
+    fn a_configured_list_is_asked_in_full_and_a_bad_entry_left_out() {
+        let plan = plan_for(
+            Some("https://1.1.1.1/dns-query, udp://8.8.8.8 bogus https://1.1.1.1"),
+            Some("ip.gs,cloudflare-ech.com, bad/domain"),
+        )
+        .expect("a plan");
+        // https://1.1.1.1 twice is one resolver; bogus and bad/domain are left out.
+        assert_eq!(plan.len(), 3 * 2);
+        assert_eq!(plan[0].dns, doh("1.1.1.1:443", "/dns-query"));
+        assert_eq!(plan[0].domain, "ip.gs");
+        assert!(plan
+            .iter()
+            .any(|l| l.dns == EchDns::Udp("8.8.8.8:53".parse().unwrap())));
     }
 
     #[test]
     fn a_configured_lookup_that_cannot_work_is_an_error() {
         assert!(plan_for(Some("8.8.8.8"), Some("ip.gs")).is_err());
         assert!(plan_for(Some("udp://8.8.8.8"), Some("https://ip.gs")).is_err());
+        assert!(plan_for(Some(" , "), Some("ip.gs")).is_err());
     }
 
     #[test]
@@ -924,5 +1228,19 @@ mod tests {
             "cloudflare-ech.com",
             RR_HTTPS
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "needs live network access to a DoH resolver"]
+    async fn the_ech_key_comes_back_over_doh() {
+        for resolver in DOH_FALLBACK {
+            let Ok(EchDns::Https { address, path }) = EchDns::parse(resolver) else {
+                panic!("{resolver} parses");
+            };
+            let list = query_https(address, &path, DEFAULT_ECH_DOMAIN, ECH_LOOKUP_TIMEOUT)
+                .await
+                .unwrap_or_else(|e| panic!("{resolver}: {e}"));
+            assert!(plausible_ech_list(&list), "{resolver}: {} bytes", list.len());
+        }
     }
 }
