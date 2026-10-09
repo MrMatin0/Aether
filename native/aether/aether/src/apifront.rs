@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::{c_void, CStr};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::raw::{c_char, c_int, c_long};
@@ -8,8 +8,11 @@ use std::time::Duration;
 use boring::ssl::{SslConnector, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
 use boring::x509::{X509NameRef, X509StoreContextRef, X509};
 use foreign_types_shared::ForeignTypeRef;
+use futures::stream::{FuturesUnordered, StreamExt};
 use rand::RngExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
+use tokio::time::Instant;
 
 use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
@@ -30,6 +33,54 @@ const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 512 * 1024;
+
+/// fix/ech-bootstrap-race: the camouflaged route starts new attempts for this
+/// long. It used to walk every fingerprint on every address one after the
+/// other, and on a line that lets tcp up but blackholes the ClientHello each
+/// of those 25 attempts cost the full handshake timeout: ~200 s for one api
+/// call, past the key fetch's 240 s for MASQUE's two and far past a Smart
+/// Auto rung.
+const ROUTE_BUDGET: Duration = Duration::from_secs(35);
+/// Attempts already under way get this much longer to finish their exchange.
+const ROUTE_GRACE: Duration = Duration::from_secs(20);
+/// How many handshakes run at the same time.
+const PARALLEL_ATTEMPTS: usize = 4;
+/// The time between two attempts starting.
+const ATTEMPT_STAGGER: Duration = Duration::from_millis(300);
+/// The ech attempts have the field to themselves this long, so a plaintext
+/// ClientHello that happens to come up first does not carry the request
+/// while an ech one is a round trip away.
+const ECH_HEAD_START: Duration = Duration::from_secs(3);
+/// How long the api waits for the core's ECH key lookup (dns.rs) before it
+/// starts from [BOOTSTRAP_ECH_CONFIG] instead.
+const ECH_KEY_WAIT: Duration = Duration::from_secs(4);
+/// How long the system resolver may take over the api name.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// fix/ech-bootstrap-race: an ECHConfigList no edge can decrypt, to start an
+/// ECH handshake when the core has no key (every lookup dropped, poisoned or
+/// late, which is the usual case on a filtered line).
+///
+/// It is shaped exactly like the key set Cloudflare publishes: ECH version
+/// 0xfe0d, DHKEM(X25519) with a real X25519 public key, HKDF-SHA256 with
+/// AES-128-GCM, no name padding, public name cloudflare-ech.com. Its private
+/// key exists nowhere, so the edge cannot open the inner ClientHello. It
+/// rejects ECH the way RFC 9849 says it must: it finishes the outer handshake
+/// as cloudflare-ech.com (a certificate boring checks against that public
+/// name) and hands back the keys it serves right now as retry configs. The
+/// retry path below keeps those (dns::remember, so the MASQUE tunnel gets them
+/// too) and the second handshake is a real ECH one. The api name is never on
+/// the wire in plaintext, and no DNS answer is needed at all.
+///
+/// It is only ever offered, never kept: [remember_ech] refuses it.
+const BOOTSTRAP_ECH_CONFIG: [u8; 71] = [
+    0x00, 0x45, 0xfe, 0x0d, 0x00, 0x41, 0x5a, 0x00, 0x20, 0x00, 0x20, 0x7c,
+    0x75, 0xf0, 0xdd, 0x6b, 0x5e, 0x0b, 0xdf, 0x9e, 0xfa, 0x74, 0x1e, 0x03,
+    0x39, 0xde, 0x60, 0x8f, 0x74, 0x1d, 0xa8, 0x18, 0xb0, 0x29, 0x71, 0x41,
+    0xd5, 0x64, 0xb2, 0xce, 0x6c, 0x34, 0x39, 0x00, 0x04, 0x00, 0x01, 0x00,
+    0x01, 0x00, 0x12, 0x63, 0x6c, 0x6f, 0x75, 0x64, 0x66, 0x6c, 0x61, 0x72,
+    0x65, 0x2d, 0x65, 0x63, 0x68, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x00,
+];
 
 /// Extra trust anchors: a directory of PEM/DER files, or one PEM bundle.
 /// This is also the only way to trust a user installed CA on purpose.
@@ -82,6 +133,9 @@ const ECH_GROUPS: &str = "X25519:P-256";
 const ALPN_HTTP1: &[u8] = b"\x08http/1.1";
 
 static TRUST_ROOTS: OnceLock<Vec<X509>> = OnceLock::new();
+
+/// The stream an api exchange runs over.
+type ApiStream = tokio_boring::SslStream<FragmentingStream<tokio::net::TcpStream>>;
 
 /// Reads every certificate in a PEM bundle (Android's cacerts files carry a
 /// text dump before the PEM block, which the PEM reader skips), falling back to
@@ -465,25 +519,67 @@ pub fn random_edge_address() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(ip), 443)
 }
 
-async fn candidates(host: &str) -> Vec<SocketAddr> {
-    let mut list: Vec<SocketAddr> = Vec::new();
+/// Whether an address the system resolver gave for the api can be a
+/// Cloudflare edge: public IPv4 only. A filtered resolver answers a blocked
+/// name with a private address (10.10.34.x in Iran), which leads to a block
+/// page or nowhere and only costs a connect timeout per fingerprint.
+fn usable_edge(address: &SocketAddr) -> bool {
+    match address.ip() {
+        IpAddr::V4(v4) => {
+            let [first, second, ..] = v4.octets();
+            let shared = first == 100 && (second & 0xc0) == 64;
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || first == 0
+                || shared)
+        }
+        IpAddr::V6(_) => false,
+    }
+}
 
-    while list.len() < EDGE_SAMPLES {
+/// The edge addresses to try. With --ech the api name is not looked up at
+/// all: a plaintext DNS question for api.cloudflareclient.com would put on the
+/// wire exactly what the ECH handshake hides, and a filtered resolver answers
+/// it late or with a block address anyway. Without --ech the system resolver
+/// gets [RESOLVE_TIMEOUT].
+async fn candidates(host: &str) -> Vec<SocketAddr> {
+    let ech = crate::dns::ech_requested();
+    let samples = if ech {
+        EDGE_SAMPLES + RESOLVED_SAMPLES
+    } else {
+        EDGE_SAMPLES
+    };
+
+    let mut list: Vec<SocketAddr> = Vec::new();
+    while list.len() < samples {
         let candidate = random_edge_address();
         if !list.contains(&candidate) {
             list.push(candidate);
         }
     }
 
-    if let Ok(resolved) = tokio::net::lookup_host((host, 443)).await {
-        for address in resolved
-            .filter(|entry| entry.is_ipv4())
-            .take(RESOLVED_SAMPLES)
-        {
-            if !list.contains(&address) {
-                list.push(address);
+    if ech {
+        return list;
+    }
+
+    match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 443))).await {
+        Ok(Ok(resolved)) => {
+            for address in resolved.filter(usable_edge).take(RESOLVED_SAMPLES) {
+                if !list.contains(&address) {
+                    list.push(address);
+                }
             }
         }
+        Ok(Err(error)) => log::debug!("[apifront] {host} did not resolve: {error}"),
+        Err(_) => log::info!(
+            "[apifront] the system resolver took over {}s for {host}; using edge addresses only",
+            RESOLVE_TIMEOUT.as_secs()
+        ),
     }
 
     list
@@ -496,22 +592,39 @@ fn cached_ech() -> Option<Vec<u8>> {
 
 /// Hands a key an edge sent back to the core, which keeps it for every later
 /// ECH handshake of the process, the MASQUE tunnel's included. Returns whether
-/// it was kept: only a plausible ECHConfigList is.
+/// it was kept: only a plausible ECHConfigList is, and never the bootstrap
+/// set, which no edge can decrypt.
 fn remember_ech(list: Vec<u8>) -> bool {
+    if list.as_slice() == BOOTSTRAP_ECH_CONFIG.as_slice() {
+        return false;
+    }
     crate::dns::remember(list)
 }
 
-/// The ECH keys come from the core, never from here (fix/ech-from-core): the
-/// key the session already has, the base64 list --ech was given, or the
-/// lookup AETHER_ECH_DOMAIN / AETHER_ECH_DNS configure. Cloudflare publishes
-/// one shared key set, so the keys of any name it fronts with ECH also
-/// encrypt a client hello meant for the api.
+/// The ECH keys come from the core (fix/ech-from-core): the key the session
+/// already has, the base64 list --ech was given, or the lookup
+/// AETHER_ECH_DOMAIN / AETHER_ECH_DNS configure. Cloudflare publishes one
+/// shared key set, so the keys of any name it fronts with ECH also encrypt a
+/// client hello meant for the api.
+///
+/// fix/ech-bootstrap-race: the lookup gets [ECH_KEY_WAIT], and without an
+/// answer by then the route starts from [BOOTSTRAP_ECH_CONFIG] and the edge
+/// hands back its live keys. Before, no answer meant no ECH at all, and that
+/// is exactly what a filtered line gives.
 async fn ech_config_list() -> Option<Vec<u8>> {
-    let list = crate::dns::session_key().await;
-    if list.is_none() {
-        log::info!("[apifront] the core has no ECHConfigList for the api; skipping the ech route");
+    match tokio::time::timeout(ECH_KEY_WAIT, crate::dns::session_key()).await {
+        Ok(Some(list)) => return Some(list),
+        Ok(None) => log::info!(
+            "[apifront] the core has no ECHConfigList for the api; offering the bootstrap key \
+             set, the edge hands back its live keys"
+        ),
+        Err(_) => log::info!(
+            "[apifront] no ECHConfigList after {}s; offering the bootstrap key set, the edge \
+             hands back its live keys",
+            ECH_KEY_WAIT.as_secs()
+        ),
     }
-    list
+    Some(BOOTSTRAP_ECH_CONFIG.to_vec())
 }
 
 fn render_request(request: &ApiRequest) -> Vec<u8> {
@@ -617,12 +730,15 @@ fn final_api_answer(response: &ApiResponse) -> bool {
         && response.body.trim_start().starts_with('{')
 }
 
-async fn exchange(
-    request: &ApiRequest,
+/// A tcp connection to `address` and a tls handshake for `host` over it, with
+/// `fingerprint`'s ClientHello and, when given, ECH with `ech`. The request is
+/// not sent yet (see [send]).
+async fn establish(
+    host: &str,
     address: SocketAddr,
     fingerprint: Fingerprint,
     ech: Option<&[u8]>,
-) -> Result<ApiResponse> {
+) -> Result<ApiStream> {
     let tcp = match crate::upstream::configured() {
         Some(proxy) => tokio::time::timeout(PROXY_CONNECT_TIMEOUT, proxy.connect(address))
             .await
@@ -647,12 +763,12 @@ async fn exchange(
 
     let handshake = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        tokio_boring::connect(config, &request.host, stream),
+        tokio_boring::connect(config, host, stream),
     )
     .await
     .map_err(|_| AetherError::Api(format!("tls handshake with {address} timed out")))?;
 
-    let mut tls = match handshake {
+    let tls = match handshake {
         Ok(tls) => tls,
         Err(error) => {
             if ech.is_some() {
@@ -692,6 +808,37 @@ async fn exchange(
         )));
     }
 
+    Ok(tls)
+}
+
+/// An ECH handshake with `address`, plus a single retry when the edge rejects
+/// our keys but hands back the ones it currently serves. With the bootstrap
+/// key set that retry is the normal path: the first handshake only fetches
+/// the keys.
+async fn establish_ech(host: &str, address: SocketAddr, list: Vec<u8>) -> Result<ApiStream> {
+    match establish(host, address, Fingerprint::Ech, Some(&list)).await {
+        Err(first) => match cached_ech() {
+            Some(fresh) if fresh != list => {
+                log::info!("[apifront] first ech attempt via {address} failed: {first}");
+                log::info!(
+                    "[apifront] retrying {address} with the {} byte ech key set it handed back",
+                    fresh.len()
+                );
+                establish(host, address, Fingerprint::Ech, Some(&fresh)).await
+            }
+            _ => Err(first),
+        },
+        established => established,
+    }
+}
+
+/// The request, over a stream [establish] brought up, and the answer.
+async fn send(
+    request: &ApiRequest,
+    mut tls: ApiStream,
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+) -> Result<ApiResponse> {
     let wire = render_request(request);
 
     let collected = tokio::time::timeout(EXCHANGE_TIMEOUT, async {
@@ -725,115 +872,228 @@ async fn exchange(
     })
 }
 
-/// One ech attempt, plus a single retry when the edge rejects our keys but
-/// hands back the ones it currently serves.
+#[cfg(test)]
+async fn exchange(
+    request: &ApiRequest,
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+    ech: Option<&[u8]>,
+) -> Result<ApiResponse> {
+    let tls = establish(&request.host, address, fingerprint, ech).await?;
+    send(request, tls, address, fingerprint).await
+}
+
+#[cfg(test)]
 async fn attempt_ech(
     request: &ApiRequest,
     address: SocketAddr,
-    ech: &mut Option<Vec<u8>>,
+    list: Vec<u8>,
 ) -> Result<ApiResponse> {
-    let list = match ech.clone() {
-        Some(list) => list,
-        None => return Err(AetherError::Ech("no ech config list".into())),
+    let tls = establish_ech(&request.host, address, list).await?;
+    send(request, tls, address, Fingerprint::Ech).await
+}
+
+/// One attempt of the camouflaged route: one fingerprint to one address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Attempt {
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+}
+
+/// Every attempt, in the order they are started: ECH on every address first,
+/// then each other fingerprint on every address.
+fn attempt_plan(addresses: &[SocketAddr], with_ech: bool) -> VecDeque<Attempt> {
+    Fingerprint::all()
+        .into_iter()
+        .filter(|fingerprint| with_ech || *fingerprint != Fingerprint::Ech)
+        .flat_map(|fingerprint| {
+            addresses.iter().map(move |&address| Attempt {
+                address,
+                fingerprint,
+            })
+        })
+        .collect()
+}
+
+/// One attempt, start to answer. The handshakes of many attempts race, but
+/// only one request is on the wire at a time (`turn`): the first attempt
+/// whose handshake is done sends it, and the next one only if that fails. A
+/// registration sent twice would make two devices.
+async fn run_attempt(
+    request: &ApiRequest,
+    attempt: Attempt,
+    ech: Option<&[u8]>,
+    turn: &Semaphore,
+) -> Result<ApiResponse> {
+    let tls = match attempt.fingerprint {
+        Fingerprint::Ech => {
+            // A key another attempt already got from an edge beats the one
+            // this route started with (the bootstrap set, at worst).
+            let list = cached_ech()
+                .or_else(|| ech.map(<[u8]>::to_vec))
+                .ok_or_else(|| AetherError::Ech("no ech config list".into()))?;
+            establish_ech(&request.host, attempt.address, list).await?
+        }
+        other => establish(&request.host, attempt.address, other, None).await?,
     };
 
-    match exchange(request, address, Fingerprint::Ech, Some(&list)).await {
-        Err(first) => match cached_ech() {
-            Some(fresh) if fresh != list => {
-                log::info!("[apifront] first ech attempt via {address} failed: {first}");
-                log::info!(
-                    "[apifront] retrying {address} with the {} byte ech key set it handed back",
-                    fresh.len()
-                );
-                *ech = Some(fresh.clone());
-                exchange(request, address, Fingerprint::Ech, Some(&fresh)).await
-            }
-            _ => Err(first),
-        },
-        outcome => outcome,
-    }
+    let _turn = turn
+        .acquire()
+        .await
+        .map_err(|_| AetherError::Api("the camouflaged route was closed".into()))?;
+    send(request, tls, attempt.address, attempt.fingerprint).await
 }
 
 pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
-    let addresses = candidates(&request.host).await;
+    // Load (and log) the trust store up front rather than inside the first handshake.
+    let _ = trust_roots();
+
+    // The edge addresses and the ECH key are worked out side by side.
+    let (addresses, ech) = tokio::join!(candidates(&request.host), ech_config_list());
     if addresses.is_empty() {
         return Err(AetherError::Api(
             "no camouflaged route to the api was available".into(),
         ));
     }
 
-    // Load (and log) the trust store up front rather than inside the first handshake.
-    let _ = trust_roots();
-
     // Through an upstream proxy a failed connect says the circuit was slow or
     // down, not that the edge address is dead, so addresses are never written
     // off in that case.
     let proxied = crate::upstream::configured().is_some();
 
-    let mut ech = ech_config_list().await;
+    let ech_key = ech.as_deref();
+    let turn = Semaphore::new(1);
+    let turn = &turn;
+
+    let mut queue = attempt_plan(&addresses, ech_key.is_some());
+    log::info!(
+        "[apifront] racing {} attempts over {} edge addresses{}, {} at a time",
+        queue.len(),
+        addresses.len(),
+        if ech_key.is_some() { ", ech first" } else { "" },
+        PARALLEL_ATTEMPTS
+    );
+
+    let started = Instant::now();
+    let stop_starting = started + ROUTE_BUDGET;
+    let give_up = stop_starting + ROUTE_GRACE;
+    let ech_alone_until = started + ECH_HEAD_START;
+    let mut next_start = started;
+    let mut ech_running = 0usize;
+    let mut running = FuturesUnordered::new();
 
     let mut rejection: Option<ApiResponse> = None;
     let mut failure: Option<AetherError> = None;
     let mut unreachable: Vec<SocketAddr> = Vec::new();
 
-    for fingerprint in Fingerprint::all() {
-        if fingerprint == Fingerprint::Ech && ech.is_none() {
-            continue;
+    loop {
+        let now = Instant::now();
+        if now >= give_up {
+            log::info!(
+                "[apifront] the camouflaged route used its {}s; giving up",
+                (ROUTE_BUDGET + ROUTE_GRACE).as_secs()
+            );
+            break;
+        }
+        if now >= stop_starting && !queue.is_empty() {
+            log::info!(
+                "[apifront] {}s on the camouflaged route; {} attempts left unstarted",
+                ROUTE_BUDGET.as_secs(),
+                queue.len()
+            );
+            queue.clear();
         }
 
-        for address in &addresses {
-            if unreachable.contains(address) {
+        let mut wake = give_up;
+        while let Some(attempt) = queue.front().copied() {
+            if unreachable.contains(&attempt.address) {
+                queue.pop_front();
                 continue;
             }
-
-            let outcome = match fingerprint {
-                Fingerprint::Ech => attempt_ech(request, *address, &mut ech).await,
-                other => exchange(request, *address, other, None).await,
-            };
-
-            match outcome {
-                Ok(response) if (200..300).contains(&response.status) => {
-                    return Ok(response);
-                }
-                Ok(response) => {
-                    log::info!(
-                        "[apifront] {} answered {} via {}: {}",
-                        request.host,
-                        response.status,
-                        response.route,
-                        response.body.chars().take(160).collect::<String>()
-                    );
-                    if final_api_answer(&response) {
-                        log::info!(
-                            "[apifront] the api itself refused the request; another route \
-                             would get the same answer, so stopping here"
-                        );
-                        return Ok(response);
-                    }
-                    if rejection.is_none() || response.status != 403 {
-                        rejection = Some(response);
-                    }
-                }
-                Err(error) => {
-                    log::info!(
-                        "[apifront] {} attempt via {address} failed: {error}",
-                        fingerprint.label()
-                    );
-                    if !proxied && never_connected(&error) {
-                        log::info!(
-                            "[apifront] {address} never accepted a tcp connection; \
-                             leaving it out of the remaining attempts"
-                        );
-                        unreachable.push(*address);
-                    }
-                    failure = Some(error);
-                }
+            if running.len() >= PARALLEL_ATTEMPTS {
+                break;
             }
+            if now < next_start {
+                wake = wake.min(next_start);
+                break;
+            }
+            if attempt.fingerprint != Fingerprint::Ech && ech_running > 0 && now < ech_alone_until
+            {
+                wake = wake.min(ech_alone_until);
+                break;
+            }
+            queue.pop_front();
+            if attempt.fingerprint == Fingerprint::Ech {
+                ech_running += 1;
+            }
+            running.push(async move {
+                let outcome = run_attempt(request, attempt, ech_key, turn).await;
+                (attempt, outcome)
+            });
+            next_start = now + ATTEMPT_STAGGER;
         }
 
-        if unreachable.len() == addresses.len() {
-            log::info!("[apifront] no edge address accepted a tcp connection; giving up early");
+        if running.is_empty() && queue.is_empty() {
             break;
+        }
+
+        tokio::select! {
+            finished = running.next(), if !running.is_empty() => {
+                if let Some((attempt, outcome)) = finished {
+                    if attempt.fingerprint == Fingerprint::Ech {
+                        ech_running = ech_running.saturating_sub(1);
+                    }
+                    let address = attempt.address;
+                    match outcome {
+                        Ok(response) if (200..300).contains(&response.status) => {
+                            return Ok(response);
+                        }
+                        Ok(response) => {
+                            log::info!(
+                                "[apifront] {} answered {} via {}: {}",
+                                request.host,
+                                response.status,
+                                response.route,
+                                response.body.chars().take(160).collect::<String>()
+                            );
+                            if final_api_answer(&response) {
+                                log::info!(
+                                    "[apifront] the api itself refused the request; another \
+                                     route would get the same answer, so stopping here"
+                                );
+                                return Ok(response);
+                            }
+                            if rejection.is_none() || response.status != 403 {
+                                rejection = Some(response);
+                            }
+                        }
+                        Err(error) => {
+                            log::info!(
+                                "[apifront] {} attempt via {address} failed: {error}",
+                                attempt.fingerprint.label()
+                            );
+                            if !proxied
+                                && never_connected(&error)
+                                && !unreachable.contains(&address)
+                            {
+                                log::info!(
+                                    "[apifront] {address} never accepted a tcp connection; \
+                                     leaving it out of the remaining attempts"
+                                );
+                                unreachable.push(address);
+                                if unreachable.len() == addresses.len() {
+                                    log::info!(
+                                        "[apifront] no edge address accepted a tcp \
+                                         connection; giving up early"
+                                    );
+                                }
+                            }
+                            failure = Some(error);
+                        }
+                    }
+                }
+            }
+            _ = tokio::time::sleep_until(wake) => {}
         }
     }
 
@@ -841,7 +1101,12 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
         return Ok(response);
     }
 
-    Err(failure.unwrap_or_else(|| AetherError::Api("every camouflaged route failed".into())))
+    Err(failure.unwrap_or_else(|| {
+        AetherError::Api(format!(
+            "no camouflaged route answered within {}s",
+            (ROUTE_BUDGET + ROUTE_GRACE).as_secs()
+        ))
+    }))
 }
 
 #[cfg(test)]
@@ -887,6 +1152,10 @@ mod tests {
             body: body.to_string(),
             route: "test".to_string(),
         }
+    }
+
+    fn edge(host: u8) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(141, 101, 113, host)), 443)
     }
 
     #[test]
@@ -1044,6 +1313,102 @@ mod tests {
                 IpAddr::V6(_) => panic!("the edge range is ipv4 only"),
             }
         }
+    }
+
+    #[test]
+    fn a_poisoned_dns_answer_is_never_taken_for_an_edge() {
+        for text in [
+            "10.10.34.34:443",
+            "10.10.34.36:443",
+            "127.0.0.1:443",
+            "0.0.0.0:443",
+            "0.1.2.3:443",
+            "192.168.1.1:443",
+            "172.16.5.4:443",
+            "169.254.1.1:443",
+            "100.64.0.1:443",
+            "224.0.0.1:443",
+            "255.255.255.255:443",
+            "[2606:4700::6810:1]:443",
+        ] {
+            let address: SocketAddr = text.parse().unwrap();
+            assert!(!usable_edge(&address), "{text}");
+        }
+        for text in ["104.16.18.94:443", "162.159.192.1:443", "141.101.113.7:443"] {
+            let address: SocketAddr = text.parse().unwrap();
+            assert!(usable_edge(&address), "{text}");
+        }
+    }
+
+    #[test]
+    fn every_ech_attempt_is_queued_before_any_other_fingerprint() {
+        let addresses: Vec<SocketAddr> = (1..=4).map(edge).collect();
+        let plan = attempt_plan(&addresses, true);
+        assert_eq!(plan.len(), addresses.len() * Fingerprint::all().len());
+        assert!(plan
+            .iter()
+            .take(addresses.len())
+            .all(|attempt| attempt.fingerprint == Fingerprint::Ech));
+        assert!(plan
+            .iter()
+            .skip(addresses.len())
+            .all(|attempt| attempt.fingerprint != Fingerprint::Ech));
+        for address in &addresses {
+            assert!(plan
+                .iter()
+                .take(addresses.len())
+                .any(|attempt| attempt.address == *address));
+        }
+
+        let without = attempt_plan(&addresses, false);
+        assert_eq!(
+            without.len(),
+            addresses.len() * (Fingerprint::all().len() - 1)
+        );
+        assert!(without
+            .iter()
+            .all(|attempt| attempt.fingerprint != Fingerprint::Ech));
+    }
+
+    #[test]
+    fn the_route_fits_inside_one_smart_auto_rung() {
+        // A Smart Auto rung waits 75 s for the engine; the key fetch gives
+        // MASQUE's two api calls 240 s together.
+        assert!(ROUTE_BUDGET + ROUTE_GRACE <= Duration::from_secs(60));
+        assert!(ECH_KEY_WAIT < ROUTE_BUDGET);
+        assert!(ECH_HEAD_START < ROUTE_BUDGET);
+        assert!(PARALLEL_ATTEMPTS >= 2);
+    }
+
+    #[test]
+    fn the_bootstrap_key_set_is_shaped_like_cloudflares() {
+        let list = &BOOTSTRAP_ECH_CONFIG;
+        assert!(crate::dns::plausible_ech_list(list));
+        // ECHConfigList length, then one ECHConfig of version 0xfe0d.
+        assert_eq!(u16::from_be_bytes([list[0], list[1]]) as usize, list.len() - 2);
+        assert_eq!(&list[2..4], &[0xfe, 0x0d]);
+        assert_eq!(u16::from_be_bytes([list[4], list[5]]) as usize, list.len() - 6);
+        // DHKEM(X25519, HKDF-SHA256) with a 32 byte public key.
+        assert_eq!(&list[7..9], &[0x00, 0x20]);
+        assert_eq!(&list[9..11], &[0x00, 0x20]);
+        // One suite: HKDF-SHA256, AES-128-GCM. No name padding.
+        assert_eq!(&list[43..49], &[0x00, 0x04, 0x00, 0x01, 0x00, 0x01]);
+        assert_eq!(list[49], 0);
+        // The public name the edge answers a rejection as, and no extensions.
+        let name_len = list[50] as usize;
+        assert_eq!(&list[51..51 + name_len], b"cloudflare-ech.com");
+        assert_eq!(&list[51 + name_len..], &[0, 0]);
+    }
+
+    #[test]
+    fn boring_takes_the_bootstrap_key_set() {
+        let mut config = Fingerprint::Ech.configure().expect("ech configures");
+        assert!(crate::tls::set_ech_config_list(&mut config, &BOOTSTRAP_ECH_CONFIG).is_ok());
+    }
+
+    #[test]
+    fn the_bootstrap_key_set_never_becomes_the_session_key() {
+        assert!(!remember_ech(BOOTSTRAP_ECH_CONFIG.to_vec()));
     }
 
     #[test]
@@ -1208,21 +1573,42 @@ mod tests {
             body: None,
         };
 
-        let mut ech = ech_config_list().await;
-        assert!(
-            ech.is_some(),
-            "no ECHConfigList; set AETHER_ECH to a base64 list, or AETHER_ECH_DOMAIN / \
-             AETHER_ECH_DNS to a lookup that answers here (e.g. ip.gs, udp://8.8.8.8)"
-        );
+        let list = ech_config_list()
+            .await
+            .expect("always a key set, the bootstrap one at worst");
 
         let address = random_edge_address();
-        let response = attempt_ech(&request, address, &mut ech)
+        let response = attempt_ech(&request, address, list)
             .await
             .expect("the ech route should reach the api");
         println!(
             "ech -> {} via {}: {}",
             response.status, response.route, response.body
         );
+        assert!(
+            !response.body.trim_start().starts_with('<'),
+            "an html page means the edge did not route us to the api"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs live network access to the cloudflare edge"]
+    async fn the_bootstrap_key_set_brings_back_the_live_keys() {
+        // No DNS at all: the edge rejects the bootstrap set, hands back its
+        // live keys, and the retry is a real ECH handshake.
+        let request = ApiRequest {
+            method: "GET".to_string(),
+            host: "api.cloudflareclient.com".to_string(),
+            path: "/v0a4471/reg/nonexistent".to_string(),
+            headers: vec![("User-Agent".to_string(), "WARP for Android".to_string())],
+            body: None,
+        };
+
+        let address = random_edge_address();
+        let response = attempt_ech(&request, address, BOOTSTRAP_ECH_CONFIG.to_vec())
+            .await
+            .expect("the edge should hand back its keys and accept them");
+        assert!(cached_ech().is_some(), "the live keys are kept for the tunnel");
         assert!(
             !response.body.trim_start().starts_with('<'),
             "an html page means the edge did not route us to the api"
