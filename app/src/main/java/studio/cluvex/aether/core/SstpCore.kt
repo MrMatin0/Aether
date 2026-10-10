@@ -20,8 +20,10 @@ import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import javax.net.ssl.HttpsURLConnection
@@ -35,6 +37,7 @@ import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
@@ -47,8 +50,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import studio.cluvex.aether.model.SstpConfig
 
 /**
@@ -106,7 +110,9 @@ import studio.cluvex.aether.model.SstpConfig
  * Everything blocking runs on [Dispatchers.IO]. Writes are serialised by one
  * lock per session. [start] and [stop] are cheap and safe to call from the
  * main thread: sockets are never closed there (an SSLSocket close writes a
- * TLS alert, which StrictMode would kill the process for).
+ * TLS alert, which StrictMode would kill the process for). Teardown never
+ * waits on that lock for longer than [CLOSE_GRACE_MS]: a TLS write has no
+ * timeout, so a stalled network must not be able to hang a stop or reconnect.
  */
 object SstpCore {
 
@@ -205,6 +211,9 @@ object SstpCore {
     private const val MAX_AUTH_NAKS = 4
     private const val KEEPALIVE_MS = 20_000L
     private const val IDLE_TIMEOUT_MS = 70_000L
+
+    /** Longest a teardown waits for the write lock / the goodbye before it closes the socket anyway. */
+    private const val CLOSE_GRACE_MS = 1_000L
     private const val FRAME_QUEUE = 256
     private const val TUN_READ_BUFFER = 32_767
 
@@ -583,12 +592,38 @@ object SstpCore {
         return options
     }
 
+    /**
+     * One frame, or null once [timeoutMs] has passed, WITHOUT ever losing a
+     * frame.
+     *
+     * This used to be `withTimeoutOrNull(ms) { frames.receive() }`. With
+     * kotlinx's prompt cancellation guarantee, a receive() that is cancelled
+     * by the timeout just as a frame is handed over takes the frame out of the
+     * channel and then throws, so the frame is silently dropped. During
+     * negotiation that frame can be the LCP Ack, the CHAP Success or the IPCP
+     * Nak carrying our address, and the session then stalls until the PPP
+     * timeout instead of connecting. select{} picks the frame or the timeout
+     * atomically, never both.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun receiveWithin(frames: ReceiveChannel<Frame>, timeoutMs: Long): Frame? =
+        select<Frame?> {
+            frames.onReceive { it }
+            onTimeout(timeoutMs) { null }
+        }
+
     // ============================================================ session ==
 
     /** One connection attempt. Never reused: a new [start] makes a new one. */
     private class Session(val config: SstpConfig) {
         private val closed = AtomicBoolean(false)
-        private val writeLock = Any()
+
+        /**
+         * Serialises writes. A ReentrantLock rather than a monitor so teardown
+         * can give up on it (tryLock) instead of queueing forever behind a
+         * writer stuck in a stalled TLS write.
+         */
+        private val writeLock = ReentrantLock()
         private val random = SecureRandom()
 
         @Volatile private var raw: Socket? = null
@@ -635,6 +670,11 @@ object SstpCore {
         private var msChapExpected: String? = null
         private var msChapHlak: ByteArray? = null
 
+        /** The last MS-CHAPv2 challenge answered, and our answer, for retransmits. */
+        private var msChapChallengeId = -1
+        private var msChapChallenge: ByteArray? = null
+        private var msChapResponse: ByteArray? = null
+
         private var ipcpReqId = -1
         private var ipcpOurOpen = false
         private var ipcpPeerOpen = false
@@ -680,17 +720,46 @@ object SstpCore {
             }
         }
 
+        /**
+         * Ends the session: a best-effort Call Disconnect, then the sockets.
+         *
+         * Bounded on purpose. A TLS write has no timeout, so on a stalled
+         * network the TUN pump can sit in write() holding [writeLock] for as
+         * long as the peer stops reading. The old close() sent the disconnect
+         * through that same lock, queued behind the stuck writer, and never
+         * got as far as closing the sockets, which is the only thing that
+         * would have unblocked the writer: stop() and reconnects hung. Now the
+         * lock is waited on for at most [CLOSE_GRACE_MS], and a watchdog closes
+         * the TCP socket if the goodbye or the TLS close itself gets stuck.
+         */
         fun close() {
             if (!closed.compareAndSet(false, true)) return
-            if (connected && !peerClosed) {
-                try {
-                    sendControl(MSG_CALL_DISCONNECT)
-                } catch (_: Exception) {
-                }
-            }
+            val sayGoodbye = connected && !peerClosed
             connected = false
-            try { ssl?.close() } catch (_: Exception) { }
-            try { raw?.close() } catch (_: Exception) { }
+            val watchdog = cleanupScope.launch {
+                delay(CLOSE_GRACE_MS)
+                try { raw?.close() } catch (_: Exception) { }
+            }
+            try {
+                if (sayGoodbye) sendDisconnect()
+                try { ssl?.close() } catch (_: Exception) { }
+                try { raw?.close() } catch (_: Exception) { }
+            } finally {
+                watchdog.cancel()
+            }
+        }
+
+        private fun sendDisconnect() {
+            try {
+                if (!writeLock.tryLock(CLOSE_GRACE_MS, TimeUnit.MILLISECONDS)) return
+                try {
+                    output.write(buildControl(MSG_CALL_DISCONNECT, emptyList()))
+                    output.flush()
+                } finally {
+                    writeLock.unlock()
+                }
+            } catch (_: Exception) {
+            }
         }
 
         fun sendIp(packet: ByteArray, offset: Int, length: Int): Boolean {
@@ -781,9 +850,12 @@ object SstpCore {
         // ------------------------------------------------------ SSTP I/O --
 
         private fun write(packet: ByteArray) {
-            synchronized(writeLock) {
+            writeLock.lock()
+            try {
                 output.write(packet)
                 output.flush()
+            } finally {
+                writeLock.unlock()
             }
         }
 
@@ -860,7 +932,7 @@ object SstpCore {
             while (true) {
                 val left = deadline - now()
                 if (left <= 0) throw SstpException("The server did not answer the SSTP call request")
-                val frame = withTimeoutOrNull(left) { frames.receive() } ?: continue
+                val frame = receiveWithin(frames, left) ?: continue
                 if (!frame.control) continue
                 val message = parseControl(frame.body) ?: continue
                 when (message.type) {
@@ -950,7 +1022,7 @@ object SstpCore {
             while (!(ipcpOurOpen && ipcpPeerOpen)) {
                 val left = deadline - now()
                 if (left <= 0) throw SstpException(stalledMessage())
-                val frame = withTimeoutOrNull(minOf(left, RETRANSMIT_MS)) { frames.receive() }
+                val frame = receiveWithin(frames, minOf(left, RETRANSMIT_MS))
                 if (frame == null) {
                     retransmit()
                     continue
@@ -1216,10 +1288,26 @@ object SstpCore {
             sendPppControl(PPP_CHAP, CHAP_RESPONSE, id, data)
         }
 
-        /** RFC 2759 section 4: Response = value-size(49) | value | name. */
+        /**
+         * RFC 2759 section 4: Response = value-size(49) | value | name.
+         *
+         * A RETRANSMITTED challenge (same identifier, same bytes) gets the SAME
+         * response. It used to get a fresh peer challenge, which replaced the
+         * expected authenticator and the HLAK; the server, which had already
+         * accepted our first response, then sent a Success computed for THAT
+         * one, and it failed verification ("could not prove it knows the
+         * password") - and even past that, the crypto binding would have been
+         * keyed with the wrong HLAK. RFC 1994 4.1: a retransmission must carry
+         * the same response.
+         */
         private fun answerMsChapV2(id: Int, challenge: ByteArray) {
             if (challenge.size != MsChapV2.AUTH_CHALLENGE_LENGTH) {
                 throw SstpException("Malformed MS-CHAPv2 challenge from the server")
+            }
+            val cached = msChapResponse
+            if (cached != null && id == msChapChallengeId && challenge.contentEquals(msChapChallenge)) {
+                sendPppControl(PPP_CHAP, CHAP_RESPONSE, id, cached)
+                return
             }
             val peerChallenge = ByteArray(MsChapV2.PEER_CHALLENGE_LENGTH).also(random::nextBytes)
             val exchange = MsChapV2.respond(config.username, config.password, challenge, peerChallenge)
@@ -1230,6 +1318,9 @@ object SstpCore {
             data[0] = exchange.responseValue.size.toByte()
             exchange.responseValue.copyInto(data, 1)
             user.copyInto(data, 1 + exchange.responseValue.size)
+            msChapChallengeId = id
+            msChapChallenge = challenge
+            msChapResponse = data
             sendPppControl(PPP_CHAP, CHAP_RESPONSE, id, data)
         }
 
@@ -1244,27 +1335,32 @@ object SstpCore {
             sendPppControl(PPP_IPCP, CONF_REQ, ipcpReqId, options.toByteArray())
         }
 
+        /** Acks the server's IPCP Configure-Request (its own address only) or rejects everything else. */
+        private fun answerPeerIpcpRequest(packet: PppControl) {
+            val options = parseOptions(packet.data) ?: return
+            val rejected = ByteArrayOutputStream()
+            var address: ByteArray? = null
+            for (option in options) {
+                if (option.type == IPCP_OPT_ADDRESS && option.data.size == 4) {
+                    address = option.data
+                } else {
+                    rejected.write(option.encode())
+                }
+            }
+            if (rejected.size() > 0) {
+                sendPppControl(PPP_IPCP, CONF_REJ, packet.id, rejected.toByteArray())
+            } else {
+                if (address != null) peerIp = address
+                sendPppControl(PPP_IPCP, CONF_ACK, packet.id, packet.data)
+                ipcpPeerOpen = true
+            }
+        }
+
         private fun onIpcp(frame: PppFrame) {
             if (phase != Phase.NETWORK) return
             val packet = parsePppControl(frame.info) ?: return
             when (packet.code) {
-                CONF_REQ -> {
-                    val options = parseOptions(packet.data) ?: return
-                    val rejected = ByteArrayOutputStream()
-                    for (option in options) {
-                        if (option.type == IPCP_OPT_ADDRESS && option.data.size == 4) {
-                            peerIp = option.data
-                        } else {
-                            rejected.write(option.encode())
-                        }
-                    }
-                    if (rejected.size() > 0) {
-                        sendPppControl(PPP_IPCP, CONF_REJ, packet.id, rejected.toByteArray())
-                    } else {
-                        sendPppControl(PPP_IPCP, CONF_ACK, packet.id, packet.data)
-                        ipcpPeerOpen = true
-                    }
-                }
+                CONF_REQ -> answerPeerIpcpRequest(packet)
                 CONF_ACK -> {
                     if (packet.id != ipcpReqId) return
                     if (localIp.all { it == ZERO }) throw SstpException("The server did not assign an IP address")
@@ -1301,6 +1397,26 @@ object SstpCore {
             }
         }
 
+        /**
+         * IPCP once the tunnel is up. It used to be dropped outright, so a
+         * server that re-sent its Configure-Request (its retransmit timer fired
+         * before our Ack reached it) never got an answer, and an IPCP
+         * Terminate-Request went unnoticed until the idle watchdog fired 70 s
+         * later. Our own address is settled by now, so only the server's side
+         * is answered here.
+         */
+        private fun onIpcpWhileUp(frame: PppFrame) {
+            val packet = parsePppControl(frame.info) ?: return
+            when (packet.code) {
+                CONF_REQ -> answerPeerIpcpRequest(packet)
+                TERM_REQ -> {
+                    sendPppControl(PPP_IPCP, TERM_ACK, packet.id, EMPTY)
+                    throw SstpException("The server closed the IP layer")
+                }
+                else -> Unit
+            }
+        }
+
         private fun buildTunnelInfo(): TunnelInfo {
             tunnelMtu = minOf(config.effectiveMtu, peerMru)
             val dns = ArrayList<String>(2)
@@ -1329,7 +1445,8 @@ object SstpCore {
                 when (ppp.protocol) {
                     PPP_IP -> deliver(ppp.info)
                     PPP_LCP -> onLcp(ppp)
-                    PPP_IPCP, PPP_PAP, PPP_CHAP -> Unit
+                    PPP_IPCP -> onIpcpWhileUp(ppp)
+                    PPP_PAP, PPP_CHAP -> Unit
                     else -> protocolReject(ppp)
                 }
             }
