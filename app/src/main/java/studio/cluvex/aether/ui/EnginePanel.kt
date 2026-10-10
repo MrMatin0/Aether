@@ -53,13 +53,19 @@ internal fun EngineDestination(
                 masqueHttp2 = profile.masqueHttp2,
                 enabled = enabled, edit = edit,
             )
-            SettingsPage.CHAIN -> ChainSection(
-                chain = profile.chain, psiphonRegion = profile.psiphonRegion,
-                psiphonProtocol = profile.psiphonProtocol,
-                psiphonCdnEdgeIps = profile.psiphonCdnEdgeIps,
-                psiphonCdnSni = profile.psiphonCdnSni,
-                enabled = enabled, edit = edit,
-            )
+            SettingsPage.CHAIN -> {
+                ChainSection(
+                    chain = profile.chain, psiphonRegion = profile.psiphonRegion,
+                    psiphonProtocol = profile.psiphonProtocol,
+                    psiphonCdnEdgeIps = profile.psiphonCdnEdgeIps,
+                    psiphonCdnSni = profile.psiphonCdnSni,
+                    enabled = enabled, edit = edit,
+                )
+                if (profile.chain.usesSstp) {
+                    Spacer(Modifier.height(32.dp))
+                    SstpDestination(config = profile.sstpConfig, enabled = enabled, edit = edit)
+                }
+            }
             SettingsPage.BRIDGES -> BridgeSection(
                 bridgeMode = profile.torBridgeMode, transport = profile.torBridgeTransport,
                 bridgeLines = profile.torBridgeLines, chain = profile.chain,
