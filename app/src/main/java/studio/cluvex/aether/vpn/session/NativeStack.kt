@@ -2,13 +2,23 @@ package studio.cluvex.aether.vpn.session
 
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherProcess
+import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartDnsRuntime
 import studio.cluvex.aether.core.SocksTunBridge
+import studio.cluvex.aether.core.SstpCore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Hop
@@ -18,8 +28,8 @@ private const val TAG = "vpn"
 /**
  * Owns every native moving part of a session: the engine process, the chained
  * overlay cores (Psiphon, Tor, the SOCKS front and the Smart DNS front), the
- * TUN fd, the in-process hev-socks5-tunnel core, the userspace filter bridge
- * and the LAN share listeners.
+ * SSTP packet tunnel, the TUN fd, the in-process hev-socks5-tunnel core, the
+ * userspace filter bridge and the LAN share listeners.
  *
  * This is the whole reason the service used to be 1,000 lines: five pieces of
  * process-wide state, each with its own teardown order, all as loose `var`s on
@@ -39,8 +49,9 @@ private const val TAG = "vpn"
  * happen from a session call, never from an initializer.
  *
  * Teardown ORDER is load-bearing and lives in exactly one place
- * ([stopForwarding]): sharing, then the bridge, then hev, then the chain (fronts
- * first, then Tor, then Psiphon), then the engine, and the TUN last of all.
+ * ([stopForwarding]): the SSTP pump and session, sharing, then the bridge, then
+ * hev, then the chain (fronts first, then Tor, then Psiphon), then the engine,
+ * and the TUN last of all.
  */
 internal class NativeStack(private val service: VpnService) {
 
@@ -55,6 +66,19 @@ internal class NativeStack(private val service: VpnService) {
 
     @Volatile
     private var bridge: SocksTunBridge? = null
+
+    /**
+     * Runs the SSTP core's connection job and the TUN packet pump. Building a
+     * scope touches no Context, so it is safe in an initializer (see the
+     * CONTEXT RULE above).
+     */
+    private val sstpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var sstpPump: Job? = null
+
+    @Volatile
+    private var sstpStarted = false
 
     /**
      * Built LAZILY, and that is load-bearing (see the CONTEXT RULE above).
@@ -147,6 +171,93 @@ internal class NativeStack(private val service: VpnService) {
         runCatching { chain.stop() }
         runCatching { engine?.stop() }
         engine = null
+    }
+
+    // ------------------------------------------------------------------ SSTP
+
+    /** True while the SSTP session this stack started has a live PPP link. */
+    val sstpAlive: Boolean get() = sstpStarted && SstpCore.isConnected
+
+    /**
+     * Dials the profile's SSTP server and waits until IPCP is up, or fails
+     * with the reason the core reported. Returns what the TUN is built from.
+     *
+     * The session socket is handed to VpnService.protect() before it connects
+     * (TODO from the first draft: "protect the SSTP socket before
+     * establish()"). The app's own package is excluded from the TUN as well,
+     * so a reconnect dialled while a TUN is up can never loop into it.
+     *
+     * @throws IllegalStateException with a user-facing message.
+     */
+    suspend fun startSstp(profile: ConnectionProfile, timeoutMs: Long): SstpCore.TunnelInfo {
+        val config = profile.sstpConfig
+        ChainRuntime.begin(ChainMode.SSTP)
+        ChainRuntime.update(Hop.SSTP, ChainRuntime.HopState.STARTING, "${config.hostname}:${config.port}")
+        SstpCore.socketProtector = { socket -> service.protect(socket) }
+        sstpStarted = true
+        SstpCore.start(config, sstpScope)
+
+        val end = withTimeoutOrNull(timeoutMs) {
+            SstpCore.state.first { it == SstpCore.SstpState.CONNECTED || it == SstpCore.SstpState.ERROR }
+        }
+        val info = SstpCore.tunnelInfo.value
+        if (end == SstpCore.SstpState.CONNECTED && info != null) {
+            ChainRuntime.update(Hop.SSTP, ChainRuntime.HopState.READY, info.localIp)
+            return info
+        }
+
+        val reason = SstpCore.statusMessage.value
+        runCatching { SstpCore.stop() }
+        ChainRuntime.update(Hop.SSTP, ChainRuntime.HopState.FAILED, reason.ifBlank { null })
+        DiagnosticsLog.e(TAG, "SSTP did not come up: ${reason.ifBlank { "timed out after ${timeoutMs / 1000}s" }}")
+        throw IllegalStateException(
+            if (end == null) {
+                service.getString(R.string.err_sstp_timeout)
+            } else {
+                service.getString(R.string.err_sstp_failed, reason.ifBlank { "unknown error" })
+            },
+        )
+    }
+
+    /**
+     * Puts up the TUN for an SSTP session, REPLACING whatever TUN is up.
+     *
+     * On a reconnect the old interface stays up until the new one exists, so
+     * there is no moment in which traffic could leave outside the tunnel: the
+     * old pump keeps reading (and dropping) until its fd is closed here.
+     */
+    fun establishSstpTun(profile: ConnectionProfile, info: SstpCore.TunnelInfo) {
+        val fresh = TunFactory.establishSstp(service, profile, info)
+        synchronized(teardownLock) {
+            val previous = tun
+            tun = fresh
+            if (previous != null && previous !== fresh) runCatching { previous.close() }
+        }
+    }
+
+    /** Starts pumping packets between the TUN and the SSTP session. */
+    fun startSstpBridge() {
+        val pfd = tun ?: throw IllegalStateException("TUN descriptor is null")
+        sstpPump?.cancel()
+        DiagnosticsLog.i(TAG, "Starting the SSTP packet pump (fd=${pfd.fd})")
+        sstpPump = sstpScope.launch { SstpCore.bridgeTun(pfd) }
+    }
+
+    /**
+     * A new SSTP session for a live one that dropped: dial, swap the TUN for one
+     * with the (possibly new) address, re-attach the pump.
+     */
+    suspend fun restartSstp(profile: ConnectionProfile, timeoutMs: Long) {
+        val info = startSstp(profile, timeoutMs)
+        establishSstpTun(profile, info)
+        startSstpBridge()
+    }
+
+    /** Parks until the SSTP link leaves CONNECTED or [timeoutMs] elapses. */
+    suspend fun awaitSstpExit(timeoutMs: Long) {
+        withTimeoutOrNull(timeoutMs) {
+            SstpCore.state.first { it != SstpCore.SstpState.CONNECTED }
+        }
     }
 
     // ------------------------------------------------------------------- TUN
@@ -248,6 +359,10 @@ internal class NativeStack(private val service: VpnService) {
     }
 
     private fun stopForwardingLocked() {
+        // SSTP first: its pump writes into the TUN, and its session socket is
+        // the only thing that still talks to the network for it. The pump
+        // itself ends when the TUN is closed (closeTunLocked) or replaced.
+        stopSstpLocked()
         runCatching { ShareBridge.stop() }
         bridge?.let { runCatching { it.stop() } }
         bridge = null
@@ -263,6 +378,16 @@ internal class NativeStack(private val service: VpnService) {
         runCatching { chain.stop() }
         runCatching { engine?.stop() }
         engine = null
+    }
+
+    private fun stopSstpLocked() {
+        sstpPump?.cancel()
+        sstpPump = null
+        if (sstpStarted) {
+            runCatching { SstpCore.stop() }
+            SstpCore.socketProtector = null
+            sstpStarted = false
+        }
     }
 
     private fun closeTunLocked() {

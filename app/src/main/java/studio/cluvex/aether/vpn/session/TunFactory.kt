@@ -4,6 +4,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import studio.cluvex.aether.core.DiagnosticsLog
+import studio.cluvex.aether.core.SstpCore
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
@@ -13,8 +14,9 @@ import studio.cluvex.aether.model.SplitMode
 private const val TAG = "vpn"
 
 /**
- * Builds the two TUN interfaces the service can put up: the forwarding one a
- * live session runs on, and the kill-switch blackhole.
+ * Builds the TUN interfaces the service can put up: the forwarding one a live
+ * SOCKS session runs on, the one an SSTP session runs on, and the kill-switch
+ * blackhole.
  *
  * Everything the platform is told about routing, DNS, MTU and per-app policy is
  * decided here and nowhere else, so a leak can only ever have one root cause.
@@ -74,6 +76,60 @@ internal object TunFactory {
         val tun = build(service, profile, withIpv6Address = true).establish()
             ?: throw IllegalStateException("Failed to establish the VPN interface")
         logEstablished(profile, ipv6Address = true)
+        return tun
+    }
+
+    /**
+     * The interface an SSTP session runs on.
+     *
+     * Not the SOCKS session's interface with a different port: SSTP hands the
+     * device RAW IP PACKETS, so the TUN has to carry the address the server
+     * assigned over IPCP ([SstpCore.TunnelInfo.localIp]) - a packet with the
+     * point-to-point [TunnelConfig.TUN_IPV4] as its source would be dropped by
+     * the server as spoofed. The MTU and the resolvers come from the PPP link
+     * too, falling back to [TunnelConfig.DNS_SERVERS] when the server offered
+     * none.
+     *
+     * IPv6: SSTP here negotiates IPCP only, so the interface has no IPv6
+     * address. With leak protection on, `::/0` is still routed into it, where
+     * [SstpCore.bridgeTun] reads and drops it, exactly like the v4-only exits
+     * above; a ROM that refuses that shape gets an IPv4-only interface.
+     *
+     * Always BLOCKING: the packet pump reads the fd in a plain loop, and a
+     * non-blocking fd would make it spin a core for the whole session.
+     *
+     * The SSTP socket itself never enters the TUN: the app's own package is
+     * excluded by [applyAppFilter], and the socket is `protect()`ed as well.
+     *
+     * @throws IllegalStateException when the platform refuses to establish it.
+     */
+    fun establishSstp(
+        service: VpnService,
+        profile: ConnectionProfile,
+        info: SstpCore.TunnelInfo,
+    ): ParcelFileDescriptor {
+        val dns = info.dnsServers.ifEmpty { TunnelConfig.DNS_SERVERS }
+        val mtu = info.mtu.coerceIn(VpnTunables.MIN_MTU, VpnTunables.MAX_MTU)
+        var ipv6Routed = profile.ipv6LeakProtection
+        var tun = runCatching { buildSstp(service, profile, info.localIp, mtu, dns, ipv6Routed).establish() }
+            .getOrNull()
+        if (tun == null && ipv6Routed) {
+            DiagnosticsLog.w(
+                TAG,
+                "This device refused an SSTP TUN with an IPv6 route and no IPv6 address - " +
+                    "establishing it IPv4-only.",
+            )
+            ipv6Routed = false
+            tun = runCatching { buildSstp(service, profile, info.localIp, mtu, dns, ipv6Route = false).establish() }
+                .getOrNull()
+        }
+        if (tun == null) throw IllegalStateException("Failed to establish the VPN interface")
+        DiagnosticsLog.i(
+            TAG,
+            "SSTP TUN established: ipv4=${info.localIp}/32 mtu=$mtu dns=$dns " +
+                "ipv6=${if (ipv6Routed) "::/0 routed and dropped" else "not routed"} " +
+                "split=${profile.splitMode} apps=${profile.splitApps.size}",
+        )
         return tun
     }
 
@@ -211,6 +267,30 @@ internal object TunFactory {
         // the TUN, equivalent to v2rayNG's in-process protect()).
         applyAppFilter(service, builder, profile)
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
+        }
+        return builder
+    }
+
+    /** The SSTP interface; see [establishSstp] for why every line is what it is. */
+    private fun buildSstp(
+        service: VpnService,
+        profile: ConnectionProfile,
+        localIp: String,
+        mtu: Int,
+        dns: List<String>,
+        ipv6Route: Boolean,
+    ): VpnService.Builder {
+        val builder = with(service) { Builder() }
+            .setSession("Aether+ SSTP")
+            .setMtu(mtu)
+            .addAddress(localIp, 32)
+            .addRoute("0.0.0.0", 0)
+            .setBlocking(true)
+        if (ipv6Route) builder.addRoute("::", 0)
+        dns.forEach { builder.addDnsServer(it) }
+        applyAppFilter(service, builder, profile)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
