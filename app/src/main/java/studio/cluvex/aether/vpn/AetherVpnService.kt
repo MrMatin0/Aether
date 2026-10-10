@@ -25,6 +25,7 @@ import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
+import studio.cluvex.aether.core.SstpCore
 import studio.cluvex.aether.core.auto.StrategyLadder
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.data.SecretStore
@@ -32,6 +33,7 @@ import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.SstpConfig
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.vpn.session.ChainException
 import studio.cluvex.aether.vpn.session.ChainFailure
@@ -55,6 +57,11 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  *      forward all traffic through that entry - replacing v2rayNG entirely,
  *   5. supervises every core and auto-reconnects on failure.
  *
+ * An SSTP session ([ChainMode.SSTP]) has a different shape, because SSTP is a
+ * packet tunnel with no SOCKS entry: the PPP link comes up first, the TUN is
+ * built from the address and resolvers it negotiated, and its packets are
+ * pumped straight into the link (see [runSstpSession]).
+ *
  * Every ladder of attempts runs under ONE session deadline (perf/fast-connect):
  * a failing session used to take the SUM of every rung's budget plus a 90 s
  * self-test per rung, which on Smart Auto was about twelve minutes.
@@ -63,7 +70,7 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  * flow, retry/kill-switch policy and teardown ORDER. The parts it used to carry
  * itself live next door and can be read (and tested) on their own:
  *
- *  - [NativeStack]        - engine process, chain, TUN fd, hev core, filter bridge, sharing
+ *  - [NativeStack]        - engine process, chain, SSTP, TUN fd, hev core, filter bridge, sharing
  *  - ChainStack           - the Psiphon / Tor hops and the DNS-capable SOCKS front
  *  - TunFactory           - the TUN builders: routing, DNS, split tunneling
  *  - [ConnectionPlanner]  - the attempt ladder for a hand-picked protocol
@@ -281,6 +288,13 @@ class AetherVpnService : VpnService() {
             )
         }
 
+        // SSTP is a packet tunnel with its own session shape - no engine, no
+        // SOCKS entry, no forwarder - so it never enters the ladders below.
+        if (profile.chain.usesSstp) {
+            runSstpSession(profile)
+            return
+        }
+
         val resolved: ConnectionProfile = when {
             // No Aether hop means no endpoint scan and nothing for the ladder to
             // vary: Psiphon and Tor pick their own transports internally.
@@ -340,21 +354,33 @@ class AetherVpnService : VpnService() {
      * - Zero Trust secrets are always re-read from the Keystore-sealed
      *   [SecretStore]: [ProfileCodec] deliberately keeps them out of the
      *   Intent, because extras show up in system service dumps.
+     * - So is the SSTP password, for the same reason. An empty sealed value
+     *   means none was ever saved, and the public VPN Gate default the payload
+     *   decoded to stands.
      */
     private suspend fun hydrate(profile: ConnectionProfile, restored: Boolean): ConnectionProfile {
         if (restored) {
             DiagnosticsLog.w(TAG, "Restarted by the system - reconnecting with the saved profile.")
-            // ProfileStore already unseals the Zero Trust secrets itself.
+            // ProfileStore already unseals the Zero Trust and SSTP secrets itself.
             val saved = runCatching { ProfileStore(applicationContext).profile.first() }
             (saved.exceptionOrNull() as? CancellationException)?.let { throw it }
             return saved.getOrNull() ?: profile
         }
-        if (profile.teamAuth == TeamAuth.OFF) return profile
-        val secrets = SecretStore(applicationContext)
-        return profile.copy(
-            accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
-            accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
-        )
+        var hydrated = profile
+        if (profile.teamAuth != TeamAuth.OFF) {
+            val secrets = SecretStore(applicationContext)
+            hydrated = hydrated.copy(
+                accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
+                accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
+            )
+        }
+        if (profile.chain.usesSstp) {
+            val sealed = SecretStore(applicationContext).read(ProfileStore.SSTP_PASSWORD_SECRET)
+            if (sealed.isNotEmpty()) {
+                hydrated = hydrated.copy(sstpConfig = hydrated.sstpConfig.copy(password = sealed))
+            }
+        }
+        return hydrated
     }
 
     /**
@@ -678,6 +704,127 @@ class AetherVpnService : VpnService() {
         }
     }
 
+    // ==================================================================== SSTP
+
+    /**
+     * An SSTP session, start to finish: dial, build the TUN from the PPP link,
+     * pump packets, and keep it up.
+     *
+     * What does NOT apply, and why it is refused or said rather than ignored:
+     *
+     *  - Proxy mode needs a SOCKS5 entry to expose, and SSTP has none. Starting
+     *    a full-device VPN when the user asked for a per-app proxy would be the
+     *    opposite of what they chose, so it is an error with a reason.
+     *  - LAN sharing and per-app blocking both ride on the SOCKS forwarder
+     *    (ShareBridge / SocksTunBridge). The session runs without them and the
+     *    log says so.
+     *  - The SOCKS self-test, health check and watchdog probe a local port;
+     *    SSTP's own liveness (LCP / SSTP echo, idle timeout in [SstpCore]) is
+     *    the signal here instead.
+     */
+    private suspend fun runSstpSession(profile: ConnectionProfile) {
+        val config = profile.sstpConfig
+        if (!config.isUsable) throw IllegalStateException(getString(R.string.err_sstp_no_server))
+        if (profile.proxyMode) throw IllegalStateException(getString(R.string.err_sstp_proxy_mode))
+        if (profile.lanShare) {
+            DiagnosticsLog.w(TAG, "LAN sharing relays a SOCKS entry, and SSTP has none - not sharing this session.")
+        }
+        if (profile.blockedApps.isNotEmpty()) {
+            DiagnosticsLog.w(
+                TAG,
+                "Per-app blocking needs the SOCKS filter bridge, which an SSTP session does not run - " +
+                    "${profile.blockedApps.size} blocked app(s) are tunnelled, not blocked.",
+            )
+        }
+
+        connectSstp(profile)
+
+        EngineMeta.setProtocol(profile.chain.pathLabel())
+        EngineMeta.setEndpoint(sstpEndpoint(config))
+        notifications.startTrafficMeter()
+        AetherController.setState(ConnectionState.Connected(sstpEndpoint(config)))
+        notifications.update(getString(R.string.state_connected))
+        DiagnosticsLog.i(TAG, "Connect gate passed - SSTP tunnel is ready.")
+
+        superviseSstp(profile)
+    }
+
+    /** The first SSTP connect of a session. Throws with a user-facing reason. */
+    private suspend fun connectSstp(profile: ConnectionProfile) {
+        AetherController.setState(ConnectionState.Launching)
+        notifications.update(getString(R.string.state_launching))
+        // Same rule as connectAttempt: never start on top of a dying session,
+        // and this is also what lifts a kill-switch lockdown.
+        cleanupNatives()
+
+        AetherController.setState(ConnectionState.Connecting)
+        notifications.update(getString(R.string.state_connecting))
+        DiagnosticsLog.i(
+            TAG,
+            "Dialling SSTP ${sstpEndpoint(profile.sstpConfig)} (${profile.sstpConfig.source.name.lowercase()}, " +
+                "verify=${profile.sstpConfig.verifyCert})…",
+        )
+        val info = natives.startSstp(profile, SSTP_CONNECT_TIMEOUT_MS)
+
+        AetherController.setState(ConnectionState.Verifying)
+        notifications.update(getString(R.string.state_verifying))
+        natives.establishSstpTun(profile, info)
+        natives.startSstpBridge()
+        // The gate: IPCP finished (startSstp only returns then) and the link is
+        // still up now that the TUN exists.
+        if (!natives.sstpAlive) throw IllegalStateException(getString(R.string.err_sstp_dropped))
+    }
+
+    /**
+     * Keeps an SSTP session up. Parks on the core's state rather than polling;
+     * when the link drops it is redialled with the same backoff and retry
+     * budget as the SOCKS cores, while the current TUN stays up and swallows
+     * traffic, so nothing leaks during the gap. Out of retries means the kill
+     * switch (when on) or an error.
+     */
+    private suspend fun superviseSstp(profile: ConnectionProfile) {
+        var attempt = 0
+        while (currentCoroutineContext().isActive) {
+            if (natives.sstpAlive) {
+                natives.awaitSstpExit(VpnTunables.WATCHDOG_INTERVAL_MS)
+                if (natives.sstpAlive) continue
+                DiagnosticsLog.w(
+                    TAG,
+                    "SSTP link dropped: ${SstpCore.statusMessage.value.ifBlank { "no reason given" }}",
+                )
+            }
+
+            if (attempt >= maxRetries(profile)) {
+                if (profile.killSwitch || profile.strictKillSwitch) {
+                    enterLockdown(profile)
+                    return
+                }
+                throw IllegalStateException(getString(R.string.err_sstp_dropped))
+            }
+            val backoff = VpnTunables.BACKOFF[attempt.coerceAtMost(VpnTunables.BACKOFF.size - 1)]
+            attempt++
+            AetherController.setState(ConnectionState.Reconnecting(attempt, maxRetries(profile)))
+            notifications.update(getString(R.string.state_reconnecting))
+            delay(backoff)
+
+            val restarted = runCatching { natives.restartSstp(profile, SSTP_CONNECT_TIMEOUT_MS) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    DiagnosticsLog.w(TAG, "SSTP reconnect failed: ${error.message}")
+                }
+                .isSuccess
+            if (restarted && natives.sstpAlive) {
+                attempt = 0
+                // A new session, so new counters for the meter.
+                notifications.startTrafficMeter()
+                AetherController.setState(ConnectionState.Connected(sstpEndpoint(profile.sstpConfig)))
+                notifications.update(getString(R.string.state_connected))
+            }
+        }
+    }
+
+    private fun sstpEndpoint(config: SstpConfig): String = "${config.hostname.trim()}:${config.port}"
+
     // =============================================================== supervise
 
     /** Keeps the session's cores alive; retries with backoff if one dies. */
@@ -904,6 +1051,14 @@ class AetherVpnService : VpnService() {
         /** The error notification's Retry action. See onStartCommand. */
         const val ACTION_RETRY = "studio.cluvex.aether.RETRY"
         const val EXTRA_PROFILE = "profile"
+
+        /**
+         * One SSTP dial, end to end: TCP (10 s) + TLS (15 s) + the SSTP call
+         * (15 s) + LCP / sign-in / IPCP (45 s), which are SstpCore's own
+         * bounds, plus slack. A VPN Gate relay that needs longer than this is
+         * not one worth waiting on.
+         */
+        private const val SSTP_CONNECT_TIMEOUT_MS = 95_000L
 
         private const val TAG = "vpn"
     }
