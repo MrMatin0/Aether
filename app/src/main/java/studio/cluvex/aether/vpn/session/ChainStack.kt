@@ -92,6 +92,9 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  * chain used to be handed to the ENGINE port wait only, which a chain without
  * an Aether hop never even performs, so Psiphon's region retry and the Tor
  * bridge ladder could each spend several full budgets back to back.
+ *
+ * SSTP is NOT a hop of this class: it is a packet tunnel with no SOCKS5 entry,
+ * and its session is run by the service through [NativeStack.startSstp].
  */
 internal class ChainStack(
     private val context: Context,
@@ -145,6 +148,7 @@ internal class ChainStack(
      */
     suspend fun start(profile: ConnectionProfile, deadline: Long? = null): Int {
         val mode = profile.chain
+        check(!mode.usesSstp) { "SSTP is a packet tunnel and has no SOCKS chain to start" }
         val until = deadline ?: (SystemClock.elapsedRealtime() + VpnTunables.chainBudgetMs(mode))
         ChainRuntime.begin(mode)
         if (mode.usesAether) ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
@@ -170,6 +174,9 @@ internal class ChainStack(
                 TunnelConfig.ENGINE_SOCKS_PORT
             }
             Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
+            // Unreachable (checked above); spelled out so the `when` stays
+            // exhaustive and a new hop has to decide where its traffic enters.
+            Hop.SSTP -> error("SSTP has no SOCKS entry")
         }
 
         // READINESS BEFORE PUBLISHING (perf/fast-connect): a front's port is
