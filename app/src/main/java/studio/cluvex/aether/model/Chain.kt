@@ -1,9 +1,13 @@
 package studio.cluvex.aether.model
 
 /**
- * One circumvention core the app can run. Each of the three exposes a local
- * SOCKS5 proxy on loopback, which is the ONLY thing that makes chaining them
- * possible at all.
+ * One circumvention core the app can run.
+ *
+ * Aether, Psiphon and Tor each expose a local SOCKS5 proxy on loopback, which is
+ * the ONLY thing that makes chaining them possible at all. [SSTP] is the odd one
+ * out: it is a LAYER 3 tunnel (PPP inside TLS), so what it hands the device is
+ * IP packets, not a SOCKS5 listener. That is why it only ever runs alone - see
+ * [ChainMode.SSTP].
  */
 enum class Hop(val label: String) {
     /** The bundled Rust engine (libaether.so): MASQUE / WireGuard / Gool over WARP. */
@@ -14,6 +18,12 @@ enum class Hop(val label: String) {
 
     /** tor, as built for Android by the Tor Project / Guardian Project (libtor.so). */
     TOR("Tor"),
+
+    /**
+     * MS-SSTP, in pure Kotlin (core/SstpCore.kt): no binary, so it is in every
+     * build. Talks to a private SSTP server or a VPN Gate relay.
+     */
+    SSTP("SSTP"),
 }
 
 /**
@@ -44,8 +54,15 @@ enum class Hop(val label: String) {
  * slowest and the only one that also anonymises — is always the entry, because
  * putting anything after Tor would hand a single fixed proxy every stream that
  * left the Tor network and defeat the point of using it. That leaves exactly
- * the seven combinations below; anything else is either impossible or
+ * the seven SOCKS combinations below; anything else is either impossible or
  * pointless, which is why this is an enum and not three checkboxes.
+ *
+ * ### Why SSTP is never stacked
+ *
+ * SSTP has neither a SOCKS5 listener to be dialled through nor an upstream-proxy
+ * option to dial through somebody else's, so it can neither sit under Psiphon /
+ * Tor nor above Aether. It is an eighth, standalone mode whose session builds
+ * the TUN straight from the PPP link (see AetherVpnService).
  */
 enum class ChainMode(val hops: List<Hop>) {
     /** Aether alone. The behaviour of every build before chaining existed. */
@@ -68,11 +85,21 @@ enum class ChainMode(val hops: List<Hop>) {
 
     /** All three. Slowest and most expensive; the last thing left to try. */
     TOR_OVER_PSIPHON_OVER_AETHER(listOf(Hop.AETHER, Hop.PSIPHON, Hop.TOR)),
+
+    /**
+     * SSTP alone: a packet tunnel to an SSTP server or a VPN Gate relay.
+     * Appended LAST on purpose: names are persisted, and the picker groups
+     * modes by [isChained], not by declaration order.
+     */
+    SSTP(listOf(Hop.SSTP)),
     ;
 
     val usesAether: Boolean get() = Hop.AETHER in hops
     val usesPsiphon: Boolean get() = Hop.PSIPHON in hops
     val usesTor: Boolean get() = Hop.TOR in hops
+
+    /** True for the SSTP packet tunnel, which has no SOCKS5 entry at all. */
+    val usesSstp: Boolean get() = Hop.SSTP in hops
 
     /** The hop the device's traffic ENTERS. Its local port is the chain entry. */
     val entryHop: Hop get() = hops.last()
@@ -114,6 +141,7 @@ enum class ChainMode(val hops: List<Hop>) {
                 "AETHER_TOR", "TOR_AETHER" -> TOR_OVER_AETHER
                 "PSIPHON_TOR", "TOR_PSIPHON" -> TOR_OVER_PSIPHON
                 "AETHER_PSIPHON_TOR", "ALL" -> TOR_OVER_PSIPHON_OVER_AETHER
+                "SSTP_ONLY", "VPNGATE", "VPN_GATE", "MS_SSTP" -> SSTP
                 else -> null
             }
         }

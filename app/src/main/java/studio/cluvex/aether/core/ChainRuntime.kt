@@ -67,11 +67,19 @@ object ChainRuntime {
      * no front and the entry is the engine itself. Psiphon and Tor do not, so
      * their traffic enters through [SocksFront] instead (see its KDoc for the
      * DNS argument).
+     *
+     * SSTP has no local port at all: its TUN is pumped packet by packet by
+     * [SstpCore.bridgeTun]. The engine's port is returned so the many readers of
+     * [entryPort] keep their pre-chain default, and nothing listens there.
      */
     fun entryPortFor(mode: ChainMode): Int = when (mode.entryHop) {
-        Hop.AETHER -> TunnelConfig.ENGINE_SOCKS_PORT
+        Hop.AETHER, Hop.SSTP -> TunnelConfig.ENGINE_SOCKS_PORT
         Hop.PSIPHON, Hop.TOR -> TunnelConfig.FRONT_SOCKS_PORT
     }
+
+    /** True when [mode]'s entry is a core that needs the DNS-capable SOCKS front. */
+    fun needsFront(mode: ChainMode): Boolean =
+        mode.entryHop == Hop.PSIPHON || mode.entryHop == Hop.TOR
 
     /** Every local port [mode] binds, so teardown can prove they were released. */
     fun portsFor(mode: ChainMode): List<Int> = buildList {
@@ -81,7 +89,7 @@ object ChainRuntime {
             add(TunnelConfig.TOR_SOCKS_PORT)
             add(TunnelConfig.TOR_DNS_PORT)
         }
-        if (mode.entryHop != Hop.AETHER) add(TunnelConfig.FRONT_SOCKS_PORT)
+        if (needsFront(mode)) add(TunnelConfig.FRONT_SOCKS_PORT)
     }
 
     /** Called when a session's chain is decided, before the cores are started. */
