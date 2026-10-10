@@ -22,6 +22,8 @@ import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
+import studio.cluvex.aether.model.SstpConfig
+import studio.cluvex.aether.model.SstpSource
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 import studio.cluvex.aether.vpn.AetherVpnService
@@ -153,7 +155,9 @@ object AetherController {
  * [ConnectionProfile.accessToken]) are deliberately NOT part of the payload:
  * Intent extras are visible in system service dumps, so the service reads them
  * straight from the Keystore-sealed store instead (see the VpnService's
- * `hydrate`).
+ * `hydrate`). The SSTP password ([SstpConfig.password]) is treated the same
+ * way: every other SSTP field travels, the password decodes to the public
+ * VPN Gate default and the service re-reads the sealed one.
  */
 object ProfileCodec {
     fun encode(p: ConnectionProfile): String = buildList {
@@ -233,6 +237,19 @@ object ProfileCodec {
         add("smartDns=${p.smartDns}")
         add("smartDnsProtocol=${p.smartDnsProtocol.name}")
         add("smartDnsServers=${flatten(p.smartDnsServers)}")
+        // SSTP. Same keys as ProfileStore. Everything EXCEPT the password,
+        // which is a credential (see the class doc).
+        val sstp = p.sstpConfig
+        add("sstpHost=${flatten(sstp.hostname)}")
+        add("sstpPort=${sstp.port}")
+        add("sstpUser=${flatten(sstp.username)}")
+        add("sstpVerify=${sstp.verifyCert}")
+        add("sstpSni=${flatten(sstp.customSni)}")
+        add("sstpMru=${sstp.mru}")
+        add("sstpMtu=${sstp.mtu}")
+        add("sstpSource=${sstp.source.name}")
+        add("sstpCountry=${flatten(sstp.countryCode)}")
+        add("sstpCountryName=${flatten(sstp.countryName)}")
     }.joinToString("\n")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -343,9 +360,30 @@ object ProfileCodec {
                 smartDnsProtocol = SmartDnsProtocol.fromStored(map["smartDnsProtocol"])
                     ?: d.smartDnsProtocol,
                 smartDnsServers = map["smartDnsServers"] ?: d.smartDnsServers,
+                // ---- SSTP ----
+                sstpConfig = decodeSstp(map, d.sstpConfig),
             )
         }.getOrDefault(d)
     }
+
+    /**
+     * The SSTP fields of a payload. A payload from a build without SSTP decodes
+     * to the model default (no server). The password is never in a payload, so
+     * it is always the default here; the service fills in the sealed one.
+     */
+    private fun decodeSstp(map: Map<String, String>, d: SstpConfig): SstpConfig = SstpConfig(
+        hostname = map["sstpHost"] ?: d.hostname,
+        port = map["sstpPort"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: d.port,
+        username = map["sstpUser"] ?: d.username,
+        password = d.password,
+        verifyCert = map["sstpVerify"]?.toBooleanStrictOrNull() ?: d.verifyCert,
+        customSni = map["sstpSni"] ?: d.customSni,
+        mru = map["sstpMru"]?.toIntOrNull() ?: d.mru,
+        mtu = map["sstpMtu"]?.toIntOrNull() ?: d.mtu,
+        source = map["sstpSource"]?.let { enumOr<SstpSource>(it) } ?: d.source,
+        countryCode = map["sstpCountry"] ?: d.countryCode,
+        countryName = map["sstpCountryName"] ?: d.countryName,
+    )
 
     private fun decodeLegacy(raw: String): ConnectionProfile {
         val parts = raw.split("|")

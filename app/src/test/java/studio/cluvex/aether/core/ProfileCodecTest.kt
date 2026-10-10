@@ -18,6 +18,8 @@ import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
+import studio.cluvex.aether.model.SstpConfig
+import studio.cluvex.aether.model.SstpSource
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 
@@ -133,6 +135,23 @@ class ProfileCodecTest {
         smartDns = true,
         smartDnsProtocol = SmartDnsProtocol.DOH,
         smartDnsServers = "https://dns.example.com/dns-query,192.0.2.53",
+        // ---- SSTP ----
+        // Every field but the password moved off its default. The password
+        // stays at the default on purpose: it never travels (see
+        // sstpPasswordNeverEntersThePayload), so the round trip can only
+        // compare equal when the fixture leaves it where decoding puts it.
+        sstpConfig = SstpConfig(
+            hostname = "vpn.example.com",
+            port = 8443,
+            username = "alice",
+            verifyCert = false,
+            customSni = "cdn.example.com",
+            mru = 1452,
+            mtu = 1380,
+            source = SstpSource.VPNGATE,
+            countryCode = "JP",
+            countryName = "Japan",
+        ),
     )
 
     /**
@@ -165,6 +184,19 @@ class ProfileCodecTest {
         )
     }
 
+    /** Same teeth, one level down: every SSTP field except the password is varied. */
+    @Test
+    fun everySstpFieldIsCarriedByTheFixture() {
+        val defaults = SstpConfig()
+        val untouched = SstpConfig::class.java.declaredFields
+            .filterNot { it.isSynthetic || Modifier.isStatic(it.modifiers) }
+            .filterNot { it.name == "password" }
+            .onEach { it.isAccessible = true }
+            .filter { it.get(populated.sstpConfig) == it.get(defaults) }
+            .map { it.name }
+        assertTrue(untouched.isEmpty(), "SstpConfig fields still at their default in the fixture: $untouched")
+    }
+
     @Test
     fun everyNonSecretFieldSurvivesTheRoundTrip() {
         // Secrets deliberately never travel (see the secret test below), so
@@ -186,6 +218,30 @@ class ProfileCodecTest {
         val decoded = ProfileCodec.decode(payload)
         assertEquals("", decoded.accessClientSecret)
         assertEquals("", decoded.accessToken)
+    }
+
+    @Test
+    fun sstpPasswordNeverEntersThePayload() {
+        val withPassword = populated.copy(
+            sstpConfig = populated.sstpConfig.copy(password = "correct-horse-battery"),
+        )
+        val payload = ProfileCodec.encode(withPassword)
+        assertFalse(payload.contains("correct-horse-battery"))
+        val decoded = ProfileCodec.decode(payload)
+        // The public VPN Gate default, which the service replaces with the
+        // sealed password before it dials.
+        assertEquals(SstpConfig.VPNGATE_PASSWORD, decoded.sstpConfig.password)
+        assertEquals("alice", decoded.sstpConfig.username)
+    }
+
+    @Test
+    fun aPayloadFromBeforeSstpHasNoSstpServer() {
+        val decoded = ProfileCodec.decode("protocol=MASQUE\nmtu=1280")
+        assertEquals(SstpConfig(), decoded.sstpConfig)
+        assertFalse(decoded.sstpConfig.isUsable)
+        // An out-of-range port is a typo, not a setting.
+        assertEquals(SstpConfig.DEFAULT_PORT, ProfileCodec.decode("sstpPort=70000").sstpConfig.port)
+        assertEquals(SstpSource.MANUAL, ProfileCodec.decode("sstpSource=nonsense").sstpConfig.source)
     }
 
     @Test
