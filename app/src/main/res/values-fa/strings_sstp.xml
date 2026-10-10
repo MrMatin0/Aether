@@ -65,7 +65,7 @@
     <string name="sstp_show_password">نمایش گذرواژه</string>
     <string name="sstp_hide_password">پنهان کردن گذرواژه</string>
     <string name="sstp_use_vpngate_defaults">استفاده از ورود VPN Gate (vpn / vpn)</string>
-    <string name="sstp_auth_note">PAP و CHAP پشتیبانی می‌شوند. سرورهایی که فقط MS-CHAPv2 می‌پذیرند هنوز پشتیبانی نمی‌شوند.</string>
+    <string name="sstp_auth_note">MS-CHAPv2، CHAP و PAP پشتیبانی می‌شوند، به همان ترتیبی که سرور درخواست کند. گذرواژه رمزگذاری‌شده روی همین دستگاه نگه داشته می‌شود.</string>
     <string name="sstp_section_security">امنیت</string>
     <string name="sstp_verify_cert">بررسی گواهی سرور</string>
     <string name="sstp_verify_cert_desc">برای سرورهای خودتان روشن بماند. رله‌های VPN Gate گواهی خودامضا دارند و برای آن‌ها خاموش می‌شود.</string>
@@ -77,4 +77,16 @@
     <string name="sstp_mru">MRU</string>
     <string name="sstp_mtu">MTU</string>
     <string name="sstp_mtu_hint">بین %1$d تا %2$d. خالی = %3$d.</string>
+    <string name="sstp_packet_tunnel_note">SSTP خودش یک تونل بسته‌ای است: حالت پراکسی و اشتراک در شبکهٔ محلی روی آن اعمال نمی‌شوند و MTU رابط TUN را سرور تعیین می‌کند.</string>
+
+    <!-- حالت زنجیرهٔ SSTP -->
+    <string name="chain_sstp">SSTP</string>
+    <string name="chain_sstp_desc">یک تونل بسته‌ای درون HTTPS، به سرور SSTP خودتان یا یک رلهٔ رایگان VPN Gate. سریع است، اما گردانندهٔ سرور ترافیک شما را می‌بیند.</string>
+
+    <!-- خطاهای نشست SSTP -->
+    <string name="err_sstp_no_server">اول یک سرور SSTP یا رلهٔ VPN Gate انتخاب کنید (تنظیمات، زنجیره).</string>
+    <string name="err_sstp_proxy_mode">SSTP بسته‌های IP را جابه‌جا می‌کند، نه اتصال‌های پراکسی؛ پس در حالت پراکسی کار نمی‌کند. برای استفاده از آن حالت پراکسی را خاموش کنید.</string>
+    <string name="err_sstp_failed">اتصال SSTP ناموفق بود: %1$s</string>
+    <string name="err_sstp_timeout">سرور SSTP به‌موقع اتصال را کامل نکرد.</string>
+    <string name="err_sstp_dropped">سرور SSTP اتصال را قطع کرد.</string>
 </resources>

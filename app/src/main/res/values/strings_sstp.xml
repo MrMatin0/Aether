@@ -65,7 +65,7 @@
     <string name="sstp_show_password">Show password</string>
     <string name="sstp_hide_password">Hide password</string>
     <string name="sstp_use_vpngate_defaults">Use VPN Gate sign-in (vpn / vpn)</string>
-    <string name="sstp_auth_note">PAP and CHAP are supported. Servers that only accept MS-CHAPv2 are not supported yet.</string>
+    <string name="sstp_auth_note">MS-CHAPv2, CHAP and PAP are supported, in the order the server asks for them. The password is stored encrypted on this device.</string>
     <string name="sstp_section_security">Security</string>
     <string name="sstp_verify_cert">Verify server certificate</string>
     <string name="sstp_verify_cert_desc">Keep this on for your own servers. VPN Gate relays use self-signed certificates, so it is turned off for them.</string>
@@ -77,4 +77,16 @@
     <string name="sstp_mru">MRU</string>
     <string name="sstp_mtu">MTU</string>
     <string name="sstp_mtu_hint">%1$d to %2$d. Blank uses %3$d.</string>
+    <string name="sstp_packet_tunnel_note">SSTP is a packet tunnel of its own: proxy mode and LAN sharing do not apply to it, and the TUN MTU comes from the server.</string>
+
+    <!-- SSTP chain mode (ui/Labels.kt, ui/engine/ChainSection.kt) -->
+    <string name="chain_sstp">SSTP</string>
+    <string name="chain_sstp_desc">A packet tunnel inside HTTPS, to your own SSTP server or a free VPN Gate relay. Fast, but whoever runs the server can see your traffic.</string>
+
+    <!-- SSTP session errors (vpn/AetherVpnService.kt) -->
+    <string name="err_sstp_no_server">Pick an SSTP server or a VPN Gate relay first (Settings, Chain).</string>
+    <string name="err_sstp_proxy_mode">SSTP carries IP packets, not proxy connections, so it cannot run in proxy mode. Turn proxy mode off to use it.</string>
+    <string name="err_sstp_failed">SSTP connection failed: %1$s</string>
+    <string name="err_sstp_timeout">The SSTP server did not finish connecting in time.</string>
+    <string name="err_sstp_dropped">The SSTP server dropped the connection.</string>
 </resources>
