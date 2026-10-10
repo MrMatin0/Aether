@@ -96,6 +96,8 @@ class SstpChainTest {
         assertEquals(SstpSource.VPNGATE, config.source)
         assertEquals(1300, config.mtu, "the user's MTU must survive picking a relay")
         assertEquals(1350, config.mru)
-        assertFalse(config.toString().contains(SstpConfig.VPNGATE_PASSWORD + ","))
+        val private = SstpConfig(hostname = "vpn.example", password = "hunter2-secret")
+        assertTrue(private.toString().contains("password=***"))
+        assertFalse(private.toString().contains("hunter2-secret"))
     }
 }
