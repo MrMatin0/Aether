@@ -21,6 +21,7 @@ import java.security.cert.X509Certificate
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import javax.net.ssl.HttpsURLConnection
@@ -60,8 +61,9 @@ import studio.cluvex.aether.model.SstpConfig
  *    `HTTP/1.1 200`. From here on the TLS stream carries SSTP packets.
  * 3. SSTP control: Call Connect Request -> Call Connect Ack (which carries the
  *    crypto binding nonce).
- * 4. PPP inside SSTP data packets: LCP, then PAP or CHAP, then the SSTP Call
- *    Connected message (crypto binding), then IPCP for an address and DNS.
+ * 4. PPP inside SSTP data packets: LCP, then MS-CHAPv2, CHAP or PAP, then the
+ *    SSTP Call Connected message (crypto binding), then IPCP for an address
+ *    and DNS.
  * 5. IP packets in both directions until either side disconnects.
  *
  * ### Why there is no SOCKS5 proxy here
@@ -76,16 +78,27 @@ import studio.cluvex.aether.model.SstpConfig
  *  - [sendIpPacket] / [onIpPacket]: the raw packet plane
  *  - [bridgeTun]: pumps a VpnService TUN fd both ways until the session ends
  *
- * ### VpnService integration (follow-up)
+ * ### Sign-in
+ *
+ * The server names the method in its LCP Configure-Request. MS-CHAPv2 (what
+ * Windows RRAS and SoftEther / VPN Gate ask for first), CHAP-MD5 and PAP are
+ * accepted as asked; anything else is Nak'd towards MS-CHAPv2, then PAP. With
+ * MS-CHAPv2 the server's authenticator response is verified (so a fake server
+ * cannot just say "Success"), and the MPPE master keys become the crypto
+ * binding's higher-layer key, as MS-SSTP 3.2.5.2 requires; see [MsChapV2].
+ *
+ * ### VpnService integration
+ *
+ * See studio.cluvex.aether.vpn.session.NativeStack.startSstp:
  *
  * ```
- * SstpCore.start(config, serviceScope)
+ * SstpCore.socketProtector = { vpnService.protect(it) }
+ * SstpCore.start(config, scope)
  * val info = SstpCore.tunnelInfo.filterNotNull().first()
  * val tun = Builder().addAddress(info.localIp, 32).setMtu(info.mtu)
  *     .addRoute("0.0.0.0", 0).apply { info.dnsServers.forEach(::addDnsServer) }
- *     .establish()
- * protect() the SSTP socket BEFORE establish(), or route the server IP out.
- * serviceScope.launch { SstpCore.bridgeTun(tun) }
+ *     .setBlocking(true).establish()
+ * scope.launch { SstpCore.bridgeTun(tun) }
  * ```
  *
  * ### Threading
@@ -163,6 +176,12 @@ object SstpCore {
     private const val LCP_OPT_ACFC = 8
 
     private const val CHAP_MD5 = 0x05
+    private const val CHAP_MSV2 = 0x81
+
+    private const val CHAP_CHALLENGE = 1
+    private const val CHAP_RESPONSE = 2
+    private const val CHAP_SUCCESS = 3
+    private const val CHAP_FAILURE = 4
 
     private const val IPCP_OPT_ADDRESS = 0x03
     private const val IPCP_OPT_DNS1 = 0x81
@@ -171,6 +190,7 @@ object SstpCore {
     private const val AUTH_NONE = 0
     private const val AUTH_PAP = 1
     private const val AUTH_CHAP_MD5 = 2
+    private const val AUTH_MSCHAPV2 = 3
 
     private const val DEFAULT_PEER_MRU = 1500
     private const val ZERO: Byte = 0
@@ -217,6 +237,15 @@ object SstpCore {
     /** True when the core has a live SSTP tunnel. */
     val isConnected: Boolean get() = _state.value == SstpState.CONNECTED
 
+    private val rx = AtomicLong(0L)
+    private val tx = AtomicLong(0L)
+
+    /** IP payload bytes received from the tunnel since the last [start]. */
+    val rxBytes: Long get() = rx.get()
+
+    /** IP payload bytes sent into the tunnel since the last [start]. */
+    val txBytes: Long get() = tx.get()
+
     /**
      * Receives every IPv4 packet that comes out of the tunnel. Called on an IO
      * thread; keep it non-suspending and fast (a TUN write). [bridgeTun] sets
@@ -224,6 +253,15 @@ object SstpCore {
      */
     @Volatile
     var onIpPacket: ((ByteArray) -> Unit)? = null
+
+    /**
+     * Called with the session's TCP socket before it connects, so a VpnService
+     * can `protect()` it and the SSTP connection never loops back into its own
+     * TUN. Returning false is logged, not fatal: the app's own package is also
+     * excluded from the TUN, which covers the same case.
+     */
+    @Volatile
+    var socketProtector: ((Socket) -> Boolean)? = null
 
     @Volatile
     private var active: Session? = null
@@ -255,6 +293,8 @@ object SstpCore {
             _statusMessage.value = "No SSTP server configured"
             return
         }
+        rx.set(0L)
+        tx.set(0L)
         val session = Session(config)
         active = session
         DiagnosticsLog.i(TAG, "Starting SSTP to ${config.hostname}:${config.port} (sni=${config.effectiveSni}, verify=${config.verifyCert})")
@@ -296,19 +336,28 @@ object SstpCore {
 
     /**
      * Pumps [tun] both ways until the fd is closed or the caller is cancelled.
-     * Only IPv4 goes into the tunnel: SSTP here negotiates IPCP, not IPV6CP.
+     * Only IPv4 goes into the tunnel: SSTP here negotiates IPCP, not IPV6CP, so
+     * IPv6 the TUN captures (leak protection) is read and dropped.
+     *
+     * The TUN must be BLOCKING: a non-blocking fd returns 0 from read() with no
+     * packet pending, and this loop would spin a core for the whole session.
+     * Closing the fd is what ends the loop, so the caller closes it on teardown.
+     *
+     * Several pumps can overlap for a moment while a reconnect swaps the TUN;
+     * each one only clears [onIpPacket] if it still owns it.
      */
     suspend fun bridgeTun(tun: ParcelFileDescriptor) {
         withContext(Dispatchers.IO) {
             val toTun = FileOutputStream(tun.fileDescriptor)
             val fromTun = FileInputStream(tun.fileDescriptor)
             val tunLock = Any()
-            onIpPacket = { packet ->
+            val sink: (ByteArray) -> Unit = { packet ->
                 try {
                     synchronized(tunLock) { toTun.write(packet) }
                 } catch (_: IOException) {
                 }
             }
+            onIpPacket = sink
             try {
                 val buffer = ByteArray(TUN_READ_BUFFER)
                 while (isActive) {
@@ -318,7 +367,7 @@ object SstpCore {
                 }
             } catch (_: IOException) {
             } finally {
-                onIpPacket = null
+                if (onIpPacket === sink) onIpPacket = null
             }
         }
     }
@@ -364,6 +413,17 @@ object SstpCore {
      */
     internal fun insecureSocketFactory(): SSLSocketFactory = insecureFactory
 
+    /**
+     * The compound MAC key of MS-SSTP 3.2.5.2.2: HMAC(HLAK, seed | LEN | 0x01),
+     * LEN being the output length as a little-endian 16-bit value.
+     */
+    internal fun compoundMacKey(hlak: ByteArray, sha256: Boolean): ByteArray {
+        val algorithm = if (sha256) "HmacSHA256" else "HmacSHA1"
+        val length = if (sha256) 32 else 20
+        val seed = CMK_SEED.toByteArray(Charsets.US_ASCII) + byteArrayOf(length.toByte(), 0, 1)
+        return hmac(algorithm, hlak, seed).copyOf(length)
+    }
+
     private fun describe(e: Throwable, config: SstpConfig): String = when (e) {
         is SstpException -> e.message ?: "SSTP error"
         is UnknownHostException -> "Could not resolve ${config.hostname}"
@@ -406,6 +466,21 @@ object SstpCore {
         if (!lengthPrefixed) return String(data, Charsets.UTF_8).trim()
         val length = minOf(data[0].toInt() and 0xFF, data.size - 1)
         return String(data, 1, length, Charsets.UTF_8).trim()
+    }
+
+    /** The MS-CHAPv2 Failure codes a user can act on, in words. */
+    private fun msChapFailure(message: String): String {
+        val text = MsChapV2.messageText(message)
+        val reason = when (MsChapV2.failureCode(message)) {
+            691 -> "wrong username or password"
+            646 -> "sign-in is not allowed at this time"
+            647 -> "the account is disabled"
+            648 -> "the password has expired"
+            649 -> "the account has no dial-in permission"
+            709 -> "the password could not be changed"
+            else -> null
+        }
+        return listOfNotNull(reason, text.takeIf { it.isNotEmpty() && it != reason }).joinToString(": ")
     }
 
     // ===================================================== packet models ==
@@ -530,6 +605,13 @@ object SstpCore {
         private var hashBitmask = CERT_HASH_SHA256
         private var nonce = ByteArray(32)
 
+        /**
+         * The higher-layer authentication key for the crypto binding. Zeros for
+         * PAP and CHAP-MD5, which derive no keys; the MPPE master keys after a
+         * successful MS-CHAPv2.
+         */
+        private var hlak = ByteArray(32)
+
         // PPP state.
         private var phase = Phase.LINK
         private var pppId = random.nextInt(256)
@@ -548,6 +630,10 @@ object SstpCore {
 
         private var papId = -1
         private var authenticated = false
+
+        /** `S=...` the MS-CHAPv2 Success must carry, and the keys it unlocks. */
+        private var msChapExpected: String? = null
+        private var msChapHlak: ByteArray? = null
 
         private var ipcpReqId = -1
         private var ipcpOurOpen = false
@@ -612,6 +698,7 @@ object SstpCore {
             if (length <= 0 || length > tunnelMtu || offset < 0 || offset + length > packet.size) return false
             return try {
                 sendPpp(PPP_IP, packet, offset, length)
+                tx.addAndGet(length.toLong())
                 true
             } catch (_: IOException) {
                 false
@@ -627,6 +714,7 @@ object SstpCore {
             raw = socket
             if (closed.get()) throw SstpException("Cancelled")
             socket.tcpNoDelay = true
+            protect(socket)
             socket.connect(InetSocketAddress(host, config.port), CONNECT_TIMEOUT_MS)
 
             val sni = config.effectiveSni
@@ -657,6 +745,26 @@ object SstpCore {
             // that could fire in the middle of a frame.
             tls.soTimeout = 0
             lastRxMs = now()
+        }
+
+        /**
+         * Hands the socket to [socketProtector] once it has a file descriptor.
+         * An unconnected java.net.Socket has none until it is bound, and
+         * VpnService.protect() on it would silently fail, so it is bound to an
+         * ephemeral port first.
+         */
+        private fun protect(socket: Socket) {
+            val protector = socketProtector ?: return
+            val ok = try {
+                socket.bind(null)
+                protector(socket)
+            } catch (e: Exception) {
+                DiagnosticsLog.w(TAG, "Could not protect the SSTP socket: ${e.message ?: e.javaClass.simpleName}")
+                false
+            }
+            if (!ok) {
+                DiagnosticsLog.w(TAG, "VpnService.protect() refused the SSTP socket; relying on the app's own TUN exclusion")
+            }
         }
 
         private fun applySni(socket: SSLSocket, sni: String) {
@@ -776,7 +884,6 @@ object SstpCore {
             val hashProtocol = if (sha256) CERT_HASH_SHA256 else CERT_HASH_SHA1
             val digest = if (sha256) "SHA-256" else "SHA-1"
             val macAlgorithm = if (sha256) "HmacSHA256" else "HmacSHA1"
-            val macLength = if (sha256) 32 else 20
 
             val binding = ByteArray(CRYPTO_BINDING_LENGTH)
             binding[3] = hashProtocol.toByte()
@@ -785,10 +892,7 @@ object SstpCore {
             if (cert != null) MessageDigest.getInstance(digest).digest(cert).copyInto(binding, 36)
             val packet = buildControl(MSG_CALL_CONNECTED, listOf(Attribute(ATTR_CRYPTO_BINDING, binding)))
 
-            // PAP and CHAP derive no keys, so the higher-layer key is all zeros.
-            val hlak = ByteArray(32)
-            val seed = CMK_SEED.toByteArray(Charsets.US_ASCII) + byteArrayOf(macLength.toByte(), 0, 1)
-            val cmk = hmac(macAlgorithm, hlak, seed).copyOf(macLength)
+            val cmk = compoundMacKey(hlak, sha256)
             hmac(macAlgorithm, cmk, packet).copyInto(packet, COMPOUND_MAC_OFFSET)
             write(packet)
         }
@@ -885,6 +989,8 @@ object SstpCore {
                     if (!lcpOurOpen) sendLcpRequest(fresh = false)
                 }
                 Phase.AUTH -> {
+                    // CHAP is server-driven: the server retransmits its
+                    // challenge and every one of them is answered.
                     if (authProtocol == AUTH_PAP) sendPap()
                 }
                 Phase.NETWORK -> {
@@ -903,6 +1009,7 @@ object SstpCore {
                     sendPap()
                 }
                 AUTH_CHAP_MD5 -> publish(SstpState.PPP_AUTH, "Signing in (CHAP)")
+                AUTH_MSCHAPV2 -> publish(SstpState.PPP_AUTH, "Signing in (MS-CHAPv2)")
                 else -> onAuthenticated()
             }
         }
@@ -912,6 +1019,7 @@ object SstpCore {
             authenticated = true
             phase = Phase.NETWORK
             retransmits = 0
+            msChapHlak?.let { hlak = it }
             sendCallConnected()
             publish(SstpState.PPP_IPCP, "Requesting an IP address")
             sendIpcpRequest()
@@ -920,6 +1028,7 @@ object SstpCore {
         private fun authName(): String = when (authProtocol) {
             AUTH_PAP -> "PAP"
             AUTH_CHAP_MD5 -> "CHAP-MD5"
+            AUTH_MSCHAPV2 -> "MS-CHAPv2"
             else -> "none"
         }
 
@@ -981,6 +1090,13 @@ object SstpCore {
             }
         }
 
+        /**
+         * The method we steer an unsupported request towards: MS-CHAPv2 first
+         * (the strongest we speak, and what SSTP servers prefer), then PAP.
+         */
+        private fun preferredAuth(): ByteArray =
+            if (authNaks == 0) u16Bytes(PPP_CHAP) + byteArrayOf(CHAP_MSV2.toByte()) else u16Bytes(PPP_PAP)
+
         private fun onPeerLcpRequest(packet: PppControl) {
             val options = parseOptions(packet.data) ?: return
             val rejected = ByteArrayOutputStream()
@@ -996,13 +1112,12 @@ object SstpCore {
                     LCP_OPT_AUTH -> {
                         val protocol = if (option.data.size >= 2) u16(option.data, 0) else -1
                         val algorithm = if (option.data.size >= 3) option.data[2].toInt() and 0xFF else -1
-                        if (protocol == PPP_PAP) {
-                            auth = AUTH_PAP
-                        } else if (protocol == PPP_CHAP && algorithm == CHAP_MD5) {
-                            auth = AUTH_CHAP_MD5
-                        } else {
-                            // MS-CHAPv2 and friends: ask for PAP instead.
-                            nak.write(Option(LCP_OPT_AUTH, u16Bytes(PPP_PAP)).encode())
+                        when {
+                            protocol == PPP_PAP -> auth = AUTH_PAP
+                            protocol == PPP_CHAP && algorithm == CHAP_MSV2 -> auth = AUTH_MSCHAPV2
+                            protocol == PPP_CHAP && algorithm == CHAP_MD5 -> auth = AUTH_CHAP_MD5
+                            // MS-CHAPv1, EAP and friends: suggest one we speak.
+                            else -> nak.write(Option(LCP_OPT_AUTH, preferredAuth()).encode())
                         }
                     }
                     else -> rejected.write(option.encode())
@@ -1013,7 +1128,9 @@ object SstpCore {
             } else if (nak.size() > 0) {
                 authNaks += 1
                 if (authNaks > MAX_AUTH_NAKS) {
-                    throw SstpException("The server requires a sign-in method that is not supported yet (only PAP and CHAP are)")
+                    throw SstpException(
+                        "The server requires a sign-in method that is not supported (MS-CHAPv2, CHAP and PAP are)",
+                    )
                 }
                 sendPppControl(PPP_LCP, CONF_NAK, packet.id, nak.toByteArray())
             } else {
@@ -1053,32 +1170,67 @@ object SstpCore {
         }
 
         private fun onChap(frame: PppFrame) {
-            if (phase != Phase.AUTH || authProtocol != AUTH_CHAP_MD5) return
+            if (phase != Phase.AUTH) return
+            if (authProtocol != AUTH_CHAP_MD5 && authProtocol != AUTH_MSCHAPV2) return
             val packet = parsePppControl(frame.info) ?: return
             when (packet.code) {
-                1 -> {
+                CHAP_CHALLENGE -> {
                     if (packet.data.isEmpty()) return
                     val size = packet.data[0].toInt() and 0xFF
                     if (1 + size > packet.data.size) return
                     val challenge = packet.data.copyOfRange(1, 1 + size)
-                    val md5 = MessageDigest.getInstance("MD5")
-                    md5.update(packet.id.toByte())
-                    md5.update(config.password.toByteArray(Charsets.UTF_8))
-                    md5.update(challenge)
-                    val response = md5.digest()
-                    val user = config.username.toByteArray(Charsets.UTF_8)
-                    val data = ByteArray(1 + response.size + user.size)
-                    data[0] = response.size.toByte()
-                    response.copyInto(data, 1)
-                    user.copyInto(data, 1 + response.size)
-                    sendPppControl(PPP_CHAP, 2, packet.id, data)
+                    if (authProtocol == AUTH_MSCHAPV2) answerMsChapV2(packet.id, challenge) else answerChapMd5(packet.id, challenge)
                 }
-                3 -> onAuthenticated()
-                4 -> {
-                    val text = peerMessage(packet.data, lengthPrefixed = false)
+                CHAP_SUCCESS -> {
+                    if (authProtocol == AUTH_MSCHAPV2) {
+                        val expected = msChapExpected ?: return
+                        val message = String(packet.data, Charsets.US_ASCII)
+                        if (!MsChapV2.verifySuccess(message, expected)) {
+                            throw SstpException("The server could not prove it knows the password (MS-CHAPv2)")
+                        }
+                    }
+                    onAuthenticated()
+                }
+                CHAP_FAILURE -> {
+                    val text = if (authProtocol == AUTH_MSCHAPV2) {
+                        msChapFailure(String(packet.data, Charsets.US_ASCII))
+                    } else {
+                        peerMessage(packet.data, lengthPrefixed = false)
+                    }
                     throw SstpException("Sign-in rejected by the server" + if (text.isNotEmpty()) ": $text" else "")
                 }
             }
+        }
+
+        private fun answerChapMd5(id: Int, challenge: ByteArray) {
+            val md5 = MessageDigest.getInstance("MD5")
+            md5.update(id.toByte())
+            md5.update(config.password.toByteArray(Charsets.UTF_8))
+            md5.update(challenge)
+            val response = md5.digest()
+            val user = config.username.toByteArray(Charsets.UTF_8)
+            val data = ByteArray(1 + response.size + user.size)
+            data[0] = response.size.toByte()
+            response.copyInto(data, 1)
+            user.copyInto(data, 1 + response.size)
+            sendPppControl(PPP_CHAP, CHAP_RESPONSE, id, data)
+        }
+
+        /** RFC 2759 section 4: Response = value-size(49) | value | name. */
+        private fun answerMsChapV2(id: Int, challenge: ByteArray) {
+            if (challenge.size != MsChapV2.AUTH_CHALLENGE_LENGTH) {
+                throw SstpException("Malformed MS-CHAPv2 challenge from the server")
+            }
+            val peerChallenge = ByteArray(MsChapV2.PEER_CHALLENGE_LENGTH).also(random::nextBytes)
+            val exchange = MsChapV2.respond(config.username, config.password, challenge, peerChallenge)
+            msChapExpected = exchange.expectedAuthenticator
+            msChapHlak = exchange.hlak
+            val user = config.username.toByteArray(Charsets.UTF_8)
+            val data = ByteArray(1 + exchange.responseValue.size + user.size)
+            data[0] = exchange.responseValue.size.toByte()
+            exchange.responseValue.copyInto(data, 1)
+            user.copyInto(data, 1 + exchange.responseValue.size)
+            sendPppControl(PPP_CHAP, CHAP_RESPONSE, id, data)
         }
 
         // ---------------------------------------------------------- IPCP --
@@ -1184,6 +1336,7 @@ object SstpCore {
         }
 
         private fun deliver(packet: ByteArray) {
+            rx.addAndGet(packet.size.toLong())
             val sink = onIpPacket ?: return
             try {
                 sink(packet)
