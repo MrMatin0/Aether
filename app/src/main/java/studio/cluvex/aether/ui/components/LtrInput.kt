@@ -19,6 +19,10 @@ import androidx.compose.ui.unit.LayoutDirection
 /** Own the active edit locally so delayed persistence cannot move the cursor.
  * Input constraints run BEFORE the local value is displayed or published.
  * Labels keep the surrounding locale while technical values remain LTR.
+ *
+ * [isError], [leadingIcon] and [trailingIcon] sit before [inputTransform] on
+ * purpose, so existing callers that pass the transform as a trailing lambda
+ * keep compiling.
  */
 @Composable
 fun LtrOutlinedTextField(
@@ -32,6 +36,9 @@ fun LtrOutlinedTextField(
     supportingText: @Composable (() -> Unit)? = null,
     keyboardType: KeyboardType = KeyboardType.Ascii,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    isError: Boolean = false,
+    leadingIcon: @Composable (() -> Unit)? = null,
+    trailingIcon: @Composable (() -> Unit)? = null,
     inputTransform: (String) -> String = { it },
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -66,9 +73,12 @@ fun LtrOutlinedTextField(
                 { CompositionLocalProvider(LocalLayoutDirection provides direction) { label() } }
             },
             placeholder = placeholder,
+            leadingIcon = leadingIcon,
+            trailingIcon = trailingIcon,
             supportingText = if (supportingText == null) null else {
                 { CompositionLocalProvider(LocalLayoutDirection provides direction) { supportingText() } }
             },
+            isError = isError,
             interactionSource = interaction,
             visualTransformation = visualTransformation,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),

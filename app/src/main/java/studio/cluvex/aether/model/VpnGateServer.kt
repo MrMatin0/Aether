@@ -1,105 +1,195 @@
 package studio.cluvex.aether.model
 
+import java.util.Locale
+
 /**
- * One VPN server from the VPNGate public relay network.
+ * One relay from the VPN Gate public network, parsed from
+ * https://www.vpngate.net/api/iphone/ (see VpnGateRepository).
  *
- * Parsed from the VPNGate CSV API at https://www.vpngate.net/api/iphone/
- * The CSV contains servers volunteered by the community; each row reports
- * the protocols the server supports, its measured throughput, and the
- * number of active sessions. This model carries only the fields the app
- * needs: identity, location, performance, and SSTP support.
- *
- * SSTP (Secure Socket Tunneling Protocol) is the transport this feature
- * adds. A server with [sstpHostname] non-blank can accept SSTP connections
- * on port 443 over TLS/HTTPS. The app connects using the hostname (not
- * the IP) because SSTP requires a valid TLS certificate whose CN or SAN
- * matches the hostname the client presents in its HTTP CONNECT.
+ * The API does not say which relays speak SSTP. [sstpHostname] and [sstpPort]
+ * are where SoftEther serves it if it does; [SstpProbe] is the actual answer.
+ * The app dials [sstpHostname], not [ip], because that is the name the
+ * relay's certificate and SNI routing expect.
  */
 data class VpnGateServer(
-    /** Server hostname for display and SSTP connection. */
+    /** Host name as the API reports it, e.g. "public-vpn-227" (no domain). */
     val hostname: String,
-    /** Server IP address (IPv4). */
+    /** IPv4 address. */
     val ip: String,
-    /** Server operator's self-reported description. */
-    val operatorMessage: String,
-    /** ISO 3166-1 alpha-2 country code, e.g. "JP", "KR", "US". */
-    val countryCode: String,
-    /** Full country name as reported by the API. */
-    val countryName: String,
-    /** Measured throughput in bits per second. */
+    /** VPN Gate's own quality score. Unbounded: values in the millions are normal. */
+    val score: Long,
+    /** Ping VPN Gate measured from Japan, in ms, or -1. Not the user's ping. */
+    val apiPingMs: Int,
+    /** Measured throughput, bits per second. */
     val speedBps: Long,
-    /** Current number of VPN sessions on this server. */
+    /** Country name as reported by the API (English). */
+    val countryName: String,
+    /** ISO 3166-1 alpha-2 code, upper case. */
+    val countryCode: String,
+    /** Current VPN sessions on the relay. */
     val numSessions: Int,
     /** Uptime in milliseconds. */
     val uptimeMs: Long,
-    /** Total users who have connected to this server. */
+    /** Users who have ever connected. */
     val totalUsers: Long,
-    /** Total traffic handled in bytes. */
+    /** Traffic ever relayed, bytes. */
     val totalTrafficBytes: Long,
-    /** Log policy: "2weeks", "permanent", "no" etc. */
+    /** Log policy, e.g. "2weeks". */
     val logPolicy: String,
-    /** True when the server accepts SSTP connections. */
-    val supportsSstp: Boolean,
-    /** SSTP hostname (may differ from [hostname]). Blank when SSTP is unsupported. */
+    /** Operator's self-reported name. */
+    val operatorName: String,
+    /** Operator's self-reported message. */
+    val operatorMessage: String,
+    /** SSTP endpoint host, `<hostname>.opengw.net`. */
     val sstpHostname: String,
-    /** True when the server provides OpenVPN TCP config. */
-    val supportsOpenVpnTcp: Boolean,
-    /** True when the server provides OpenVPN UDP config. */
-    val supportsOpenVpnUdp: Boolean,
-    /** True when the server accepts L2TP/IPsec connections. */
-    val supportsL2tp: Boolean,
-    /** Server quality score (0..1000+), higher is better. */
-    val score: Int,
-    /** Measured ping/latency in ms, or -1 when unknown. */
-    val pingMs: Int = -1,
-    /** Measured download speed in Kbps during ping test, or -1. */
-    val downloadSpeedKbps: Int = -1,
+    /** SSTP endpoint port: the relay's TCP listener when known, else 443. */
+    val sstpPort: Int,
+    /** TCP port from the OpenVPN config, when the config is TCP. */
+    val openVpnTcpPort: Int? = null,
+    /** UDP port from the OpenVPN config, when the config is UDP. */
+    val openVpnUdpPort: Int? = null,
 ) {
-    /** Formatted speed for display, e.g. "45.2 Mbps". */
-    val formattedSpeed: String
-        get() {
-            val mbps = speedBps / 1_000_000.0
-            return if (mbps >= 1.0) "%.1f Mbps".format(mbps)
-            else "%.0f Kbps".format(speedBps / 1_000.0)
-        }
+    /** Stable identity: the same IP can host several relays. */
+    val id: String get() = "$ip|$hostname"
 
-    /** Formatted ping for display, or "—" when unknown. */
-    val formattedPing: String
-        get() = if (pingMs >= 0) "${pingMs}ms" else "—"
+    val formattedSpeed: String get() = formatGateBitrate(speedBps)
+    val formattedUptime: String get() = formatGateUptime(uptimeMs)
+    val formattedTraffic: String get() = formatGateBytes(totalTrafficBytes)
+    val formattedUsers: String get() = String.format(Locale.US, "%,d", totalUsers)
 
-    /** Formatted uptime for display. */
-    val formattedUptime: String
-        get() {
-            val hours = uptimeMs / 3_600_000
-            val days = hours / 24
-            return when {
-                days > 0 -> "${days}d ${hours % 24}h"
-                hours > 0 -> "${hours}h"
-                else -> "${uptimeMs / 60_000}m"
-            }
-        }
+    /** An [SstpConfig] for this relay, keeping the MRU/MTU the user tuned in [base]. */
+    fun toSstpConfig(base: SstpConfig = SstpConfig()): SstpConfig = base.copy(
+        hostname = sstpHostname,
+        port = sstpPort,
+        username = SstpConfig.VPNGATE_USERNAME,
+        password = SstpConfig.VPNGATE_PASSWORD,
+        verifyCert = false,
+        customSni = "",
+        source = SstpSource.VPNGATE,
+        countryCode = countryCode,
+        countryName = countryName,
+    )
 }
 
-/** Sort/filter criteria for the VPNGate server list. */
+/** Result of testing one relay. */
+enum class ProbeState {
+    RUNNING,
+
+    /** TLS + SSTP_DUPLEX_POST answered 200. */
+    SSTP_OK,
+
+    /** TCP connected, but SSTP was refused. */
+    REACHABLE_NO_SSTP,
+
+    /** TCP connect failed or timed out. */
+    UNREACHABLE,
+    ;
+
+    val failed: Boolean get() = this == REACHABLE_NO_SSTP || this == UNREACHABLE
+}
+
+data class SstpProbe(
+    val state: ProbeState,
+    /** TCP connect time in ms, or -1. */
+    val latencyMs: Int = -1,
+)
+
+/** Sort criteria for the relay list. */
 enum class VpnGateSort {
-    /** Best score first (the API's own ranking). */
+    /** Best score first (VPN Gate's own ranking). */
     SCORE,
+
     /** Fastest measured throughput first. */
     SPEED,
-    /** Lowest ping first. */
+
+    /** Lowest ping first: the user's own probe when there is one. */
     PING,
+
     /** Fewest active sessions first. */
     SESSIONS,
 }
 
-/** Filter predicate for the server list. */
+/** Filter for the relay list. */
 data class VpnGateFilter(
-    /** Only show servers that support SSTP. */
-    val sstpOnly: Boolean = true,
-    /** Country code filter, blank = all countries. */
+    /** Free text: country, host, IP or operator. */
+    val query: String = "",
+    /** ISO country code, blank = all countries. */
     val countryCode: String = "",
-    /** Minimum speed in bps, 0 = no filter. */
-    val minSpeedBps: Long = 0,
-    /** Search query for hostname/operator/country. */
-    val searchQuery: String = "",
+    /** Only relays whose SSTP probe succeeded. */
+    val verifiedOnly: Boolean = false,
 )
+
+/**
+ * Applies [criteria] and [sort]. Relays that FAILED a probe sink to the end
+ * whatever the sort, ties fall back to score. [countryLabel] lets the UI match
+ * localized country names too (e.g. a Persian query).
+ */
+fun List<VpnGateServer>.filteredAndSorted(
+    criteria: VpnGateFilter,
+    sort: VpnGateSort,
+    probes: Map<String, SstpProbe> = emptyMap(),
+    countryLabel: (String) -> String = { "" },
+): List<VpnGateServer> {
+    val query = criteria.query.trim().lowercase(Locale.ROOT)
+    val country = criteria.countryCode.trim().uppercase(Locale.ROOT)
+    val matching = this.filter { server ->
+        (country.isEmpty() || server.countryCode == country) &&
+            (!criteria.verifiedOnly || probes[server.id]?.state == ProbeState.SSTP_OK) &&
+            (query.isEmpty() || server.matchesQuery(query, countryLabel))
+    }
+
+    fun latency(server: VpnGateServer): Int {
+        val probe = probes[server.id]
+        if (probe != null && probe.state == ProbeState.SSTP_OK && probe.latencyMs >= 0) return probe.latencyMs
+        return if (server.apiPingMs > 0) server.apiPingMs else Int.MAX_VALUE
+    }
+
+    val primary: Comparator<VpnGateServer> = when (sort) {
+        VpnGateSort.SCORE -> compareByDescending { it.score }
+        VpnGateSort.SPEED -> compareByDescending { it.speedBps }
+        VpnGateSort.PING -> compareBy { latency(it) }
+        VpnGateSort.SESSIONS -> compareBy { it.numSessions }
+    }
+    val failedLast = compareBy<VpnGateServer> { if (probes[it.id]?.state?.failed == true) 1 else 0 }
+    return matching.sortedWith(failedLast.then(primary).thenByDescending { it.score })
+}
+
+private fun VpnGateServer.matchesQuery(query: String, countryLabel: (String) -> String): Boolean =
+    countryName.lowercase(Locale.ROOT).contains(query) ||
+        countryCode.lowercase(Locale.ROOT) == query ||
+        countryLabel(countryCode).lowercase().contains(query) ||
+        sstpHostname.lowercase(Locale.ROOT).contains(query) ||
+        ip.contains(query) ||
+        operatorName.lowercase(Locale.ROOT).contains(query)
+
+// Locale.US on purpose: these are technical figures, shown LTR in a mono face.
+private fun formatGateBitrate(bps: Long): String = when {
+    bps >= 1_000_000_000L -> String.format(Locale.US, "%.1f Gbps", bps / 1e9)
+    bps >= 1_000_000L -> String.format(Locale.US, "%.1f Mbps", bps / 1e6)
+    bps > 0L -> String.format(Locale.US, "%.0f Kbps", bps / 1e3)
+    else -> "\u2014"
+}
+
+private fun formatGateUptime(ms: Long): String {
+    if (ms <= 0L) return "\u2014"
+    val minutes = ms / 60_000L
+    val hours = minutes / 60L
+    val days = hours / 24L
+    return when {
+        days > 0L -> "${days}d ${hours % 24L}h"
+        hours > 0L -> "${hours}h ${minutes % 60L}m"
+        else -> "${minutes}m"
+    }
+}
+
+private fun formatGateBytes(bytes: Long): String {
+    if (bytes <= 0L) return "\u2014"
+    val units = arrayOf("B", "KB", "MB", "GB", "TB", "PB")
+    var value = bytes.toDouble()
+    var unit = 0
+    while (value >= 1024.0 && unit < units.lastIndex) {
+        value /= 1024.0
+        unit++
+    }
+    return if (unit == 0) "$bytes B" else String.format(Locale.US, "%.1f %s", value, units[unit])
+}

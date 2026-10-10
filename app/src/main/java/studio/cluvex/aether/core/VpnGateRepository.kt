@@ -1,197 +1,237 @@
 package studio.cluvex.aether.core
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import studio.cluvex.aether.model.VpnGateServer
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import java.util.Base64
+import java.util.Locale
+import javax.net.ssl.SSLSocket
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import studio.cluvex.aether.model.ProbeState
+import studio.cluvex.aether.model.SstpProbe
+import studio.cluvex.aether.model.VpnGateServer
 
 /**
- * Fetches the public VPNGate relay list and parses it into [VpnGateServer]
- * instances.
+ * Fetches the public VPN Gate relay list and tests relays for SSTP.
  *
  * ### API format
  *
- * The VPNGate CSV API (`/api/iphone/`) returns a CSV whose first line is the
- * header row prefixed with `*` and whose last line is `*`. Between those are
- * one row per server, with fields separated by commas. The columns that matter
- * for SSTP:
+ * `GET https://www.vpngate.net/api/iphone/` returns:
  *
  * ```
+ * *vpn_servers
  * #HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,
- * Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,
- * OpenVPN_ConfigData_Base64,SSTP_Hostname,...
+ *  Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64
+ * public-vpn-227,219.100.37.1,...,<base64>
+ * *
  * ```
  *
- * Column indices (0-based) are documented in [parseCsvRow]. Servers that
- * report an SSTP hostname support SSTP on port 443.
+ * There is NO SSTP column, and HostName carries no domain. Every relay runs
+ * SoftEther, whose SSTP endpoint is `<HostName>.opengw.net` on any of its TCP
+ * listener ports. The OpenVPN config names one of those ports when it is a
+ * TCP config, so that port is the best SSTP guess; 443 otherwise. Whether a
+ * relay really speaks SSTP is only known after [probe].
  *
  * ### Threading
  *
- * Every public function suspends on [Dispatchers.IO]. The caller (ViewModel)
- * collects the result on the main thread.
+ * Every public function suspends on [Dispatchers.IO].
  */
 object VpnGateRepository {
 
+    private const val TAG = "VpnGate"
     private const val API_URL = "https://www.vpngate.net/api/iphone/"
+    private const val SSTP_DOMAIN = "opengw.net"
+    private const val DEFAULT_SSTP_PORT = 443
 
-    /** Alternative mirror when the main API is unreachable. */
-    private const val MIRROR_URL = "https://www.vpngate.net/api/iphone/"
-
-    /** Read timeout for the CSV download, ms. */
-    private const val READ_TIMEOUT_MS = 15_000
-
-    /** Connect timeout for the CSV download, ms. */
     private const val CONNECT_TIMEOUT_MS = 10_000
+    private const val READ_TIMEOUT_MS = 20_000
+    private const val PROBE_TIMEOUT_MS = 5_000
+
+    /** HostName .. OpenVPN_ConfigData_Base64. */
+    private const val MIN_COLUMNS = 15
+
+    private val HOST = Regex("^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*$")
+    private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
+    private val WHITESPACE = Regex("\\s+")
 
     /**
-     * Fetches the full server list from the VPNGate API.
-     *
-     * Returns an empty list on network failure rather than throwing, so the
-     * UI can show a retry prompt instead of crashing.
+     * Downloads and parses the relay list. A failure (network, HTTP status, or
+     * a body with no usable rows, e.g. a captive portal page) is returned as
+     * [Result.failure] so the UI can offer a retry.
      */
     suspend fun fetchServers(): Result<List<VpnGateServer>> = withContext(Dispatchers.IO) {
-        runCatching {
-            val url = URI(API_URL).toURL()
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = CONNECT_TIMEOUT_MS
-            conn.readTimeout = READ_TIMEOUT_MS
-            conn.setRequestProperty("User-Agent", "Aether+/1.0")
-
-            try {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-                val servers = mutableListOf<VpnGateServer>()
-
-                reader.useLines { lines ->
-                    var headerSeen = false
-                    for (line in lines) {
-                        val trimmed = line.trim()
-                        // Skip the header row (starts with *) and the footer
-                        if (trimmed.startsWith("*")) {
-                            headerSeen = true
-                            continue
-                        }
-                        if (!headerSeen || trimmed.isEmpty()) continue
-                        parseCsvRow(trimmed)?.let { servers.add(it) }
-                    }
-                }
-                servers
-            } finally {
-                conn.disconnect()
-            }
+        try {
+            Result.success(download())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticsLog.w(TAG, "VPN Gate list failed: ${e.message ?: e.javaClass.simpleName}")
+            Result.failure(e)
         }
     }
 
+    private fun download(): List<VpnGateServer> {
+        val connection = URI(API_URL).toURL().openConnection() as HttpURLConnection
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        connection.instanceFollowRedirects = true
+        connection.setRequestProperty("User-Agent", "Aether+/1.0")
+        connection.setRequestProperty("Accept", "text/plain, text/csv, */*")
+        try {
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("VPN Gate answered HTTP $code")
+            val servers = connection.inputStream.bufferedReader(Charsets.UTF_8).useLines { parseCsv(it) }
+            if (servers.isEmpty()) throw IOException("VPN Gate returned no usable relays")
+            DiagnosticsLog.i(TAG, "VPN Gate list: ${servers.size} relays")
+            return servers
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /** Parses the whole body: skips `*` / `#` lines and drops duplicates. */
+    internal fun parseCsv(lines: Sequence<String>): List<VpnGateServer> {
+        val seen = HashSet<String>()
+        val servers = ArrayList<VpnGateServer>()
+        for (raw in lines) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("*") || line.startsWith("#")) continue
+            val server = parseCsvRow(line) ?: continue
+            if (seen.add(server.id)) servers += server
+        }
+        return servers
+    }
+
     /**
-     * Parses one CSV row into a [VpnGateServer], or null when the row is
-     * malformed or missing critical fields.
+     * Parses one CSV row, or null when it is malformed.
      *
-     * VPNGate CSV column indices (0-based):
-     *  0  HostName
-     *  1  IP
-     *  2  Score
-     *  3  Ping
-     *  4  Speed (bps)
-     *  5  CountryLong
-     *  6  CountryShort
-     *  7  NumVpnSessions
-     *  8  Uptime (ms)
-     *  9  TotalUsers
-     * 10  TotalTraffic
-     * 11  LogType
-     * 12  Operator
-     * 13  Message
-     * 14  OpenVPN_ConfigData_Base64 (TCP+UDP combined, or empty)
-     *
-     * Columns beyond 14 are provider-dependent. SSTP hostname appears as the
-     * last meaningful column when present.
+     * Operator (12) and Message (13) are free text and the API does not quote
+     * them, so a comma in a message used to shift every later column. The
+     * base64 config never contains a comma, so it is always the LAST column,
+     * and whatever sits between the fixed head and that tail is operator +
+     * message.
      */
     internal fun parseCsvRow(row: String): VpnGateServer? {
-        val cols = row.split(",")
-        if (cols.size < 15) return null
-
+        val cols = splitCsv(row)
+        if (cols.size < MIN_COLUMNS) return null
         val hostname = cols[0].trim()
         val ip = cols[1].trim()
-        if (hostname.isEmpty() || ip.isEmpty()) return null
+        if (!HOST.matches(hostname) || !IPV4.matches(ip)) return null
 
-        val score = cols[2].trim().toIntOrNull() ?: 0
-        val ping = cols[3].trim().toIntOrNull() ?: -1
-        val speedBps = cols[4].trim().toLongOrNull() ?: 0L
-        val countryName = cols[5].trim()
-        val countryCode = cols[6].trim().uppercase()
-        val numSessions = cols[7].trim().toIntOrNull() ?: 0
-        val uptimeMs = cols[8].trim().toLongOrNull() ?: 0L
-        val totalUsers = cols[9].trim().toLongOrNull() ?: 0L
-        val totalTraffic = cols[10].trim().toLongOrNull() ?: 0L
-        val logPolicy = cols[11].trim()
-        val openVpnConfig = cols.getOrNull(14)?.trim().orEmpty()
-
-        // SSTP hostname: in the VPNGate API the SSTP hostname is typically
-        // reported alongside the server hostname when SSTP is available.
-        // Servers on ddns hostnames ending with .opengw.net support SSTP.
-        val sstpHostname = if (cols.size > 15) cols[15].trim() else ""
-        val supportsSstp = sstpHostname.isNotEmpty() ||
-            hostname.endsWith(".opengw.net") ||
-            hostname.endsWith(".vpngate.net")
-
-        val effectiveSstpHostname = sstpHostname.ifEmpty {
-            if (supportsSstp) hostname else ""
-        }
+        val openVpn = parseOpenVpn(cols.last().trim())
+        val middle = cols.subList(12, cols.size - 1)
+        val tcpPort = if (openVpn.tcp) openVpn.port else null
+        val udpPort = if (openVpn.udp) openVpn.port else null
 
         return VpnGateServer(
             hostname = hostname,
             ip = ip,
-            operatorMessage = cols.getOrNull(13)?.trim().orEmpty(),
-            countryCode = countryCode,
-            countryName = countryName,
-            speedBps = speedBps,
-            numSessions = numSessions,
-            uptimeMs = uptimeMs,
-            totalUsers = totalUsers,
-            totalTrafficBytes = totalTraffic,
-            logPolicy = logPolicy,
-            supportsSstp = supportsSstp,
-            sstpHostname = effectiveSstpHostname,
-            supportsOpenVpnTcp = openVpnConfig.isNotEmpty(),
-            supportsOpenVpnUdp = openVpnConfig.isNotEmpty(),
-            supportsL2tp = true, // VPNGate servers generally support L2TP
-            score = score,
-            pingMs = ping,
+            score = cols[2].trim().toLongOrNull() ?: 0L,
+            apiPingMs = cols[3].trim().toIntOrNull() ?: -1,
+            speedBps = cols[4].trim().toLongOrNull() ?: 0L,
+            countryName = cols[5].trim(),
+            countryCode = cols[6].trim().uppercase(Locale.ROOT),
+            numSessions = cols[7].trim().toIntOrNull() ?: 0,
+            uptimeMs = cols[8].trim().toLongOrNull() ?: 0L,
+            totalUsers = cols[9].trim().toLongOrNull() ?: 0L,
+            totalTrafficBytes = cols[10].trim().toLongOrNull() ?: 0L,
+            logPolicy = cols[11].trim(),
+            operatorName = middle.firstOrNull()?.trim().orEmpty(),
+            operatorMessage = middle.drop(1).joinToString(",").trim(),
+            sstpHostname = if (hostname.contains('.')) hostname else "$hostname.$SSTP_DOMAIN",
+            sstpPort = tcpPort ?: DEFAULT_SSTP_PORT,
+            openVpnTcpPort = tcpPort,
+            openVpnUdpPort = udpPort,
         )
     }
 
-    /**
-     * Measures TCP-connect latency to [server] on port 443 (SSTP port).
-     * Returns the round-trip time in milliseconds, or -1 on failure.
-     *
-     * This is a simple TCP SYN/ACK measurement, NOT an SSTP handshake, so it
-     * completes in one RTT and gives the user a reasonable "will this server
-     * respond" signal without the overhead of a full TLS + SSTP negotiation.
-     */
-    suspend fun measurePing(server: VpnGateServer): Int = withContext(Dispatchers.IO) {
-        runCatching {
-            val start = System.nanoTime()
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(server.ip, 443), 5_000)
+    /** Comma split that also honours double quotes, in case the API ever adds them. */
+    private fun splitCsv(line: String): List<String> {
+        val out = ArrayList<String>(16)
+        val current = StringBuilder()
+        var quoted = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            if (quoted && c == '"' && i + 1 < line.length && line[i + 1] == '"') {
+                current.append('"')
+                i++
+            } else if (c == '"') {
+                quoted = !quoted
+            } else if (c == ',' && !quoted) {
+                out += current.toString()
+                current.setLength(0)
+            } else {
+                current.append(c)
             }
-            ((System.nanoTime() - start) / 1_000_000).toInt()
-        }.getOrDefault(-1)
+            i++
+        }
+        out += current.toString()
+        return out
+    }
+
+    private class OpenVpnInfo(val tcp: Boolean, val udp: Boolean, val port: Int?)
+
+    private fun parseOpenVpn(base64: String): OpenVpnInfo {
+        if (base64.isEmpty()) return OpenVpnInfo(tcp = false, udp = false, port = null)
+        val text = try {
+            String(Base64.getMimeDecoder().decode(base64), Charsets.UTF_8)
+        } catch (_: IllegalArgumentException) {
+            return OpenVpnInfo(tcp = false, udp = false, port = null)
+        }
+        var proto: String? = null
+        var port: Int? = null
+        for (line in text.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) continue
+            val parts = trimmed.split(WHITESPACE)
+            val keyword = parts[0].lowercase(Locale.ROOT)
+            if (keyword == "proto" && proto == null) {
+                proto = parts.getOrNull(1)?.lowercase(Locale.ROOT)
+            } else if (keyword == "remote" && port == null) {
+                port = parts.getOrNull(2)?.toIntOrNull()?.takeIf { it in 1..65535 }
+            }
+        }
+        val protocol = proto.orEmpty()
+        return OpenVpnInfo(tcp = protocol.startsWith("tcp"), udp = protocol.startsWith("udp"), port = port)
     }
 
     /**
-     * Checks if the server's SSTP port (443) is reachable.
+     * Tests [server] for real: TCP connect (timed, that is the latency), then
+     * TLS and the SSTP_DUPLEX_POST request. A `200` means the relay speaks
+     * SSTP. No credentials are sent, so the unverified TLS here leaks nothing.
      */
-    suspend fun checkSstpReachability(server: VpnGateServer): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(server.ip, 443), 5_000)
-                true
+    suspend fun probe(server: VpnGateServer): SstpProbe = withContext(Dispatchers.IO) {
+        val socket = Socket()
+        try {
+            val started = System.nanoTime()
+            try {
+                socket.connect(InetSocketAddress(server.ip, server.sstpPort), PROBE_TIMEOUT_MS)
+            } catch (_: Exception) {
+                return@withContext SstpProbe(ProbeState.UNREACHABLE)
             }
-        }.getOrDefault(false)
+            val latency = ((System.nanoTime() - started) / 1_000_000L).toInt()
+            val speaksSstp = try {
+                socket.soTimeout = PROBE_TIMEOUT_MS
+                val tls = SstpCore.insecureSocketFactory()
+                    .createSocket(socket, server.sstpHostname, server.sstpPort, true) as SSLSocket
+                tls.startHandshake()
+                tls.outputStream.write(SstpCore.duplexPostRequest(server.sstpHostname))
+                tls.outputStream.flush()
+                SstpCore.isHttpOk(SstpCore.readHttpHeader(tls.inputStream))
+            } catch (_: Exception) {
+                false
+            }
+            SstpProbe(if (speaksSstp) ProbeState.SSTP_OK else ProbeState.REACHABLE_NO_SSTP, latency)
+        } finally {
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
+        }
     }
 }

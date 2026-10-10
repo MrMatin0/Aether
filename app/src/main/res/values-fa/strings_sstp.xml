@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- مرورگر رله‌های VPN Gate -->
+    <string name="vpngate_title">VPN Gate</string>
+    <string name="vpngate_subtitle">رله‌های رایگان داوطلبانه روی SSTP</string>
+    <string name="vpngate_refresh">تازه‌سازی فهرست</string>
+    <string name="vpngate_search_hint">جستجوی کشور، میزبان یا IP</string>
+    <string name="vpngate_clear_search">پاک کردن جستجو</string>
+    <string name="vpngate_stat_relays">رله‌ها</string>
+    <string name="vpngate_stat_countries">کشورها</string>
+    <string name="vpngate_stat_best_ping">بهترین SSTP</string>
+    <string name="vpngate_sort_score">بهترین</string>
+    <string name="vpngate_sort_speed">سریع‌ترین</string>
+    <string name="vpngate_sort_ping">کمترین پینگ</string>
+    <string name="vpngate_sort_sessions">خلوت‌ترین</string>
+    <string name="vpngate_filter_all">همهٔ کشورها</string>
+    <string name="vpngate_filter_verified">SSTP تأییدشده</string>
+    <plurals name="vpngate_count">
+        <item quantity="one">%d رله</item>
+        <item quantity="other">%d رله</item>
+    </plurals>
+    <string name="vpngate_probe_top">آزمایش %1$d رلهٔ برتر</string>
+    <string name="vpngate_probe_running">در حال آزمایش %1$d از %2$d</string>
+    <string name="vpngate_probe_stop">توقف</string>
+    <string name="vpngate_probe_testing">در حال آزمایش</string>
+    <string name="vpngate_probe_no_sstp">بدون SSTP</string>
+    <string name="vpngate_probe_down">در دسترس نیست</string>
+    <string name="vpngate_test">آزمایش</string>
+    <string name="vpngate_use">استفاده از رله</string>
+    <string name="vpngate_selected">انتخاب‌شده</string>
+    <string name="vpngate_metric_speed">سرعت</string>
+    <string name="vpngate_metric_sessions">نشست‌ها</string>
+    <string name="vpngate_metric_uptime">مدت فعالیت</string>
+    <string name="vpngate_metric_score">امتیاز</string>
+    <string name="vpngate_detail_ip">نشانی IP</string>
+    <string name="vpngate_detail_port">درگاه SSTP</string>
+    <string name="vpngate_detail_users">کل کاربران</string>
+    <string name="vpngate_detail_traffic">ترافیک منتقل‌شده</string>
+    <string name="vpngate_detail_logs">سیاست لاگ</string>
+    <string name="vpngate_detail_operator">اپراتور</string>
+    <string name="vpngate_loading">در حال دریافت رله‌ها از VPN Gate…</string>
+    <string name="vpngate_error_title">بارگیری VPN Gate ممکن نشد</string>
+    <string name="vpngate_error_hint">ممکن است vpngate.net روی این شبکه فیلتر باشد. از اتصال دیگری استفاده کنید یا اول از طریق تونل دیگری وصل شوید.</string>
+    <string name="vpngate_refresh_failed">تازه‌سازی ناموفق بود. آخرین فهرست نمایش داده می‌شود.</string>
+    <string name="vpngate_retry">تلاش دوباره</string>
+    <string name="vpngate_empty_title">رله‌ای پیدا نشد</string>
+    <string name="vpngate_empty_hint">جستجو، کشور یا فیلتر دیگری را امتحان کنید.</string>
+    <string name="vpngate_reset_filters">بازنشانی فیلترها</string>
+    <string name="vpngate_privacy_note">رله‌های VPN Gate را داوطلبان اداره می‌کنند و ممکن است لاگ اتصال نگه دارند. از آن‌ها برای عبور از فیلترینگ استفاده کنید، نه برای ناشناس ماندن.</string>
+
+    <!-- تنظیمات SSTP -->
+    <string name="sstp_title">SSTP</string>
+    <string name="sstp_subtitle">SSTP ترافیک PPP را درون HTTPS می‌برد تا تونل شبیه ترافیک معمولی وب باشد.</string>
+    <string name="sstp_browse">مرور رله‌های VPN Gate</string>
+    <string name="sstp_browse_hint">یک رلهٔ عمومی رایگان انتخاب کنید؛ اطلاعات ورود خودکار پر می‌شود.</string>
+    <string name="sstp_current_relay">رلهٔ VPN Gate</string>
+    <string name="sstp_change">تغییر</string>
+    <string name="sstp_section_server">سرور</string>
+    <string name="sstp_hostname">نام میزبان</string>
+    <string name="sstp_hostname_error">فقط حروف لاتین، رقم، نقطه و خط تیره</string>
+    <string name="sstp_port">درگاه</string>
+    <string name="sstp_section_auth">ورود</string>
+    <string name="sstp_username">نام کاربری</string>
+    <string name="sstp_password">گذرواژه</string>
+    <string name="sstp_show_password">نمایش گذرواژه</string>
+    <string name="sstp_hide_password">پنهان کردن گذرواژه</string>
+    <string name="sstp_use_vpngate_defaults">استفاده از ورود VPN Gate (vpn / vpn)</string>
+    <string name="sstp_auth_note">PAP و CHAP پشتیبانی می‌شوند. سرورهایی که فقط MS-CHAPv2 می‌پذیرند هنوز پشتیبانی نمی‌شوند.</string>
+    <string name="sstp_section_security">امنیت</string>
+    <string name="sstp_verify_cert">بررسی گواهی سرور</string>
+    <string name="sstp_verify_cert_desc">برای سرورهای خودتان روشن بماند. رله‌های VPN Gate گواهی خودامضا دارند و برای آن‌ها خاموش می‌شود.</string>
+    <string name="sstp_verify_off_warning">بررسی گواهی خاموش است. هر کسی در مسیر شبکه می‌تواند خود را جای این سرور جا بزند و اطلاعات ورود شما را ببیند.</string>
+    <string name="sstp_section_advanced">پیشرفته</string>
+    <string name="sstp_advanced_summary">SNI، MRU و MTU</string>
+    <string name="sstp_sni">SNI سفارشی</string>
+    <string name="sstp_sni_hint">خالی = همان نام میزبان</string>
+    <string name="sstp_mru">MRU</string>
+    <string name="sstp_mtu">MTU</string>
+    <string name="sstp_mtu_hint">بین %1$d تا %2$d. خالی = %3$d.</string>
+</resources>
