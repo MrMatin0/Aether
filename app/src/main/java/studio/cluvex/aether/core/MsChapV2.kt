@@ -51,6 +51,13 @@ internal object MsChapV2 {
     private val SHS_PAD1 = ByteArray(40)
     private val SHS_PAD2 = ByteArray(40) { 0xF2.toByte() }
 
+    /**
+     * The `S=<40 hex>` authenticator inside a Success message: the tag in
+     * either case, only as a whole token (start of the message or after
+     * whitespace), followed by exactly 40 hex digits.
+     */
+    private val SUCCESS_AUTHENTICATOR = Regex("(?<!\\S)[Ss]=[0-9A-Fa-f]{40}(?![0-9A-Za-z])")
+
     /** Everything one MS-CHAPv2 exchange produces on the client side. */
     class Exchange(
         /** The CHAP Response Value field, [RESPONSE_VALUE_LENGTH] bytes. */
@@ -124,11 +131,17 @@ internal object MsChapV2 {
     /**
      * True when the server's Success message carries the authenticator we
      * expected, i.e. the server proved it knows the password too.
+     *
+     * RFC 2759 section 5: the message is `S=<auth_string> M=<message>`, and
+     * servers differ in the case they send it in, so both the tag and the 40
+     * hex digits are compared case-insensitively. The tag only counts as a
+     * whole token followed by exactly 40 hex digits, so an `s=` that happens
+     * to sit inside the free-text `M=` part is never picked up, and a short or
+     * over-long value is rejected.
      */
     fun verifySuccess(message: String, expected: String): Boolean {
-        val start = message.indexOf("S=")
-        if (start < 0 || start + 42 > message.length) return false
-        return message.substring(start, start + 42).equals(expected, ignoreCase = true)
+        val found = SUCCESS_AUTHENTICATOR.find(message) ?: return false
+        return found.value.equals(expected, ignoreCase = true)
     }
 
     /** RFC 3079 GetMasterKey(). */
