@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import studio.cluvex.aether.R
-import studio.cluvex.aether.core.SstpConfig
+import studio.cluvex.aether.model.SstpConfig
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.engine.ProfileEdit
 
