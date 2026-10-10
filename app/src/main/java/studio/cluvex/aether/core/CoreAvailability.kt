@@ -85,6 +85,7 @@ object CoreAvailability {
     ) {
         /**
          * The Aether engine is mandatory, so it is available by construction.
+         * So is SSTP: it is pure Kotlin ([SstpCore]) and has no binary to miss.
          *
          * Deliberately binary-only for Psiphon: a build with the core but no
          * bootstrap list is a DIFFERENT problem from a build with no core, and
@@ -96,6 +97,7 @@ object CoreAvailability {
             Hop.AETHER -> true
             Hop.PSIPHON -> psiphonBinary
             Hop.TOR -> torBinary
+            Hop.SSTP -> true
         }
 
         /** Cores [mode] needs that this build does not ship. */

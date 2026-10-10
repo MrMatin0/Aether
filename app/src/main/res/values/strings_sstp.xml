@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- VPN Gate relay browser (ui/VpnGateScreen.kt) -->
+    <string name="vpngate_title">VPN Gate</string>
+    <string name="vpngate_subtitle">Free volunteer relays over SSTP</string>
+    <string name="vpngate_refresh">Refresh list</string>
+    <string name="vpngate_search_hint">Search country, host or IP</string>
+    <string name="vpngate_clear_search">Clear search</string>
+    <string name="vpngate_stat_relays">Relays</string>
+    <string name="vpngate_stat_countries">Countries</string>
+    <string name="vpngate_stat_best_ping">Best SSTP</string>
+    <string name="vpngate_sort_score">Best</string>
+    <string name="vpngate_sort_speed">Fastest</string>
+    <string name="vpngate_sort_ping">Lowest ping</string>
+    <string name="vpngate_sort_sessions">Least busy</string>
+    <string name="vpngate_filter_all">All countries</string>
+    <string name="vpngate_filter_verified">SSTP verified</string>
+    <plurals name="vpngate_count">
+        <item quantity="one">%d relay</item>
+        <item quantity="other">%d relays</item>
+    </plurals>
+    <string name="vpngate_probe_top">Test top %1$d</string>
+    <string name="vpngate_probe_running">Testing %1$d/%2$d</string>
+    <string name="vpngate_probe_stop">Stop</string>
+    <string name="vpngate_probe_testing">Testing</string>
+    <string name="vpngate_probe_no_sstp">No SSTP</string>
+    <string name="vpngate_probe_down">Unreachable</string>
+    <string name="vpngate_test">Test</string>
+    <string name="vpngate_use">Use relay</string>
+    <string name="vpngate_selected">Selected</string>
+    <string name="vpngate_metric_speed">Speed</string>
+    <string name="vpngate_metric_sessions">Sessions</string>
+    <string name="vpngate_metric_uptime">Uptime</string>
+    <string name="vpngate_metric_score">Score</string>
+    <string name="vpngate_detail_ip">IP address</string>
+    <string name="vpngate_detail_port">SSTP port</string>
+    <string name="vpngate_detail_users">Total users</string>
+    <string name="vpngate_detail_traffic">Traffic served</string>
+    <string name="vpngate_detail_logs">Log policy</string>
+    <string name="vpngate_detail_operator">Operator</string>
+    <string name="vpngate_loading">Fetching relays from VPN Gate…</string>
+    <string name="vpngate_error_title">Could not load VPN Gate</string>
+    <string name="vpngate_error_hint">vpngate.net may be filtered on this network. Try another connection, or connect through another tunnel first.</string>
+    <string name="vpngate_refresh_failed">Refresh failed. Showing the last list.</string>
+    <string name="vpngate_retry">Try again</string>
+    <string name="vpngate_empty_title">No relays match</string>
+    <string name="vpngate_empty_hint">Try another search, country or filter.</string>
+    <string name="vpngate_reset_filters">Reset filters</string>
+    <string name="vpngate_privacy_note">VPN Gate relays are run by volunteers and may keep connection logs. Use them to get around filtering, not to stay anonymous.</string>
+
+    <!-- SSTP settings (ui/SstpSettingsPanel.kt) -->
+    <string name="sstp_title">SSTP</string>
+    <string name="sstp_subtitle">SSTP carries PPP inside HTTPS, so the tunnel looks like ordinary web traffic.</string>
+    <string name="sstp_browse">Browse VPN Gate relays</string>
+    <string name="sstp_browse_hint">Pick a free public relay. Sign-in details are filled in for you.</string>
+    <string name="sstp_current_relay">VPN Gate relay</string>
+    <string name="sstp_change">Change</string>
+    <string name="sstp_section_server">Server</string>
+    <string name="sstp_hostname">Hostname</string>
+    <string name="sstp_hostname_error">Letters, digits, dots and dashes only</string>
+    <string name="sstp_port">Port</string>
+    <string name="sstp_section_auth">Sign-in</string>
+    <string name="sstp_username">Username</string>
+    <string name="sstp_password">Password</string>
+    <string name="sstp_show_password">Show password</string>
+    <string name="sstp_hide_password">Hide password</string>
+    <string name="sstp_use_vpngate_defaults">Use VPN Gate sign-in (vpn / vpn)</string>
+    <string name="sstp_auth_note">MS-CHAPv2, CHAP and PAP are supported, in the order the server asks for them. The password is stored encrypted on this device.</string>
+    <string name="sstp_section_security">Security</string>
+    <string name="sstp_verify_cert">Verify server certificate</string>
+    <string name="sstp_verify_cert_desc">Keep this on for your own servers. VPN Gate relays use self-signed certificates, so it is turned off for them.</string>
+    <string name="sstp_verify_off_warning">Certificate checks are off. Anyone on the network path could impersonate this server and read your sign-in.</string>
+    <string name="sstp_section_advanced">Advanced</string>
+    <string name="sstp_advanced_summary">SNI, MRU and MTU</string>
+    <string name="sstp_sni">Custom SNI</string>
+    <string name="sstp_sni_hint">Blank uses the hostname</string>
+    <string name="sstp_mru">MRU</string>
+    <string name="sstp_mtu">MTU</string>
+    <string name="sstp_mtu_hint">%1$d to %2$d. Blank uses %3$d.</string>
+    <string name="sstp_packet_tunnel_note">SSTP is a packet tunnel of its own: proxy mode and LAN sharing do not apply to it, and the TUN MTU comes from the server.</string>
+
+    <!-- SSTP chain mode (ui/Labels.kt, ui/engine/ChainSection.kt) -->
+    <string name="chain_sstp">SSTP</string>
+    <string name="chain_sstp_desc">A packet tunnel inside HTTPS, to your own SSTP server or a free VPN Gate relay. Fast, but whoever runs the server can see your traffic.</string>
+
+    <!-- SSTP session errors (vpn/AetherVpnService.kt) -->
+    <string name="err_sstp_no_server">Pick an SSTP server or a VPN Gate relay first (Settings, Chain).</string>
+    <string name="err_sstp_proxy_mode">SSTP carries IP packets, not proxy connections, so it cannot run in proxy mode. Turn proxy mode off to use it.</string>
+    <string name="err_sstp_failed">SSTP connection failed: %1$s</string>
+    <string name="err_sstp_timeout">The SSTP server did not finish connecting in time.</string>
+    <string name="err_sstp_dropped">The SSTP server dropped the connection.</string>
+</resources>

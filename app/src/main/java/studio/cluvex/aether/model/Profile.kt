@@ -697,6 +697,24 @@ data class ConnectionProfile(
      */
     val smartDnsServers: String = "",
 
+    // ---- SSTP (MS-SSTP, private servers and VPN Gate relays) ----
+
+    /**
+     * The server a [ChainMode.SSTP] session dials, and how. Kept whatever the
+     * chain is, so switching away from SSTP and back does not lose the relay.
+     *
+     * Never reaches the engine: SSTP is its own packet tunnel
+     * ([studio.cluvex.aether.core.SstpCore]) and the session builds the TUN
+     * from its PPP link.
+     *
+     * SECURITY: [SstpConfig.password] is a credential for private servers, so
+     * it gets the Zero Trust treatment - ProfileCodec never puts it in the
+     * Intent payload, and ProfileStore seals it in the Keystore-backed
+     * SecretStore instead of the preferences file. The service re-reads it in
+     * `hydrate`.
+     */
+    val sstpConfig: SstpConfig = SstpConfig(),
+
 ) {
     /**
      * The Smart DNS servers, parsed ONCE per instance. The profile is

@@ -22,6 +22,8 @@ import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SmartDnsProtocol
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
+import studio.cluvex.aether.model.SstpConfig
+import studio.cluvex.aether.model.SstpSource
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorBridgeMode
 
@@ -131,6 +133,20 @@ class ProfileStore(private val context: Context) {
         val smartDns = booleanPreferencesKey("smartDns")
         val smartDnsProtocol = stringPreferencesKey("smartDnsProtocol")
         val smartDnsServers = stringPreferencesKey("smartDnsServers")
+        // SSTP. Same key names as ProfileCodec; the password is NOT here (see
+        // [SSTP_PASSWORD_SECRET]). [sstpHost] doubles as "this profile has
+        // saved SSTP settings": before it exists the password is the public
+        // VPN Gate default, after it the sealed value is taken as is.
+        val sstpHost = stringPreferencesKey("sstpHost")
+        val sstpPort = intPreferencesKey("sstpPort")
+        val sstpUser = stringPreferencesKey("sstpUser")
+        val sstpVerify = booleanPreferencesKey("sstpVerify")
+        val sstpSni = stringPreferencesKey("sstpSni")
+        val sstpMru = intPreferencesKey("sstpMru")
+        val sstpMtu = intPreferencesKey("sstpMtu")
+        val sstpSource = stringPreferencesKey("sstpSource")
+        val sstpCountry = stringPreferencesKey("sstpCountry")
+        val sstpCountryName = stringPreferencesKey("sstpCountryName")
 
         // ---- RETIRED keys: read once for migration, removed on save ----
 
@@ -167,7 +183,9 @@ class ProfileStore(private val context: Context) {
      * the DataStore preferences file. That file is plain protobuf inside the app
      * sandbox, so a device backup or an adb dump on a rooted phone would expose
      * a long-lived organization credential. They live in [SecretStore] instead,
-     * sealed with a hardware-backed AES-GCM key from the Android Keystore.
+     * sealed with a hardware-backed AES-GCM key from the Android Keystore. The
+     * SSTP password ([SSTP_PASSWORD_SECRET]) is sealed there too: for a private
+     * SSTP server it is a real account password.
      *
      * The Psiphon client config deliberately stays HERE: it is a public,
      * network-issued client identity (propagation channel + sponsor + server
@@ -240,6 +258,25 @@ class ProfileStore(private val context: Context) {
         // protocol and is a protocol now. MASQUE + mim=true is read as MIM.
         val storedProtocol = prefs[Keys.protocol]
             ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO
+
+        // SSTP. Before this profile ever saved SSTP settings the password is
+        // the public VPN Gate default; after that, whatever is sealed - an
+        // empty field the user cleared stays empty instead of springing back.
+        val ds = d.sstpConfig
+        val sstp = SstpConfig(
+            hostname = prefs[Keys.sstpHost] ?: ds.hostname,
+            port = prefs[Keys.sstpPort]?.takeIf { it in 1..65535 } ?: ds.port,
+            username = prefs[Keys.sstpUser] ?: ds.username,
+            password = if (prefs[Keys.sstpHost] == null) ds.password else secrets.read(SSTP_PASSWORD_SECRET),
+            verifyCert = prefs[Keys.sstpVerify] ?: ds.verifyCert,
+            customSni = prefs[Keys.sstpSni] ?: ds.customSni,
+            mru = prefs[Keys.sstpMru] ?: ds.mru,
+            mtu = prefs[Keys.sstpMtu] ?: ds.mtu,
+            source = prefs[Keys.sstpSource]
+                ?.let { runCatching { SstpSource.valueOf(it) }.getOrNull() } ?: ds.source,
+            countryCode = prefs[Keys.sstpCountry] ?: ds.countryCode,
+            countryName = prefs[Keys.sstpCountryName] ?: ds.countryName,
+        )
 
         ConnectionProfile(
             protocol = Protocol.migrateLegacyMim(storedProtocol, prefs[Keys.legacyMim]),
@@ -330,6 +367,8 @@ class ProfileStore(private val context: Context) {
             smartDnsProtocol = SmartDnsProtocol.fromStored(prefs[Keys.smartDnsProtocol])
                 ?: d.smartDnsProtocol,
             smartDnsServers = prefs[Keys.smartDnsServers] ?: d.smartDnsServers,
+            // ---- SSTP ----
+            sstpConfig = sstp,
         )
     }
 
@@ -411,6 +450,19 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.smartDns] = profile.smartDns
             prefs[Keys.smartDnsProtocol] = profile.smartDnsProtocol.name
             prefs[Keys.smartDnsServers] = profile.smartDnsServers
+            // ---- SSTP. Stored on every chain, so switching away from SSTP
+            // and back keeps the relay. The password is sealed below.
+            val sstp = profile.sstpConfig
+            prefs[Keys.sstpHost] = sstp.hostname
+            prefs[Keys.sstpPort] = sstp.port
+            prefs[Keys.sstpUser] = sstp.username
+            prefs[Keys.sstpVerify] = sstp.verifyCert
+            prefs[Keys.sstpSni] = sstp.customSni
+            prefs[Keys.sstpMru] = sstp.mru
+            prefs[Keys.sstpMtu] = sstp.mtu
+            prefs[Keys.sstpSource] = sstp.source.name
+            prefs[Keys.sstpCountry] = sstp.countryCode
+            prefs[Keys.sstpCountryName] = sstp.countryName
             // Retired keys. The protocol written above already carries the
             // MIM choice, so the old switch has nothing left to say, the
             // engine-Tor keys describe a Tor this app no longer runs, and
@@ -426,5 +478,14 @@ class ProfileStore(private val context: Context) {
         // saves a default profile) wipes them through this same path.
         secrets.write(SecretStore.ACCESS_SECRET, profile.accessClientSecret)
         secrets.write(SecretStore.ACCESS_TOKEN, profile.accessToken)
+        secrets.write(SSTP_PASSWORD_SECRET, profile.sstpConfig.password)
+    }
+
+    companion object {
+        /**
+         * The [SecretStore] entry holding [SstpConfig.password]. Read by the
+         * VpnService's `hydrate`, because the Intent payload never carries it.
+         */
+        const val SSTP_PASSWORD_SECRET = "sstp_password"
     }
 }
