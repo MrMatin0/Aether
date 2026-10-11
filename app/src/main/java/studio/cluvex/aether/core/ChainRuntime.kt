@@ -51,6 +51,19 @@ object ChainRuntime {
     /** The chain entry port, for the many callers that just need the number. */
     val entryPort: Int get() = _entryPort.value
 
+    /**
+     * True while the live session is an SSTP packet tunnel.
+     *
+     * Every SOCKS session keeps the app's own package OUT of its TUN and
+     * reaches the tunnel through the local SOCKS5 entry. SSTP has no such
+     * entry, so its TUN carries the app's own sockets instead (see
+     * TunFactory.establishSstp). For a probe that wants to go "through the
+     * tunnel" a plain socket IS the tunnel path then, and dialling [entryPort]
+     * would only reach a port nothing listens on - which is exactly why the
+     * latency, the exit IP and the country used to fail on SSTP.
+     */
+    val appTrafficInTun: Boolean get() = _mode.value.usesSstp
+
     private val _hops = MutableStateFlow<List<HopStatus>>(emptyList())
     val hops: StateFlow<List<HopStatus>> = _hops.asStateFlow()
 
@@ -70,7 +83,8 @@ object ChainRuntime {
      *
      * SSTP has no local port at all: its TUN is pumped packet by packet by
      * [SstpCore.bridgeTun]. The engine's port is returned so the many readers of
-     * [entryPort] keep their pre-chain default, and nothing listens there.
+     * [entryPort] keep their pre-chain default, and nothing listens there
+     * (see [appTrafficInTun] for what a probe does instead).
      */
     fun entryPortFor(mode: ChainMode): Int = when (mode.entryHop) {
         Hop.AETHER, Hop.SSTP -> TunnelConfig.ENGINE_SOCKS_PORT
