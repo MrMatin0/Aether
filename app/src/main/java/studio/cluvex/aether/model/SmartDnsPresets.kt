@@ -14,6 +14,13 @@ enum class SmartDnsPresetGroup { ENCRYPTED, CLASSIC }
  *
  * [region] is `EU`, `US`, `GLOBAL` or blank; [title] is a brand name for the
  * encrypted servers and a two-digit node number for the classic ones.
+ *
+ * [country] is WHERE THE RESOLVER ANSWERS FROM, as an ISO 3166-1 alpha-2 code
+ * (`EU` for GeoHide's European pool, which Android renders as the EU flag).
+ * It is what the flag next to each row means. Checked against the networks
+ * the addresses are announced from (2026-10): every classic node and the
+ * global / Xbox / Mafioznik resolvers sit on Russian networks (Selectel,
+ * Cloud.ru, PIN, Argotel); only GeoHide EU and US answer from outside.
  */
 class SmartDnsPreset internal constructor(
     val id: String,
@@ -22,6 +29,7 @@ class SmartDnsPreset internal constructor(
     val group: SmartDnsPresetGroup,
     val recommended: Boolean,
     private val sealed: String,
+    val country: String,
 ) {
     /** What a profile stores for this preset. */
     val token: String
@@ -39,8 +47,17 @@ class SmartDnsPreset internal constructor(
 
 /**
  * The ready-made Smart DNS servers offered on the connection tab, and the
- * helpers that keep "which presets are picked" and "what the user typed" in the
+ * helpers that keep "which preset is picked" and "what the user typed" in the
  * ONE stored field ([ConnectionProfile.smartDnsServers]).
+ *
+ * ### One server
+ *
+ * Smart DNS uses exactly one server. The sheet stores either one preset token
+ * ([single]) or one typed server, never a list. A list saved by an older build
+ * (several presets, then the user's own) is read as its first usable entry
+ * ([primary]), which is also the one that build asked first, so nothing
+ * changes meaning until the user picks again. [compose] and [toggle] are kept
+ * for those stored lists and their tests.
  *
  * ### Order
  *
@@ -63,29 +80,29 @@ object SmartDnsPresets {
 
     val ALL: List<SmartDnsPreset> = listOf(
         SmartDnsPreset("geohide-eu", "GeoHide", "EU", SmartDnsPresetGroup.ENCRYPTED, true,
-            "0e37457c95ead4f5e90672496a91bfc2a949684367d1ef84ea123d5c7a90b5"),
+            "0e37457c95ead4f5e90672496a91bfc2a949684367d1ef84ea123d5c7a90b5", country = "EU"),
         SmartDnsPreset("geohide-us", "GeoHide", "US", SmartDnsPresetGroup.ENCRYPTED, false,
-            "0e37457c95ead4f5f90072496a91bfc2a949684367d1ef84ea123d5c7a90b5"),
+            "0e37457c95ead4f5f90072496a91bfc2a949684367d1ef84ea123d5c7a90b5", country = "US"),
         SmartDnsPreset("geohide", "GeoHide", "GLOBAL", SmartDnsPresetGroup.ENCRYPTED, false,
-            "0e37457c95ead4f5eb163346669ab285bf5969557c8da69bec5a3e50"),
+            "0e37457c95ead4f5eb163346669ab285bf5969557c8da69bec5a3e50", country = "RU"),
         SmartDnsPreset("xbox-dns", "Xbox DNS", "", SmartDnsPresetGroup.ENCRYPTED, false,
-            "0e37457c95ead4f5f4113356229ab9d8e35e331e7690f8c7e84a295b66"),
+            "0e37457c95ead4f5f4113356229ab9d8e35e331e7690f8c7e84a295b66", country = "RU"),
         SmartDnsPreset("mafioznik", "Mafioznik", "", SmartDnsPresetGroup.ENCRYPTED, false,
-            "0e37457c95ead4f5e81d2f00629fb1c2a256285879d0f393e31028476ccfbdcfb84e2f"),
-        SmartDnsPreset("udp-01", "01", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691e"),
-        SmartDnsPreset("udp-02", "02", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691f"),
-        SmartDnsPreset("udp-03", "03", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691a"),
-        SmartDnsPreset("udp-04", "04", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691b"),
-        SmartDnsPreset("udp-05", "05", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d6918"),
-        SmartDnsPreset("udp-06", "06", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d6919"),
-        SmartDnsPreset("udp-07", "07", "", SmartDnsPresetGroup.CLASSIC, false, "5e741f3ed4e8d5eebb5d6e1e3f"),
-        SmartDnsPreset("udp-08", "08", "", SmartDnsPresetGroup.CLASSIC, false, "5e741f3ed4e8d5eebb5d6e1e3e"),
-        SmartDnsPreset("udp-09", "09", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0039c9"),
-        SmartDnsPreset("udp-10", "10", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0039c6"),
-        SmartDnsPreset("udp-11", "11", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0037c6"),
-        SmartDnsPreset("udp-12", "12", "", SmartDnsPresetGroup.CLASSIC, false, "52761f3dd3e5d5e8bc47721f36ce"),
-        SmartDnsPreset("udp-13", "13", "", SmartDnsPresetGroup.CLASSIC, false, "55741f3ed5e0d5ebb541721b3e"),
-        SmartDnsPreset("udp-14", "14", "", SmartDnsPresetGroup.CLASSIC, false, "52751f34c8e1cee2a245"),
+            "0e37457c95ead4f5e81d2f00629fb1c2a256285879d0f393e31028476ccfbdcfb84e2f", country = "RU"),
+        SmartDnsPreset("udp-01", "01", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691e", country = "RU"),
+        SmartDnsPreset("udp-02", "02", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691f", country = "RU"),
+        SmartDnsPreset("udp-03", "03", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691a", country = "RU"),
+        SmartDnsPreset("udp-04", "04", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d691b", country = "RU"),
+        SmartDnsPreset("udp-05", "05", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d6918", country = "RU"),
+        SmartDnsPreset("udp-06", "06", "", SmartDnsPresetGroup.CLASSIC, false, "57720022dee8d5e3ba5d6919", country = "RU"),
+        SmartDnsPreset("udp-07", "07", "", SmartDnsPresetGroup.CLASSIC, false, "5e741f3ed4e8d5eebb5d6e1e3f", country = "RU"),
+        SmartDnsPreset("udp-08", "08", "", SmartDnsPresetGroup.CLASSIC, false, "5e741f3ed4e8d5eebb5d6e1e3e", country = "RU"),
+        SmartDnsPreset("udp-09", "09", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0039c9", country = "RU"),
+        SmartDnsPreset("udp-10", "10", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0039c6", country = "RU"),
+        SmartDnsPreset("udp-11", "11", "", SmartDnsPresetGroup.CLASSIC, false, "577a0222d4e3c8f4bd426e0037c6", country = "RU"),
+        SmartDnsPreset("udp-12", "12", "", SmartDnsPresetGroup.CLASSIC, false, "52761f3dd3e5d5e8bc47721f36ce", country = "RU"),
+        SmartDnsPreset("udp-13", "13", "", SmartDnsPresetGroup.CLASSIC, false, "55741f3ed5e0d5ebb541721b3e", country = "RU"),
+        SmartDnsPreset("udp-14", "14", "", SmartDnsPresetGroup.CLASSIC, false, "52751f34c8e1cee2a245", country = "RU"),
     )
 
     /** The priority preset: first in the list, and what an empty list is seeded with. */
@@ -115,6 +132,25 @@ object SmartDnsPresets {
         }
         return String(out, Charsets.US_ASCII)
     }
+
+    // ------------------------------------------------------ the one server
+
+    /**
+     * The ONE server a stored value stands for: its first usable entry, preset
+     * or typed, or null when nothing in it is a server. See "One server".
+     */
+    fun primary(raw: String, hint: SmartDnsProtocol = SmartDnsProtocol.PLAIN): SmartDnsServer? =
+        SmartDnsServers.parse(raw, hint).firstOrNull()
+
+    /** The stored text for exactly one preset. */
+    fun single(id: String): String = TOKEN_PREFIX + id
+
+    /**
+     * What a profile stores for [server]: the preset token for a preset, the
+     * endpoint (scheme included, so it parses back to the same transport) for
+     * a typed one.
+     */
+    fun storedFor(server: SmartDnsServer): String = server.alias.ifEmpty { server.endpoint }
 
     // ------------------------------------------------- the stored selection
 
