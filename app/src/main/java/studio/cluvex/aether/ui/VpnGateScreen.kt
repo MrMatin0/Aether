@@ -82,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -155,6 +156,12 @@ private sealed interface GateLoad {
  * "Test" runs a real TLS + SSTP handshake; "Use relay" hands it to the caller
  * (`server.toSstpConfig()` builds the config).
  *
+ * The relay list is CACHED (in memory, and on disk across restarts; see
+ * VpnGateRepository): opening the screen shows the cached list straight away,
+ * and the network is only asked again when the user taps refresh at the top -
+ * or retries a first load that failed. It used to be downloaded again on every
+ * single visit.
+ *
  * The list keeps showing while a refresh runs, failed probes sink to the
  * bottom, items animate into their new order, and all motion respects the
  * system "remove animations" setting.
@@ -172,10 +179,14 @@ fun VpnGateScreen(
     val accents = LocalAetherAccents.current
     val reduced = LocalReducedMotion.current
     val locale = LocalConfiguration.current.locales[0]
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var servers by remember { mutableStateOf<List<VpnGateServer>>(emptyList()) }
-    var load by remember { mutableStateOf<GateLoad>(GateLoad.Loading) }
+    // The in-memory cache, read without I/O, so a return visit draws the list
+    // on its first frame instead of a skeleton.
+    val cached = remember { VpnGateRepository.cachedServers().orEmpty() }
+    var servers by remember { mutableStateOf(cached) }
+    var load by remember { mutableStateOf<GateLoad>(if (cached.isEmpty()) GateLoad.Loading else GateLoad.Ready) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
     var sort by rememberSaveable { mutableStateOf(VpnGateSort.SCORE) }
@@ -187,9 +198,14 @@ fun VpnGateScreen(
     var batchDone by remember { mutableIntStateOf(0) }
     var batchTotal by remember { mutableIntStateOf(0) }
 
+    // reloadToken 0 is "the screen opened": serve the cache (memory, then
+    // disk; the network only when nothing was ever cached). Anything above 0
+    // came from the refresh button or Retry, and only that downloads again.
     LaunchedEffect(reloadToken) {
+        val refresh = reloadToken > 0
+        if (!refresh && servers.isNotEmpty()) return@LaunchedEffect
         load = GateLoad.Loading
-        VpnGateRepository.fetchServers()
+        VpnGateRepository.fetchServers(context, forceRefresh = refresh)
             .onSuccess { fetched ->
                 servers = fetched
                 load = GateLoad.Ready
