@@ -44,10 +44,12 @@ object PingMonitor {
     /**
      * Measures TCP handshake latency to the anycast resolver.
      *
-     * @param viaTunnel when true the probe socket is opened THROUGH the local
-     * SOCKS5 listener of the running engine, so the number reflects the tunnel's
-     * real end-to-end latency; when false it connects directly and shows the
-     * operator's latency instead.
+     * @param viaTunnel when true the probe goes THROUGH the running tunnel, so
+     * the number reflects its real end-to-end latency; when false it connects
+     * directly and shows the operator's latency instead. Through the tunnel
+     * means the local SOCKS5 entry on a SOCKS chain, and a plain socket on an
+     * SSTP session, whose TUN carries the app's own traffic
+     * ([ChainRuntime.appTrafficInTun]).
      */
     suspend fun pingOnce(viaTunnel: Boolean) {
         if (!mutex.tryLock()) return
@@ -73,7 +75,12 @@ object PingMonitor {
     }
 
     private fun measure(viaTunnel: Boolean): Long {
-        val proxy = if (viaTunnel) {
+        // SSTP has no SOCKS5 listener: dialling the entry port there reached a
+        // port nothing listens on, and the latency row showed an error for the
+        // whole session. Its TUN carries this app's sockets instead, so a
+        // plain socket is the tunnel path.
+        val throughSocks = viaTunnel && !ChainRuntime.appTrafficInTun
+        val proxy = if (throughSocks) {
             Proxy(
                 Proxy.Type.SOCKS,
                 InetSocketAddress(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT),
@@ -89,13 +96,13 @@ object PingMonitor {
             proxy = proxy,
         )
         if (measurement.reachable) {
-            DiagnosticsLog.d(TAG, "Latency to $target = ${measurement.ms} ms (viaTunnel=$viaTunnel)")
+            DiagnosticsLog.d(TAG, "Latency to $target = ${measurement.ms} ms (viaTunnel=$viaTunnel, socks=$throughSocks)")
         } else {
             // The REASON was previously dropped on the floor, leaving the panel
             // with a red dash and no explanation.
             DiagnosticsLog.w(
                 TAG,
-                "Latency probe to $target failed (viaTunnel=$viaTunnel): ${measurement.failure}",
+                "Latency probe to $target failed (viaTunnel=$viaTunnel, socks=$throughSocks): ${measurement.failure}",
             )
         }
         return measurement.ms

@@ -25,6 +25,11 @@ import java.util.Locale
  * derived from deltas against a monotonic clock and negative deltas clamped so
  * a core restart rebases instead of printing garbage.
  *
+ * SSTP is a fourth source, and the only one of an SSTP session: it runs no hev,
+ * no filter bridge and no share bridge (SstpCore.bridgeTun pumps its TUN
+ * itself), so without its own counters the monitor had nothing to read, never
+ * went live, and the notification and the home screen showed no speed at all.
+ *
  * What changed is WHO owns it. It used to live inside a composable, which meant
  * the numbers only existed while the Connection tab was on screen — so the
  * notification could not show a speed at all, and the moment the user left the
@@ -85,12 +90,17 @@ object TrafficMonitor {
                 val hev = HevTunnel.traffic()
                 val bridge = SocksTunBridge.active?.getStats()
                 val share = ShareBridge.traffic()
-                val hasSource = hev != null || bridge != null || ShareBridge.active.value
+                // IP payload bytes of the live SSTP link. Reset by every new
+                // SSTP session, which the rebase below already handles.
+                val sstpLive = SstpCore.isConnected
+                val sstpDown = if (sstpLive) SstpCore.rxBytes else 0L
+                val sstpUp = if (sstpLive) SstpCore.txBytes else 0L
+                val hasSource = hev != null || bridge != null || ShareBridge.active.value || sstpLive
                 if (hasSource) {
-                    val down =
-                        (hev?.downloadBytes ?: 0L) + (bridge?.rxBytes ?: 0L) + share.downloadBytes
-                    val up =
-                        (hev?.uploadBytes ?: 0L) + (bridge?.txBytes ?: 0L) + share.uploadBytes
+                    val down = (hev?.downloadBytes ?: 0L) + (bridge?.rxBytes ?: 0L) +
+                        share.downloadBytes + sstpDown
+                    val up = (hev?.uploadBytes ?: 0L) + (bridge?.txBytes ?: 0L) +
+                        share.uploadBytes + sstpUp
                     val now = SystemClock.elapsedRealtime()
                     var downRate = _sample.value.downloadRate
                     var upRate = _sample.value.uploadRate

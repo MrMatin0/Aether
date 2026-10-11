@@ -32,7 +32,6 @@ import studio.cluvex.aether.core.AppLocale
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.IpRefreshPhase
 import studio.cluvex.aether.core.NetProbe
-import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
@@ -167,11 +166,11 @@ class MainActivity : ComponentActivity() {
                                 AetherController.ipInfo.first { it?.viaTunnel == true }
                             }
                             if (AetherController.ipInfo.value?.viaTunnel != true) {
+                                // Through the chain entry on a SOCKS session, and
+                                // over a plain socket on SSTP, whose TUN carries
+                                // this app's own traffic (no SOCKS port there).
                                 val info = withContext(Dispatchers.IO) {
-                                    NetProbe.fetchIpInfoViaSocksWithRetry(
-                                        TunnelConfig.SOCKS_HOST,
-                                        TunnelConfig.SOCKS_PORT,
-                                    )
+                                    NetProbe.fetchIpInfoViaTunnelWithRetry()
                                 }
                                 if (info != null) {
                                     AetherController.offerTunnelIpInfo(

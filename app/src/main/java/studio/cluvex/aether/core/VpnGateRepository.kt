@@ -1,8 +1,13 @@
 package studio.cluvex.aether.core
 
+import android.content.Context
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.Socket
 import java.net.URI
 import java.util.Base64
@@ -14,6 +19,7 @@ import kotlinx.coroutines.withContext
 import studio.cluvex.aether.model.ProbeState
 import studio.cluvex.aether.model.SstpProbe
 import studio.cluvex.aether.model.VpnGateServer
+import studio.cluvex.aether.model.isConnected
 
 /**
  * Fetches the public VPN Gate relay list and tests relays for SSTP.
@@ -36,9 +42,28 @@ import studio.cluvex.aether.model.VpnGateServer
  * TCP config, so that port is the best SSTP guess; 443 otherwise. Whether a
  * relay really speaks SSTP is only known after [probe].
  *
+ * ### Which path the list is fetched over
+ *
+ * vpngate.net itself is filtered in several countries, so a direct fetch is
+ * exactly what fails for the people who need the relays most. While a session
+ * is connected the list is fetched THROUGH it: via the chain's local SOCKS5
+ * entry (the app's own package is kept out of a SOCKS session's TUN, so a plain
+ * socket would leave directly), with the host name resolved remotely; or, on
+ * an SSTP session, over a plain socket, because that TUN carries the app's own
+ * traffic ([ChainRuntime.appTrafficInTun]). A failed tunnel fetch falls back
+ * to a direct one. Disconnected, the fetch is direct.
+ *
+ * ### Caching
+ *
+ * The relay list changes slowly, the download is a few hundred KB over what is
+ * often a throttled link, and the API may be unreachable at the moment the
+ * user needs a relay. So the last good list is kept in memory and on disk, and
+ * [fetchServers] serves it; the network is only asked again when the caller
+ * passes `forceRefresh` (the refresh button), or when there is no cache yet.
+ *
  * ### Threading
  *
- * Every public function suspends on [Dispatchers.IO].
+ * Every public suspend function runs on [Dispatchers.IO].
  */
 object VpnGateRepository {
 
@@ -51,6 +76,12 @@ object VpnGateRepository {
     private const val READ_TIMEOUT_MS = 20_000
     private const val PROBE_TIMEOUT_MS = 5_000
 
+    /** A real list is well under 2 MB; anything this big is not the API. */
+    private const val MAX_BODY_BYTES = 16 * 1024 * 1024
+
+    /** The on-disk copy of the last good list, in the app's files dir. */
+    private const val CACHE_FILE = "vpngate_relays.csv"
+
     /** HostName .. OpenVPN_ConfigData_Base64. */
     private const val MIN_COLUMNS = 15
 
@@ -58,14 +89,42 @@ object VpnGateRepository {
     private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
     private val WHITESPACE = Regex("\\s+")
 
+    /** One downloaded list, and when it was fetched (wall clock). */
+    internal class Snapshot(val servers: List<VpnGateServer>, val fetchedAtMs: Long)
+
+    /** The last good list of this process. */
+    @Volatile
+    private var memory: Snapshot? = null
+
     /**
-     * Downloads and parses the relay list. A failure (network, HTTP status, or
-     * a body with no usable rows, e.g. a captive portal page) is returned as
-     * [Result.failure] so the UI can offer a retry.
+     * The list already in memory, or null. No I/O, so a screen can draw it on
+     * its very first frame instead of flashing a skeleton.
      */
-    suspend fun fetchServers(): Result<List<VpnGateServer>> = withContext(Dispatchers.IO) {
+    fun cachedServers(): List<VpnGateServer>? = memory?.servers
+
+    /**
+     * The relay list: the cached one (memory, then the disk copy under
+     * [context]'s files dir) unless [forceRefresh], otherwise - or when nothing
+     * is cached yet - a fresh download, which then replaces the cache.
+     *
+     * A failure (network, HTTP status, or a body with no usable rows, e.g. a
+     * captive portal page) is returned as [Result.failure] so the UI can offer
+     * a retry; the cache is left untouched by it.
+     */
+    suspend fun fetchServers(
+        context: Context? = null,
+        forceRefresh: Boolean = false,
+    ): Result<List<VpnGateServer>> = withContext(Dispatchers.IO) {
+        val cacheFile = context?.let { File(it.applicationContext.filesDir, CACHE_FILE) }
+        if (!forceRefresh) {
+            val cached = memory ?: cacheFile?.let { readCache(it) }?.also { memory = it }
+            if (cached != null) return@withContext Result.success(cached.servers)
+        }
         try {
-            Result.success(download())
+            val (body, servers) = download()
+            memory = Snapshot(servers, System.currentTimeMillis())
+            if (cacheFile != null) writeCache(cacheFile, body)
+            Result.success(servers)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -74,8 +133,51 @@ object VpnGateRepository {
         }
     }
 
-    private fun download(): List<VpnGateServer> {
-        val connection = URI(API_URL).toURL().openConnection() as HttpURLConnection
+    /** One way to reach the API. */
+    private class Route(val label: String, val proxy: Proxy)
+
+    /** The paths to try, best first (see the class doc). */
+    private fun routes(): List<Route> {
+        val direct = Route("directly", Proxy.NO_PROXY)
+        if (!AetherController.state.value.isConnected) return listOf(direct)
+        if (ChainRuntime.appTrafficInTun) return listOf(Route("through the SSTP tunnel", Proxy.NO_PROXY))
+        val host = TunnelConfig.SOCKS_HOST
+        val port = TunnelConfig.SOCKS_PORT
+        val socks = Route(
+            "through the tunnel (SOCKS5 $host:$port)",
+            Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port)),
+        )
+        return listOf(socks, direct)
+    }
+
+    /** The raw body and its parsed relays, from the first route that works. */
+    private fun download(): Pair<String, List<VpnGateServer>> {
+        var firstFailure: Exception? = null
+        for (route in routes()) {
+            try {
+                val body = downloadVia(route.proxy)
+                val servers = parseCsv(body.lineSequence())
+                if (servers.isEmpty()) throw IOException("VPN Gate returned no usable relays")
+                DiagnosticsLog.i(TAG, "VPN Gate list: ${servers.size} relays, fetched ${route.label}")
+                return body to servers
+            } catch (e: Exception) {
+                DiagnosticsLog.w(
+                    TAG,
+                    "VPN Gate list ${route.label} failed: ${e.message ?: e.javaClass.simpleName}",
+                )
+                if (firstFailure == null) firstFailure = e
+            }
+        }
+        throw firstFailure ?: IOException("VPN Gate is unreachable")
+    }
+
+    /**
+     * One GET of the API over [proxy]. With a SOCKS proxy the platform's HTTP
+     * stack hands the proxy the host NAME, so DNS is resolved by the tunnel
+     * too, not by a resolver that may be poisoned for vpngate.net.
+     */
+    private fun downloadVia(proxy: Proxy): String {
+        val connection = URI(API_URL).toURL().openConnection(proxy) as HttpURLConnection
         connection.connectTimeout = CONNECT_TIMEOUT_MS
         connection.readTimeout = READ_TIMEOUT_MS
         connection.instanceFollowRedirects = true
@@ -84,12 +186,51 @@ object VpnGateRepository {
         try {
             val code = connection.responseCode
             if (code !in 200..299) throw IOException("VPN Gate answered HTTP $code")
-            val servers = connection.inputStream.bufferedReader(Charsets.UTF_8).useLines { parseCsv(it) }
-            if (servers.isEmpty()) throw IOException("VPN Gate returned no usable relays")
-            DiagnosticsLog.i(TAG, "VPN Gate list: ${servers.size} relays")
-            return servers
+            return connection.inputStream.use { readBounded(it) }
         } finally {
             connection.disconnect()
+        }
+    }
+
+    private fun readBounded(input: InputStream): String {
+        val out = ByteArrayOutputStream(256 * 1024)
+        val buffer = ByteArray(16 * 1024)
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            if (out.size() > MAX_BODY_BYTES) throw IOException("VPN Gate answered with an oversized body")
+        }
+        return out.toString("UTF-8")
+    }
+
+    /** The disk copy of the list, or null when there is none or it is unusable. */
+    internal fun readCache(file: File): Snapshot? {
+        if (!file.isFile) return null
+        return try {
+            val servers = file.bufferedReader(Charsets.UTF_8).useLines { parseCsv(it) }
+            if (servers.isEmpty()) null else Snapshot(servers, file.lastModified())
+        } catch (_: IOException) {
+            null
+        }
+    }
+
+    /**
+     * Replaces the disk copy with [body]. Written next to it and renamed into
+     * place, so a crash mid-write can never leave a half list behind.
+     */
+    internal fun writeCache(file: File, body: String) {
+        val target = file.absoluteFile
+        val partial = File(target.parentFile, target.name + ".partial")
+        try {
+            partial.writeText(body, Charsets.UTF_8)
+            if (!partial.renameTo(target)) {
+                target.delete()
+                if (!partial.renameTo(target)) throw IOException("could not replace ${target.name}")
+            }
+        } catch (e: IOException) {
+            partial.delete()
+            DiagnosticsLog.w(TAG, "Could not cache the VPN Gate list: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

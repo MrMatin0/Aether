@@ -1,19 +1,28 @@
 package studio.cluvex.aether.vpn.session
 
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import java.net.Inet4Address
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.AetherProcess
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.HevTunnel
+import studio.cluvex.aether.core.IpEndpoint
+import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartDnsRuntime
@@ -77,8 +86,20 @@ internal class NativeStack(private val service: VpnService) {
     @Volatile
     private var sstpPump: Job? = null
 
+    /** The exit-IP lookup of the live SSTP link (see [startSstpExitProbe]). */
+    @Volatile
+    private var sstpExitProbe: Job? = null
+
     @Volatile
     private var sstpStarted = false
+
+    /**
+     * The last IPv4 address each SSTP server name resolved to OUTSIDE the
+     * tunnel, so a redial still has an address when the underlying network's
+     * resolver hiccups (see [dialableBehindTun]). A plain map touches no
+     * Context, so it is safe in an initializer.
+     */
+    private val sstpAddresses = ConcurrentHashMap<String, String>()
 
     /**
      * Built LAZILY, and that is load-bearing (see the CONTEXT RULE above).
@@ -182,10 +203,10 @@ internal class NativeStack(private val service: VpnService) {
      * Dials the profile's SSTP server and waits until IPCP is up, or fails
      * with the reason the core reported. Returns what the TUN is built from.
      *
-     * The session socket is handed to VpnService.protect() before it connects
-     * (TODO from the first draft: "protect the SSTP socket before
-     * establish()"). The app's own package is excluded from the TUN as well,
-     * so a reconnect dialled while a TUN is up can never loop into it.
+     * The session socket is handed to VpnService.protect() before it connects.
+     * That is what keeps it out of the TUN: the SSTP TUN carries the app's OWN
+     * traffic (see TunFactory.establishSstp), so the protect is load-bearing,
+     * not a second line of defence.
      *
      * @throws IllegalStateException with a user-facing message.
      */
@@ -235,20 +256,29 @@ internal class NativeStack(private val service: VpnService) {
         }
     }
 
-    /** Starts pumping packets between the TUN and the SSTP session. */
+    /**
+     * Starts pumping packets between the TUN and the SSTP session, then looks
+     * the session's exit IP up through it.
+     */
     fun startSstpBridge() {
         val pfd = tun ?: throw IllegalStateException("TUN descriptor is null")
         sstpPump?.cancel()
         DiagnosticsLog.i(TAG, "Starting the SSTP packet pump (fd=${pfd.fd})")
         sstpPump = sstpScope.launch { SstpCore.bridgeTun(pfd) }
+        startSstpExitProbe()
     }
 
     /**
      * A new SSTP session for a live one that dropped: dial, swap the TUN for one
      * with the (possibly new) address, re-attach the pump.
+     *
+     * The previous TUN is still up while this dials (no leak window), and it
+     * carries the app's own traffic - so the server's name is resolved outside
+     * it first ([dialableBehindTun]). The new TUN is built from the ORIGINAL
+     * profile; only the dial uses the resolved address.
      */
     suspend fun restartSstp(profile: ConnectionProfile, timeoutMs: Long) {
-        val info = startSstp(profile, timeoutMs)
+        val info = startSstp(dialableBehindTun(profile), timeoutMs)
         establishSstpTun(profile, info)
         startSstpBridge()
     }
@@ -259,6 +289,94 @@ internal class NativeStack(private val service: VpnService) {
             SstpCore.state.first { it != SstpCore.SstpState.CONNECTED }
         }
     }
+
+    /**
+     * Finds the live SSTP session's exit IP and country, for the home screen's
+     * badge and the notification's flag.
+     *
+     * A SOCKS session gets these from the service's background health check,
+     * which dials through the chain entry. SSTP has no entry to dial, so that
+     * check never ran for it, and the badge sat on its error for the whole
+     * session. The SSTP TUN carries the app's own sockets, so the ordinary
+     * lookup made now already leaves through the server
+     * ([NetProbe.fetchIpInfoViaTunnelWithRetry] picks that path). Runs again
+     * after every redial: a VPN Gate relay can come back with another exit.
+     */
+    private fun startSstpExitProbe() {
+        sstpExitProbe?.cancel()
+        sstpExitProbe = sstpScope.launch {
+            val info = runInterruptible { NetProbe.fetchIpInfoViaTunnelWithRetry() }
+            if (!sstpAlive) return@launch
+            if (info == null) {
+                DiagnosticsLog.w(TAG, "SSTP: the exit IP could not be looked up through the tunnel yet.")
+                return@launch
+            }
+            AetherController.setIpInfo(IpEndpoint(info.ip, info.countryCode, viaTunnel = true))
+            AetherController.setIpLoading(false)
+            DiagnosticsLog.i(TAG, "Exit verified through the SSTP tunnel: ${info.ip} (${info.countryCode ?: "??"})")
+        }
+    }
+
+    /**
+     * The profile to redial with while the previous session's TUN is still up.
+     *
+     * That TUN carries the app's own traffic and its link is dead, so a
+     * hostname lookup made through it now would be dropped by the pump and the
+     * redial would fail on DNS alone - every time, until the retries ran out.
+     * The name is resolved on the UNDERLYING network instead and the server is
+     * dialled by address, with the name kept as the TLS SNI (which is also what
+     * the certificate is verified against).
+     *
+     * Falls back to the last address that worked, and then to the name itself.
+     */
+    private fun dialableBehindTun(profile: ConnectionProfile): ConnectionProfile {
+        val config = profile.sstpConfig
+        val host = config.hostname.trim()
+        if (host.isEmpty() || isIpLiteral(host)) return profile
+        val resolved = resolveOutsideTun(host)
+        if (resolved != null) sstpAddresses[host] = resolved
+        val address = resolved ?: sstpAddresses[host]
+        if (address == null) {
+            DiagnosticsLog.w(TAG, "Could not resolve $host outside the tunnel - redialling it by name.")
+            return profile
+        }
+        DiagnosticsLog.i(TAG, "Redialling SSTP $host at $address (resolved outside the tunnel).")
+        return profile.copy(sstpConfig = config.copy(hostname = address, customSni = config.effectiveSni))
+    }
+
+    /** First IPv4 address of [host] on the underlying (non-VPN) network, or null. */
+    private fun resolveOutsideTun(host: String): String? {
+        val network = underlyingNetwork() ?: return null
+        return runCatching { network.getAllByName(host) }
+            .getOrNull()
+            ?.firstOrNull { it is Inet4Address }
+            ?.hostAddress
+    }
+
+    /**
+     * The network the SSTP connection itself runs over: one with internet that
+     * is not a VPN, validated ones first. The VPN owner may resolve on it even
+     * while its own TUN is up, because it is allowed to protect its sockets.
+     */
+    private fun underlyingNetwork(): Network? {
+        val cm = service.getSystemService(ConnectivityManager::class.java) ?: return null
+        return runCatching {
+            @Suppress("DEPRECATION")
+            cm.allNetworks
+                .mapNotNull { network -> cm.getNetworkCapabilities(network)?.let { network to it } }
+                .filter { (_, caps) ->
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                }
+                .maxByOrNull { (_, caps) ->
+                    if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) 1 else 0
+                }
+                ?.first
+        }.getOrNull()
+    }
+
+    private fun isIpLiteral(host: String): Boolean =
+        host.contains(':') || host.all { it.isDigit() || it == '.' }
 
     // ------------------------------------------------------------------- TUN
 
@@ -381,6 +499,8 @@ internal class NativeStack(private val service: VpnService) {
     }
 
     private fun stopSstpLocked() {
+        sstpExitProbe?.cancel()
+        sstpExitProbe = null
         sstpPump?.cancel()
         sstpPump = null
         if (sstpStarted) {

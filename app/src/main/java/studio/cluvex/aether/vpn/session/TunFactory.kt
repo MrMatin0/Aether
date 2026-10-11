@@ -98,8 +98,18 @@ internal object TunFactory {
      * Always BLOCKING: the packet pump reads the fd in a plain loop, and a
      * non-blocking fd would make it spin a core for the whole session.
      *
-     * The SSTP socket itself never enters the TUN: the app's own package is
-     * excluded by [applyAppFilter], and the socket is `protect()`ed as well.
+     * ### The app's OWN traffic rides inside this interface
+     *
+     * Unlike every other session's. A SOCKS session keeps the app out of its
+     * TUN and reaches the tunnel through the local SOCKS5 entry, which is what
+     * the exit-IP lookup, the latency probe and the VPN Gate list all use. SSTP
+     * has no such entry, so with the app excluded every one of them left
+     * DIRECTLY: the home screen had no ping, no IP and no country for the whole
+     * session. So here the app is routed into the tunnel like any other app
+     * (see [applyAppFilter]), and only the SSTP connection itself stays out of
+     * it: its socket is `protect()`ed before it connects, and a redial resolves
+     * the server's name on the underlying network (see
+     * NativeStack.startSstp / restartSstp).
      *
      * @throws IllegalStateException when the platform refuses to establish it.
      */
@@ -128,7 +138,7 @@ internal object TunFactory {
             TAG,
             "SSTP TUN established: ipv4=${info.localIp}/32 mtu=$mtu dns=$dns " +
                 "ipv6=${if (ipv6Routed) "::/0 routed and dropped" else "not routed"} " +
-                "split=${profile.splitMode} apps=${profile.splitApps.size}",
+                "split=${profile.splitMode} apps=${profile.splitApps.size} app-in-tunnel=true",
         )
         return tun
     }
@@ -290,7 +300,7 @@ internal object TunFactory {
             .setBlocking(true)
         if (ipv6Route) builder.addRoute("::", 0)
         dns.forEach { builder.addDnsServer(it) }
-        applyAppFilter(service, builder, profile)
+        applyAppFilter(service, builder, profile, ownTrafficInTun = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
@@ -314,13 +324,18 @@ internal object TunFactory {
     }
 
     /**
-     * Applies the split-tunnel policy and always keeps the app's own engine
-     * traffic off the TUN (loop prevention).
+     * Applies the split-tunnel policy and, for the SOCKS sessions, keeps the
+     * app's own engine traffic off the TUN (loop prevention).
      *
      * - OFF     : everything routes through the VPN except our own package.
      * - INCLUDE : ONLY the chosen apps route through the VPN. Our own package is
      *             implicitly excluded because it is never added to the allow-list.
      * - EXCLUDE : everything routes through the VPN except the chosen apps + us.
+     *
+     * [ownTrafficInTun] (SSTP only, see [establishSstp]) flips the "except us"
+     * part: our package is routed INTO the tunnel in every mode, so the app's
+     * own probes and downloads leave through the SSTP server. The SSTP socket
+     * is the one thing of ours that must not, and it is protect()ed instead.
      *
      * Blocked apps must stay INSIDE the TUN in BOTH modes so the filter bridge
      * can drop their traffic; leaving them outside gives them direct internet
@@ -332,6 +347,7 @@ internal object TunFactory {
         service: VpnService,
         builder: VpnService.Builder,
         profile: ConnectionProfile,
+        ownTrafficInTun: Boolean = false,
     ) {
         val ownPackage = service.packageName
         val apps = profile.splitApps.filter { it.isNotBlank() && it != ownPackage }
@@ -342,17 +358,18 @@ internal object TunFactory {
                     // Nothing selected -> fall back to OFF so we don't build a
                     // tunnel that carries no traffic at all. Blocked apps end up
                     // inside the TUN that way too, so they stay blocked.
-                    safeDisallow(builder, ownPackage, ownPackage)
+                    if (!ownTrafficInTun) safeDisallow(builder, ownPackage, ownPackage)
                     return
                 }
                 (apps + blocked).distinct().forEach { safeAllow(builder, it) }
+                if (ownTrafficInTun) safeAllow(builder, ownPackage)
             }
             SplitMode.EXCLUDE -> {
-                safeDisallow(builder, ownPackage, ownPackage)
+                if (!ownTrafficInTun) safeDisallow(builder, ownPackage, ownPackage)
                 apps.filter { it !in profile.blockedApps }
                     .forEach { safeDisallow(builder, it, ownPackage) }
             }
-            SplitMode.OFF -> safeDisallow(builder, ownPackage, ownPackage)
+            SplitMode.OFF -> if (!ownTrafficInTun) safeDisallow(builder, ownPackage, ownPackage)
         }
     }
 

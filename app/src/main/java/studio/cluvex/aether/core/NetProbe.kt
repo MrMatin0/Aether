@@ -25,6 +25,11 @@ data class IpEndpoint(val ip: String, val countryCode: String?, val viaTunnel: B
  * IP) while a socket routed through the local SOCKS5 port exits via the
  * connected server (-> server IP).
  *
+ * EXCEPT on an SSTP session: SSTP has no SOCKS5 port, so its TUN carries the
+ * app's own traffic instead ([ChainRuntime.appTrafficInTun]) and a "direct"
+ * socket is the one that exits via the server. [fetchIpInfoViaTunnelWithRetry]
+ * picks the right path for whichever session is live.
+ *
  * THIS FILE IS DELIBERATELY THIN. It used to be a 23 KB object that also
  * contained the SOCKS5 client, an HTTP/1.1 client, a TLS wrapper, two response
  * parsers, the provider table, a thread pool and three retry policies - none of
@@ -81,6 +86,20 @@ object NetProbe {
     ): IpInfo? = GeoLookup.retrying(attempts, delayMs) {
         GeoLookup.racedViaSocks(socksHost, socksPort, timeoutMs)
     }
+
+    /**
+     * The LIVE session's exit IP, over whichever path reaches its tunnel: the
+     * local SOCKS5 entry for a SOCKS chain, or a plain socket on an SSTP
+     * session, whose TUN carries this app's own sockets
+     * ([ChainRuntime.appTrafficInTun]). Same patience as
+     * [fetchIpInfoViaSocksWithRetry]. BLOCKS; call it off the main thread.
+     */
+    fun fetchIpInfoViaTunnelWithRetry(): IpInfo? =
+        if (ChainRuntime.appTrafficInTun) {
+            fetchIpInfoDirectWithRetry(attempts = 12, delayMs = 1000, timeoutMs = 6000)
+        } else {
+            fetchIpInfoViaSocksWithRetry(TunnelConfig.SOCKS_HOST, TunnelConfig.SOCKS_PORT)
+        }
 
     /** SOCKS5 greeting only - proves the engine speaks SOCKS5. */
     fun checkSocksHandshake(
