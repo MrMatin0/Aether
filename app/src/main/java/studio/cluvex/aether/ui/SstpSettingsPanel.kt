@@ -94,6 +94,10 @@ private val SSTP_HOST_PATTERN = Regex("^[A-Za-z0-9._-]+$|^\\[?[0-9A-Fa-f:]+]?$")
  *  - Advanced (collapsed): custom SNI, MRU, MTU
  *
  * Stateless: the caller owns [config] and persists every [onConfigChange].
+ *
+ * [enabled] locks the fields that write the profile. The relay hero is NOT
+ * one of them: it only opens the VPN Gate browser, which can be refreshed and
+ * probed while connected (see SstpDestination).
  */
 @Composable
 fun SstpSettingsPanel(
@@ -116,7 +120,7 @@ fun SstpSettingsPanel(
         icon = Icons.Rounded.VpnLock,
         modifier = modifier,
     ) {
-        SstpRelayHero(config = config, enabled = enabled, onBrowse = onBrowseVpnGate)
+        SstpRelayHero(config = config, onBrowse = onBrowseVpnGate)
 
         // ------------------------------------------------------------ server --
         SectionTitle(stringResource(R.string.sstp_section_server), Modifier.padding(top = 32.dp))
@@ -283,15 +287,20 @@ fun SstpSettingsPanel(
     }
 }
 
-/** The top card: the chosen VPN Gate relay, or the way to go and pick one. */
+/**
+ * The top card: the chosen VPN Gate relay, or the way to go and pick one.
+ *
+ * Always tappable. It used to share the profile lock, so while connected the
+ * user could not even open the relay list to refresh it; opening the list
+ * writes nothing, and using a relay is locked inside the browser instead.
+ */
 @Composable
-private fun SstpRelayHero(config: SstpConfig, enabled: Boolean, onBrowse: () -> Unit) {
+private fun SstpRelayHero(config: SstpConfig, onBrowse: () -> Unit) {
     val accents = LocalAetherAccents.current
     val locale = LocalConfiguration.current.locales[0]
     val fromGate = config.source == SstpSource.VPNGATE && config.hostname.isNotBlank()
     Surface(
         onClick = onBrowse,
-        enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = accents.card,

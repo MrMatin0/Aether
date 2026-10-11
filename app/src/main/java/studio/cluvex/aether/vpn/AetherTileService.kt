@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
+import studio.cluvex.aether.core.VpnConsent
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
@@ -32,6 +33,9 @@ import studio.cluvex.aether.model.isConnected
  *    busy, INACTIVE otherwise, with the state name as subtitle).
  *  - onClick:
  *      * connected/busy  -> disconnect (also acts as "cancel" mid-connect),
+ *      * idle + another VPN up -> connect WITHOUT asking for the VPN slot: a
+ *        prepare() here would revoke that VPN on the spot, and the session
+ *        claims the slot itself once its tunnel is ready (see [VpnConsent]),
  *      * idle + consent already granted -> connect with the saved profile,
  *      * idle + consent missing -> the consent dialog can only be shown from
  *        an Activity, so we open MainActivity which immediately starts the
@@ -63,8 +67,10 @@ class AetherTileService : TileService() {
             AetherController.disconnect(this)
             return
         }
-        // The VPN consent dialog can only be launched from an Activity.
-        if (VpnService.prepare(this) != null) {
+        // The VPN consent dialog can only be launched from an Activity. Not
+        // asked at all while another VPN is up: prepare() would take the slot
+        // from it right now instead of when Aether's tunnel is ready.
+        if (!VpnConsent.anyVpnActive(this) && VpnService.prepare(this) != null) {
             openAppForConsent()
             return
         }

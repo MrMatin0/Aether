@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.data.ProfileStore
+import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Protocol
@@ -41,9 +42,10 @@ data class WarpKeyState(
  *
  * WHY: the engine registers a WARP identity the first time a protocol is used,
  * and in some regions the registration API itself is filtered, so the very
- * first connect can never succeed. With Aether disconnected and another VPN app
- * active, this process's traffic leaves through that VPN, so the same engine
- * binary can register there instead.
+ * first connect can never succeed. With another VPN app active - or with an
+ * Aether session that does not use WARP at all (Tor, Psiphon, SSTP) - this
+ * process's traffic leaves through that tunnel instead, so the same engine
+ * binary can register there.
  *
  * HOW: the bundled engine is started with the protocol's own flag on a side
  * SOCKS port ([BIND], so it never fights the session for 127.0.0.1:1819) in the
@@ -62,7 +64,7 @@ data class WarpKeyState(
  *
  * A request always produces a FRESH identity: existing files are set aside
  * first and are only discarded once the new ones are complete. On failure,
- * timeout, cancel, or a session starting, they are put back untouched.
+ * timeout, cancel, or an engine session starting, they are put back untouched.
  */
 object WarpKeyFetcher {
     val PROTOCOLS: List<Protocol> = listOf(Protocol.MASQUE, Protocol.MIM, Protocol.WIREGUARD, Protocol.GOOL)
@@ -93,9 +95,28 @@ object WarpKeyFetcher {
     @Volatile
     private var job: Job? = null
 
-    /** Only with no session: the session engine reads and writes the same files. */
-    fun canRun(connection: ConnectionState): Boolean =
-        connection is ConnectionState.Idle || connection is ConnectionState.Error
+    /**
+     * Never beside a session that runs the Aether ENGINE: that engine reads and
+     * writes the very identity files a request sets aside and replaces.
+     *
+     * That used to be spelled "only with no session at all", which locked the
+     * card for every Tor, Psiphon and SSTP user - sessions that never start the
+     * engine and so cannot collide with it, and that are often the only way a
+     * filtered network reaches the registration API in the first place.
+     * [liveChain] is the chain the running session published (ChainRuntime,
+     * reset to the Aether default at the start of every connect, so a new
+     * engine session stops a running request before its engine launches).
+     * Disconnecting is excluded: the session is mid-teardown and its chain
+     * about to be reset.
+     */
+    fun canRun(
+        connection: ConnectionState,
+        liveChain: ChainMode = ChainRuntime.mode.value,
+    ): Boolean = when (connection) {
+        is ConnectionState.Idle, is ConnectionState.Error -> true
+        is ConnectionState.Disconnecting -> false
+        else -> !liveChain.usesAether
+    }
 
     /**
      * The profile a key request for [protocol] runs with: the user's [saved]
@@ -214,7 +235,7 @@ object WarpKeyFetcher {
                     break
                 }
                 if (!canRun(AetherController.state.value)) {
-                    DiagnosticsLog.w(TAG, "a session is starting; key request stopped")
+                    DiagnosticsLog.w(TAG, "a session that runs the engine is starting; key request stopped")
                     break
                 }
                 if (SystemClock.elapsedRealtime() >= deadline) {

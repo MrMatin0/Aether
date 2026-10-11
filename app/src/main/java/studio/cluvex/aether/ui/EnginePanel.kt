@@ -37,6 +37,14 @@ internal fun EngineDestination(
     val edit: ProfileEdit = remember(onProfileChange) {
         { change -> if (latestEnabled) onProfileChange(latest.change()) }
     }
+    // The RESULT of a network fetch the user asked for (Tor bridges from moat
+    // or the built-in list). Not refused mid-session: fetching while connected
+    // is exactly when bridges.torproject.org is reachable, and the lines only
+    // take effect on the next connect. Everything the user picks or types
+    // still goes through [edit] and stays locked.
+    val fetchEdit: ProfileEdit = remember(onProfileChange) {
+        { change -> onProfileChange(latest.change()) }
+    }
     LaunchedEffect(enabled) {
         if (!enabled) {
             picker = null
@@ -69,7 +77,7 @@ internal fun EngineDestination(
             SettingsPage.BRIDGES -> BridgeSection(
                 bridgeMode = profile.torBridgeMode, transport = profile.torBridgeTransport,
                 bridgeLines = profile.torBridgeLines, chain = profile.chain,
-                enabled = enabled, edit = edit,
+                enabled = enabled, edit = edit, fetchEdit = fetchEdit,
             )
             SettingsPage.TRANSPORT -> {
                 TransportSection(

@@ -114,6 +114,7 @@ import studio.cluvex.aether.ui.components.AetherCard
 import studio.cluvex.aether.ui.components.AmbientBackground
 import studio.cluvex.aether.ui.components.Hairline
 import studio.cluvex.aether.ui.components.IconBadge
+import studio.cluvex.aether.ui.components.LockBadge
 import studio.cluvex.aether.ui.components.NoticeBar
 import studio.cluvex.aether.ui.components.StatTile
 import studio.cluvex.aether.ui.components.normalizeTechnicalText
@@ -165,6 +166,11 @@ private sealed interface GateLoad {
  * The list keeps showing while a refresh runs, failed probes sink to the
  * bottom, items animate into their new order, and all motion respects the
  * system "remove animations" setting.
+ *
+ * [canSelect] is false while a session is up. Refresh, search and the probes
+ * stay fully usable then - they read, they do not touch the profile - and
+ * only "Use relay" is disabled, with the usual lock badge at the top saying
+ * why. The browser used to be closed outright for a connected user.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -174,6 +180,8 @@ fun VpnGateScreen(
     modifier: Modifier = Modifier,
     /** SSTP host of the relay currently in use, to highlight it. */
     selectedHostname: String? = null,
+    /** False while the tunnel is up: a relay can be browsed and tested, not used. */
+    canSelect: Boolean = true,
 ) {
     BackHandler(onBack = onBack)
     val accents = LocalAetherAccents.current
@@ -318,6 +326,14 @@ fun VpnGateScreen(
                             )
                         }
                     }
+                    if (!canSelect) {
+                        // Why "Use relay" is greyed out while everything else
+                        // works: the tunnel is up, and using a relay rewrites
+                        // the profile the live session was started from.
+                        item(key = "locked") {
+                            LockBadge(Modifier.padding(horizontal = GATE_GUTTER))
+                        }
+                    }
                     item(key = "hero") {
                         GateHero(
                             relays = servers.size,
@@ -368,6 +384,7 @@ fun VpnGateScreen(
                             selected = selectedHostname != null &&
                                 server.sstpHostname.equals(selectedHostname, ignoreCase = true),
                             expanded = expandedId == server.id,
+                            canSelect = canSelect,
                             onToggle = { expandedId = if (expandedId == server.id) null else server.id },
                             onProbe = { probeOne(server) },
                             onUse = { onServerSelected(server) },
@@ -634,6 +651,7 @@ private fun GateRelayCard(
     maxScore: Long,
     selected: Boolean,
     expanded: Boolean,
+    canSelect: Boolean,
     onToggle: () -> Unit,
     onProbe: () -> Unit,
     onUse: () -> Unit,
@@ -715,6 +733,7 @@ private fun GateRelayCard(
                     icon = if (selected) Icons.Rounded.Check else Icons.Rounded.Bolt,
                     filled = true,
                     tint = if (selected) accents.protected else accents.brand,
+                    enabled = canSelect,
                 )
             }
         }
