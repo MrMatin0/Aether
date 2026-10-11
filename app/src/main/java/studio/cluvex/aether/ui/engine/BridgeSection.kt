@@ -111,6 +111,17 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * up and says so. "This only worked through Aether" is the single most useful
  * thing the user can learn here, because it tells them not to disconnect before
  * they have their bridges.
+ *
+ * ### Why fetching is NOT behind the profile lock
+ *
+ * Because of the paragraph above. The fetch buttons used to share [enabled]
+ * with every other control, so they were dead for exactly the user who could
+ * reach the bridge servers: the connected one. Asking moat, refreshing the
+ * built-in list and requesting personal bridges now work in every state, and
+ * what they bring back is written through [fetchEdit] - an edit that is not
+ * refused mid-session, since the lines only take effect on the next connect.
+ * Choosing the source, the type, ticking, typing and removing lines are user
+ * edits of the profile and still go through [edit], which stays locked.
  */
 @Composable
 internal fun BridgeSection(
@@ -121,6 +132,7 @@ internal fun BridgeSection(
     enabled: Boolean,
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
+    fetchEdit: ProfileEdit = edit,
 ) {
     val accents = LocalAetherAccents.current
     val context = LocalContext.current
@@ -150,6 +162,22 @@ internal fun BridgeSection(
     /** Writes a set of lines back, canonicalised. Refused while connected by [edit]. */
     val setLines: (List<String>) -> Unit = { lines ->
         edit { copy(torBridgeLines = BridgeLine.canonicalText(lines)) }
+    }
+
+    /**
+     * Writes what a fetch brought back: the lines and, when the server named
+     * one, the transport - in ONE edit. Two edits in a row both started from
+     * the same not-yet-recomposed profile, so the second one silently put
+     * the old transport back. Goes through [fetchEdit], so it also lands while
+     * connected (see the class doc).
+     */
+    val applyFetched: (BridgeTransport?, List<String>) -> Unit = { type, lines ->
+        fetchEdit {
+            copy(
+                torBridgeTransport = type ?: torBridgeTransport,
+                torBridgeLines = BridgeLine.canonicalText(lines),
+            )
+        }
     }
     val toggle: (String) -> Unit = { line ->
         val current = selected.map { it.line }
@@ -361,11 +389,10 @@ internal fun BridgeSection(
                                             store.addPersonal(handedOver)
                                         }
                                         if (usable.isNotEmpty()) {
-                                            BridgeTransport.fromMoatName(bundles.first().type)
-                                                ?.let { type ->
-                                                    edit { copy(torBridgeTransport = type) }
-                                                }
-                                            setLines(usable)
+                                            applyFetched(
+                                                BridgeTransport.fromMoatName(bundles.first().type),
+                                                usable,
+                                            )
                                         }
                                         if (bundles.isEmpty()) {
                                             BridgeOutcome.NotNeeded(result.value.country)
@@ -515,7 +542,7 @@ internal fun BridgeSection(
                     val result = BridgeService.solve(context, transport, token, solution)
                     outcome = when (result) {
                         is BridgeResult.Ok -> {
-                            setLines(selected.map { it.line } + result.value)
+                            applyFetched(null, selected.map { it.line } + result.value)
                             BridgeOutcome.Received(result.value.size, result.viaTunnel)
                         }
                         is BridgeResult.Failed ->
@@ -602,6 +629,11 @@ private fun OutcomeNotice(outcome: BridgeOutcome, onDismiss: () -> Unit) {
 
 // --------------------------------------------------------------- the blocks
 
+/**
+ * The built-in list and the two fetches. [enabled] is the profile lock and
+ * gates only what edits the selection; the country box and both fetch buttons
+ * only wait for a fetch already in flight ([busy]), see the BridgeSection doc.
+ */
 @Composable
 private fun BuiltinBlock(
     step: Int,
@@ -678,7 +710,7 @@ private fun BuiltinBlock(
         inputTransform = { raw ->
             raw.filter { it in 'a'..'z' || it in 'A'..'Z' }.uppercase().take(2)
         },
-        enabled = enabled && !busy,
+        enabled = !busy,
         singleLine = true,
         label = { Text(stringResource(R.string.bridges_country_label)) },
         placeholder = { Text(stringResource(R.string.bridges_country_hint)) },
@@ -692,7 +724,7 @@ private fun BuiltinBlock(
             onClick = onAsk,
             modifier = Modifier.weight(1f),
             icon = Icons.Rounded.CloudDownload,
-            enabled = enabled && !busy,
+            enabled = !busy,
             filled = true,
         )
         ActionPill(
@@ -700,7 +732,7 @@ private fun BuiltinBlock(
             onClick = onRefresh,
             modifier = Modifier.weight(1f),
             icon = Icons.Rounded.Refresh,
-            enabled = enabled && !busy,
+            enabled = !busy,
         )
     }
     BridgeBusyBar(visible = busy)
@@ -733,12 +765,14 @@ private fun RequestBlock(
         note = stringResource(R.string.bridges_personal_note),
     )
     Spacer(Modifier.height(EngineSpacing.Field))
+    // Not behind the profile lock (see the BridgeSection doc): asking for
+    // personal bridges works best through the tunnel that is already up.
     ActionPill(
         label = stringResource(R.string.bridges_request),
         onClick = onRequest,
         modifier = Modifier.fillMaxWidth(),
         icon = Icons.Rounded.CloudDownload,
-        enabled = enabled && !busy && transport.needsPlugin,
+        enabled = !busy && transport.needsPlugin,
         filled = true,
     )
     if (!transport.needsPlugin) {
