@@ -77,9 +77,11 @@ object ChainRuntime {
      * to know which ports to wait on before anything is started.
      *
      * Aether's own SOCKS5 speaks UDP ASSOCIATE, so an Aether-entry chain needs
-     * no front and the entry is the engine itself. Psiphon and Tor do not, so
-     * their traffic enters through [SocksFront] instead (see its KDoc for the
-     * DNS argument).
+     * no front and the entry is the engine itself. So does Xray's SOCKS inbound,
+     * and its generated config answers port-53 UDP itself (see [XrayConfig]),
+     * so an Xray entry is Xray's own port. Psiphon and Tor do not, so their
+     * traffic enters through [SocksFront] instead (see its KDoc for the DNS
+     * argument).
      *
      * SSTP has no local port at all: its TUN is pumped packet by packet by
      * [SstpCore.bridgeTun]. The engine's port is returned so the many readers of
@@ -88,6 +90,7 @@ object ChainRuntime {
      */
     fun entryPortFor(mode: ChainMode): Int = when (mode.entryHop) {
         Hop.AETHER, Hop.SSTP -> TunnelConfig.ENGINE_SOCKS_PORT
+        Hop.XRAY -> TunnelConfig.XRAY_SOCKS_PORT
         Hop.PSIPHON, Hop.TOR -> TunnelConfig.FRONT_SOCKS_PORT
     }
 
@@ -99,6 +102,7 @@ object ChainRuntime {
     fun portsFor(mode: ChainMode): List<Int> = buildList {
         if (mode.usesAether) add(TunnelConfig.ENGINE_SOCKS_PORT)
         if (mode.usesPsiphon) add(TunnelConfig.PSIPHON_SOCKS_PORT)
+        if (mode.usesXray) add(TunnelConfig.XRAY_SOCKS_PORT)
         if (mode.usesTor) {
             add(TunnelConfig.TOR_SOCKS_PORT)
             add(TunnelConfig.TOR_DNS_PORT)

@@ -3,11 +3,11 @@ package studio.cluvex.aether.model
 /**
  * One circumvention core the app can run.
  *
- * Aether, Psiphon and Tor each expose a local SOCKS5 proxy on loopback, which is
- * the ONLY thing that makes chaining them possible at all. [SSTP] is the odd one
- * out: it is a LAYER 3 tunnel (PPP inside TLS), so what it hands the device is
- * IP packets, not a SOCKS5 listener. That is why it only ever runs alone - see
- * [ChainMode.SSTP].
+ * Aether, Psiphon, Xray and Tor each expose a local SOCKS5 proxy on loopback,
+ * which is the ONLY thing that makes chaining them possible at all. [SSTP] is
+ * the odd one out: it is a LAYER 3 tunnel (PPP inside TLS), so what it hands the
+ * device is IP packets, not a SOCKS5 listener. That is why it only ever runs
+ * alone - see [ChainMode.SSTP].
  */
 enum class Hop(val label: String) {
     /** The bundled Rust engine (libaether.so): MASQUE / WireGuard / Gool over WARP. */
@@ -24,6 +24,18 @@ enum class Hop(val label: String) {
      * build. Talks to a private SSTP server or a VPN Gate relay.
      */
     SSTP("SSTP"),
+
+    /**
+     * XTLS/Xray-core (libxray.so), running the USER'S OWN server config:
+     * VLESS / VMess / Trojan / Shadowsocks over TCP, WS, gRPC, XHTTP...,
+     * with TLS or REALITY. See core/XrayConfig.kt.
+     *
+     * Xray HAS an upstream option - `streamSettings.sockopt.dialerProxy` - so
+     * unlike Aether it can sit on top of another hop: its own handshake to the
+     * user's server is then dialled through that hop's local SOCKS5. Appended
+     * last on purpose, like every enum here whose names may be persisted.
+     */
+    XRAY("Xray"),
 }
 
 /**
@@ -47,22 +59,30 @@ enum class Hop(val label: String) {
  *
  *  - Psiphon has `UpstreamProxyUrl` (psiphon/config.go).
  *  - Tor has `Socks5Proxy` (torrc), which routes every OR connection through it.
+ *  - Xray has `streamSettings.sockopt.dialerProxy`, pointed at a SOCKS
+ *    outbound on the hop below it (see core/XrayConfig.kt).
  *  - The Aether engine has NO upstream-proxy option — it dials WARP endpoints
  *    itself.
  *
  * Aether therefore can only ever be the internet-facing hop, and Tor — the
  * slowest and the only one that also anonymises — is always the entry, because
  * putting anything after Tor would hand a single fixed proxy every stream that
- * left the Tor network and defeat the point of using it. That leaves exactly
- * the seven SOCKS combinations below; anything else is either impossible or
- * pointless, which is why this is an enum and not three checkboxes.
+ * left the Tor network and defeat the point of using it. That leaves the seven
+ * Aether / Psiphon / Tor combinations below, plus the Xray ones.
+ *
+ * ### Xray is never alone
+ *
+ * Xray is offered ONLY stacked: either its handshake rides Aether and/or
+ * Psiphon (the network sees WARP or Psiphon, never the Xray server's address),
+ * or it carries Tor's relay connections. A bare "Xray" mode would be a plain
+ * v2ray client, which is not what this app adds.
  *
  * ### Why SSTP is never stacked
  *
  * SSTP has neither a SOCKS5 listener to be dialled through nor an upstream-proxy
  * option to dial through somebody else's, so it can neither sit under Psiphon /
- * Tor nor above Aether. It is an eighth, standalone mode whose session builds
- * the TUN straight from the PPP link (see AetherVpnService).
+ * Tor nor above Aether. It is a standalone mode whose session builds the TUN
+ * straight from the PPP link (see AetherVpnService).
  */
 enum class ChainMode(val hops: List<Hop>) {
     /** Aether alone. The behaviour of every build before chaining existed. */
@@ -92,11 +112,34 @@ enum class ChainMode(val hops: List<Hop>) {
      * modes by [isChained], not by declaration order.
      */
     SSTP(listOf(Hop.SSTP)),
+
+    // ------------------------------------------------------------- Xray
+    // Appended after SSTP for the same reason SSTP was appended: names are
+    // persisted. Every one of them is stacked (see "Xray is never alone").
+
+    /**
+     * The user's Xray server, with the Xray handshake dialled THROUGH Aether:
+     * the operator sees WARP traffic, and the Xray server sees Cloudflare.
+     */
+    XRAY_OVER_AETHER(listOf(Hop.AETHER, Hop.XRAY)),
+
+    /** The user's Xray server, reached through Psiphon. For when WARP is blocked too. */
+    XRAY_OVER_PSIPHON(listOf(Hop.PSIPHON, Hop.XRAY)),
+
+    /** Xray through Psiphon through Aether. The heaviest Xray path. */
+    XRAY_OVER_PSIPHON_OVER_AETHER(listOf(Hop.AETHER, Hop.PSIPHON, Hop.XRAY)),
+
+    /** Tor's relay connections ride the user's Xray server: the ISP sees only Xray. */
+    TOR_OVER_XRAY(listOf(Hop.XRAY, Hop.TOR)),
+
+    /** Tor through the user's Xray server, itself reached through Aether. */
+    TOR_OVER_XRAY_OVER_AETHER(listOf(Hop.AETHER, Hop.XRAY, Hop.TOR)),
     ;
 
     val usesAether: Boolean get() = Hop.AETHER in hops
     val usesPsiphon: Boolean get() = Hop.PSIPHON in hops
     val usesTor: Boolean get() = Hop.TOR in hops
+    val usesXray: Boolean get() = Hop.XRAY in hops
 
     /** True for the SSTP packet tunnel, which has no SOCKS5 entry at all. */
     val usesSstp: Boolean get() = Hop.SSTP in hops
@@ -142,6 +185,11 @@ enum class ChainMode(val hops: List<Hop>) {
                 "PSIPHON_TOR", "TOR_PSIPHON" -> TOR_OVER_PSIPHON
                 "AETHER_PSIPHON_TOR", "ALL" -> TOR_OVER_PSIPHON_OVER_AETHER
                 "SSTP_ONLY", "VPNGATE", "VPN_GATE", "MS_SSTP" -> SSTP
+                "AETHER_XRAY", "XRAY_AETHER" -> XRAY_OVER_AETHER
+                "PSIPHON_XRAY", "XRAY_PSIPHON" -> XRAY_OVER_PSIPHON
+                "AETHER_PSIPHON_XRAY", "XRAY_PSIPHON_AETHER" -> XRAY_OVER_PSIPHON_OVER_AETHER
+                "XRAY_TOR", "TOR_XRAY" -> TOR_OVER_XRAY
+                "AETHER_XRAY_TOR", "TOR_XRAY_AETHER" -> TOR_OVER_XRAY_OVER_AETHER
                 else -> null
             }
         }
