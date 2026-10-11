@@ -48,8 +48,8 @@ import studio.cluvex.aether.vpn.session.VpnTunables
 /**
  * The heart of the app. On connect it:
  *   1. launches the cores the chosen chain needs - the bundled `aether` engine
- *      (SOCKS5 on 127.0.0.1:1819), Psiphon and/or Tor, each dialling through
- *      the one before it,
+ *      (SOCKS5 on 127.0.0.1:1819), Psiphon, Xray and/or Tor, each dialling
+ *      through the one before it,
  *   2. waits until the chain ENTRY can actually carry a connection (a real
  *      SOCKS5 CONNECT through the engine, each overlay core's own readiness
  *      signal, a warmed front) - an open port alone is not "ready",
@@ -74,7 +74,7 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  * itself live next door and can be read (and tested) on their own:
  *
  *  - [NativeStack]        - engine process, chain, SSTP, TUN fd, hev core, filter bridge, sharing
- *  - ChainStack           - the Psiphon / Tor hops and the DNS-capable SOCKS front
+ *  - ChainStack           - the Psiphon / Xray / Tor hops and the DNS-capable SOCKS front
  *  - TunFactory           - the TUN builders: routing, DNS, split tunneling
  *  - [ConnectionPlanner]  - the attempt ladder for a hand-picked protocol
  *  - [Readiness]          - "does this port really carry traffic yet?"
@@ -283,10 +283,10 @@ class AetherVpnService : VpnService() {
         )
 
         // FAIL FAST, WITH A REASON THE USER CAN ACT ON: a build without the
-        // Psiphon or Tor binary is a valid build (they are fetched and compiled
-        // by scripts/build-natives.sh, and a fork may not have run it). Saying
-        // so here costs milliseconds; discovering it three minutes into a
-        // connect attempt costs the user's patience.
+        // Psiphon, Xray or Tor binary is a valid build (they are fetched and
+        // compiled by the build scripts, and a fork may not have run them).
+        // Saying so here costs milliseconds; discovering it three minutes into
+        // a connect attempt costs the user's patience.
         val missing = natives.missingCores(profile.chain)
         if (missing.isNotEmpty()) {
             throw IllegalStateException(
@@ -303,7 +303,7 @@ class AetherVpnService : VpnService() {
 
         val resolved: ConnectionProfile = when {
             // No Aether hop means no endpoint scan and nothing for the ladder to
-            // vary: Psiphon and Tor pick their own transports internally.
+            // vary: Psiphon, Xray and Tor pick their own transports internally.
             !profile.chain.usesAether -> {
                 AetherController.setState(ConnectionState.Launching)
                 runLadder(
@@ -363,6 +363,8 @@ class AetherVpnService : VpnService() {
      * - So is the SSTP password, for the same reason. An empty sealed value
      *   means none was ever saved, and the public VPN Gate default the payload
      *   decoded to stands.
+     * - The Xray config never travels in the profile at all: ChainStack reads
+     *   it from its own sealed store when the Xray hop starts.
      */
     private suspend fun hydrate(profile: ConnectionProfile, restored: Boolean): ConnectionProfile {
         if (restored) {
@@ -490,6 +492,9 @@ class AetherVpnService : VpnService() {
         ChainFailure.TOR_MISSING -> getString(R.string.err_core_missing, "Tor")
         ChainFailure.TOR_TIMEOUT -> getString(R.string.err_tor_timeout)
         ChainFailure.FRONT_BIND -> getString(R.string.err_front_bind)
+        ChainFailure.XRAY_MISSING -> getString(R.string.err_core_missing, "Xray")
+        ChainFailure.XRAY_CONFIG -> getString(R.string.err_xray_config)
+        ChainFailure.XRAY_TIMEOUT -> getString(R.string.err_xray_timeout)
     }
 
     /**
@@ -673,10 +678,10 @@ class AetherVpnService : VpnService() {
      * After a handover, wait for the chain entry to carry a real CONNECT again
      * before the connect gate judges it.
      *
-     * Whatever the engine (or Psiphon / Tor) had opened THROUGH the other VPN
-     * died with it, and the cores need a moment to re-dial over the device's
-     * own network. Never fatal on its own: the gate right after this is still
-     * the one that decides.
+     * Whatever the engine (or Psiphon / Xray / Tor) had opened THROUGH the
+     * other VPN died with it, and the cores need a moment to re-dial over the
+     * device's own network. Never fatal on its own: the gate right after this
+     * is still the one that decides.
      */
     private suspend fun awaitChainAfterHandover(
         profile: ConnectionProfile,
@@ -996,10 +1001,10 @@ class AetherVpnService : VpnService() {
      * so no leak window opens.
      *
      * The whole chain restarts together even when only one hop died: Psiphon
-     * reads its upstream proxy once at startup and tor reads `Socks5Proxy` once
-     * at startup, so a hop that outlived its own upstream is pointing at a
-     * listener that no longer exists. Ports are fixed, so the forwarder finds
-     * the new entry exactly where it left the old one.
+     * reads its upstream proxy once at startup, Xray its dialer proxy and tor
+     * `Socks5Proxy` likewise, so a hop that outlived its own upstream is
+     * pointing at a listener that no longer exists. Ports are fixed, so the
+     * forwarder finds the new entry exactly where it left the old one.
      */
     private suspend fun restartCores(profile: ConnectionProfile): Boolean {
         natives.stopCores()
