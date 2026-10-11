@@ -1,5 +1,6 @@
 package studio.cluvex.aether.core.probe
 
+import android.net.Network
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.IpInfo
 import java.io.IOException
@@ -56,6 +57,21 @@ internal object GeoLookup {
     /** Exit/server address, providers tried in order through the proxy. */
     fun viaSocks(socksHost: String, socksPort: Int, timeoutMs: Int): IpInfo? =
         firstAnswer("proxied", timeoutMs, socksDialer(socksHost, socksPort, timeoutMs))
+
+    /**
+     * Exit address over [network] and nothing else: every probe socket is
+     * bound to it and every name is resolved on it.
+     *
+     * For the SSTP session, whose TUN carries this app's own sockets. A plain
+     * ("direct") socket only follows that TUN once the platform has moved the
+     * app's default network onto it, and that happens asynchronously AFTER
+     * establish() returns. A lookup fired in that gap left over the operator's
+     * network and was then published as the tunnel's exit: the badge sometimes
+     * showed the pre-connection address, and with it the user's own country.
+     * Binding removes the race instead of trying to out-wait it.
+     */
+    fun boundTo(network: Network, timeoutMs: Int): IpInfo? =
+        firstAnswer("vpn", timeoutMs, networkDialer(network, timeoutMs))
 
     /**
      * Exit/server address, ALL providers raced through the proxy in parallel.
@@ -201,6 +217,27 @@ internal object GeoLookup {
                 timeoutMs = timeoutMs,
             )
         }
+
+    /**
+     * Dialer pinned to [network]: the socket is bound BEFORE it connects and
+     * the name is resolved by that network's own resolvers, so neither the
+     * TCP flow nor its DNS can take any other path. IPv4 first, for the same
+     * reason as [directDialer].
+     */
+    private fun networkDialer(network: Network, timeoutMs: Int): ProbeDialer = { host, port, _ ->
+        val socket = Socket()
+        try {
+            network.bindSocket(socket)
+            val all = network.getAllByName(host)
+            val address = all.firstOrNull { it is Inet4Address } ?: all.first()
+            socket.connect(InetSocketAddress(address, port), timeoutMs)
+            socket.soTimeout = timeoutMs
+            socket
+        } catch (e: Throwable) {
+            runCatching { socket.close() }
+            throw e
+        }
+    }
 
     private fun resolveIpv4(host: String): InetAddress {
         val all = InetAddress.getAllByName(host)

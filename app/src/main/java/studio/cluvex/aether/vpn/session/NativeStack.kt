@@ -94,6 +94,14 @@ internal class NativeStack(private val service: VpnService) {
     private var sstpStarted = false
 
     /**
+     * The country VPN Gate reported for the relay being dialled, as a two-letter
+     * code, or null for a manual server. Only a FALLBACK for the badge: the geo
+     * answer for the real exit address always wins (see [startSstpExitProbe]).
+     */
+    @Volatile
+    private var sstpRelayCountry: String? = null
+
+    /**
      * The last IPv4 address each SSTP server name resolved to OUTSIDE the
      * tunnel, so a redial still has an address when the underlying network's
      * resolver hiccups (see [dialableBehindTun]). A plain map touches no
@@ -212,6 +220,9 @@ internal class NativeStack(private val service: VpnService) {
      */
     suspend fun startSstp(profile: ConnectionProfile, timeoutMs: Long): SstpCore.TunnelInfo {
         val config = profile.sstpConfig
+        sstpRelayCountry = config.countryCode.trim().uppercase().takeIf { code ->
+            code.length == 2 && code.all { it in 'A'..'Z' }
+        }
         ChainRuntime.begin(ChainMode.SSTP)
         ChainRuntime.update(Hop.SSTP, ChainRuntime.HopState.STARTING, "${config.hostname}:${config.port}")
         SstpCore.socketProtector = { socket -> service.protect(socket) }
@@ -297,23 +308,32 @@ internal class NativeStack(private val service: VpnService) {
      * A SOCKS session gets these from the service's background health check,
      * which dials through the chain entry. SSTP has no entry to dial, so that
      * check never ran for it, and the badge sat on its error for the whole
-     * session. The SSTP TUN carries the app's own sockets, so the ordinary
-     * lookup made now already leaves through the server
-     * ([NetProbe.fetchIpInfoViaTunnelWithRetry] picks that path). Runs again
-     * after every redial: a VPN Gate relay can come back with another exit.
+     * session. The SSTP TUN carries the app's own sockets, so the lookup is
+     * made over Aether's own VPN network - BOUND to it, not "whatever the
+     * default network is right now", which right after establish() can still
+     * be the operator's and used to put the pre-connection IP and the user's
+     * own country on the badge (see NetProbe.fetchIpInfoViaTunnelWithRetry).
+     * Runs again after every redial: a VPN Gate relay can come back with
+     * another exit.
+     *
+     * The country is the geo answer for the address that actually answered;
+     * VPN Gate's own country for the relay only stands in when that answer
+     * carries none.
      */
     private fun startSstpExitProbe() {
         sstpExitProbe?.cancel()
+        val relayCountry = sstpRelayCountry
         sstpExitProbe = sstpScope.launch {
-            val info = runInterruptible { NetProbe.fetchIpInfoViaTunnelWithRetry() }
+            val info = runInterruptible { NetProbe.fetchIpInfoViaTunnelWithRetry(service) }
             if (!sstpAlive) return@launch
             if (info == null) {
                 DiagnosticsLog.w(TAG, "SSTP: the exit IP could not be looked up through the tunnel yet.")
                 return@launch
             }
-            AetherController.setIpInfo(IpEndpoint(info.ip, info.countryCode, viaTunnel = true))
+            val country = info.countryCode?.takeIf { it.isNotBlank() } ?: relayCountry
+            AetherController.setIpInfo(IpEndpoint(info.ip, country, viaTunnel = true))
             AetherController.setIpLoading(false)
-            DiagnosticsLog.i(TAG, "Exit verified through the SSTP tunnel: ${info.ip} (${info.countryCode ?: "??"})")
+            DiagnosticsLog.i(TAG, "Exit verified through the SSTP tunnel: ${info.ip} (${country ?: "??"})")
         }
     }
 
