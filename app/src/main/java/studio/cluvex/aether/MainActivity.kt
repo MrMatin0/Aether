@@ -17,7 +17,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.withTimeoutOrNull
@@ -32,6 +34,7 @@ import studio.cluvex.aether.core.AppLocale
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.IpRefreshPhase
 import studio.cluvex.aether.core.NetProbe
+import studio.cluvex.aether.core.VpnConsent
 import studio.cluvex.aether.data.AppPrefs
 import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
@@ -98,6 +101,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /**
+     * The consent dialog a RUNNING session asked for (see [VpnConsent]): with
+     * another VPN up, the tap no longer takes the VPN slot, so the session
+     * asks for consent only once its tunnel is ready - and only if it was
+     * never given. The session reports the outcome itself (an error state on
+     * refusal), so this only relays the answer.
+     */
+    private val sessionConsentLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            VpnConsent.answer(result.resultCode == RESULT_OK)
+        }
+
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best effort */ }
 
@@ -116,6 +131,24 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             profileSaves.conflate().collect { snapshot -> profileStore.save(snapshot) }
+        }
+
+        // A session that deferred taking the VPN slot may need the system
+        // consent dialog once its tunnel is ready. Only shown while the
+        // activity is visible; a request is launched once per process even
+        // across recreation (the dialog itself survives a rotation).
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                VpnConsent.pending.collect { request ->
+                    if (request == null || request.id == launchedConsentId) return@collect
+                    launchedConsentId = request.id
+                    val launched = runCatching { sessionConsentLauncher.launch(request.intent) }.isSuccess
+                    if (!launched) {
+                        VpnConsent.answer(false)
+                        showToast(R.string.conn_vpn_unavailable)
+                    }
+                }
+            }
         }
 
         // NOT unconditionally, and not here-and-now for a first-run user: see
@@ -167,10 +200,11 @@ class MainActivity : ComponentActivity() {
                             }
                             if (AetherController.ipInfo.value?.viaTunnel != true) {
                                 // Through the chain entry on a SOCKS session, and
-                                // over a plain socket on SSTP, whose TUN carries
-                                // this app's own traffic (no SOCKS port there).
+                                // over Aether's own VPN network on SSTP, whose TUN
+                                // carries this app's own traffic (no SOCKS port
+                                // there). The context is what finds that network.
                                 val info = withContext(Dispatchers.IO) {
-                                    NetProbe.fetchIpInfoViaTunnelWithRetry()
+                                    NetProbe.fetchIpInfoViaTunnelWithRetry(applicationContext)
                                 }
                                 if (info != null) {
                                     AetherController.offerTunnelIpInfo(
@@ -184,6 +218,10 @@ class MainActivity : ComponentActivity() {
                             AetherController.setIpInfo(null)
                             AetherController.setIpLoading(true)
                             val info = withContext(Dispatchers.IO) { NetProbe.fetchIpInfoDirectWithRetry() }
+                            // Remembered so a tunnel lookup that answers with
+                            // THIS address can be recognised as a leak of the
+                            // pre-connection route rather than shown as an exit.
+                            info?.let { NetProbe.noteOperatorIp(it.ip) }
                             AetherController.setIpInfo(info?.let { IpEndpoint(it.ip, it.countryCode, false) })
                             AetherController.setIpLoading(false)
                         }
@@ -271,19 +309,28 @@ class MainActivity : ComponentActivity() {
             var awaitingConsent = false
             try {
                 val profile = uiProfile.value ?: profileStore.profile.first()
-                val consent = AetherController.prepare(this@MainActivity)
-                if (consent != null) {
-                    pendingProfile = profile
-                    // Some OEM builds ship without the consent activity, and an
-                    // always-on VPN owned by another app can refuse it: either
-                    // used to crash the tap or swallow it.
-                    awaitingConsent = runCatching { vpnPermissionLauncher.launch(consent) }.isSuccess
-                    if (!awaitingConsent) {
-                        pendingProfile = null
-                        showToast(R.string.conn_vpn_unavailable)
-                    }
-                } else {
+                if (VpnConsent.deferToSession(this@MainActivity, profile)) {
+                    // SECONDARY-VPN FIX: prepare() is not a question - with
+                    // consent already given it takes the VPN slot NOW and the
+                    // other VPN is revoked on the spot. Proxy mode never needs
+                    // the slot, and with another VPN up the session takes it
+                    // only once its own tunnel is ready (see VpnConsent).
                     AetherController.connect(this@MainActivity, profile)
+                } else {
+                    val consent = AetherController.prepare(this@MainActivity)
+                    if (consent != null) {
+                        pendingProfile = profile
+                        // Some OEM builds ship without the consent activity, and an
+                        // always-on VPN owned by another app can refuse it: either
+                        // used to crash the tap or swallow it.
+                        awaitingConsent = runCatching { vpnPermissionLauncher.launch(consent) }.isSuccess
+                        if (!awaitingConsent) {
+                            pendingProfile = null
+                            showToast(R.string.conn_vpn_unavailable)
+                        }
+                    } else {
+                        AetherController.connect(this@MainActivity, profile)
+                    }
                 }
             } finally {
                 // While consent is on screen the flag stays up; the launcher
@@ -340,5 +387,12 @@ class MainActivity : ComponentActivity() {
          */
         @Volatile
         private var notificationPromptShown = false
+
+        /**
+         * The last session consent request this process launched a dialog for,
+         * so a recreated activity does not stack a second one on top of it.
+         */
+        @Volatile
+        private var launchedConsentId = 0L
     }
 }
