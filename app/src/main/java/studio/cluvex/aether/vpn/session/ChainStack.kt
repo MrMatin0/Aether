@@ -2,7 +2,9 @@ package studio.cluvex.aether.vpn.session
 
 import android.content.Context
 import android.os.SystemClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.DiagnosticsLog
@@ -14,6 +16,9 @@ import studio.cluvex.aether.core.SmartDnsFront
 import studio.cluvex.aether.core.SocksFront
 import studio.cluvex.aether.core.TorCore
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.core.XrayCore
+import studio.cluvex.aether.core.XrayLink
+import studio.cluvex.aether.data.XrayConfigStore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.Hop
@@ -61,6 +66,18 @@ internal enum class ChainFailure {
 
     /** The DNS-capable SOCKS front (or the Smart DNS front) could not bind its port. */
     FRONT_BIND,
+
+    /** This build does not bundle libxray.so. */
+    XRAY_MISSING,
+
+    /**
+     * No Xray config was saved, what was saved is not a config this app can
+     * run, or Xray itself refused it at startup.
+     */
+    XRAY_CONFIG,
+
+    /** Xray started, but no connection got through the user's server in time. */
+    XRAY_TIMEOUT,
 }
 
 internal class ChainException(val failure: ChainFailure) : Exception(failure.name)
@@ -77,21 +94,24 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  * > dial through it.
  *
  * That ordering is not cosmetic. Psiphon reads `UpstreamProxyUrl` once at
- * startup and tor reads `Socks5Proxy` once at startup; starting either of them
- * before the hop underneath it can actually carry a connection means the core
- * burns its own retry budget failing against a dead proxy, and reports the
- * network as blocked when the real problem was the start order.
+ * startup, tor reads `Socks5Proxy` once at startup and Xray reads its
+ * `dialerProxy` once at startup; starting any of them before the hop
+ * underneath it can actually carry a connection means the core burns its own
+ * retry budget failing against a dead proxy, and reports the network as
+ * blocked when the real problem was the start order.
+ *
+ * The hops are started in [ChainMode.hops] order (internet side first), so a
+ * new mode only has to list its hops for this class to bring it up correctly.
  *
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
- * both bind their listener seconds to minutes before they can carry traffic
- * (see [PsiphonCore.awaitReady] and [TorCore.awaitReady]).
+ * every core binds its listener before it can carry traffic (see
+ * [PsiphonCore.awaitReady], [TorCore.awaitReady] and, for Xray, a real CONNECT
+ * through its inbound - which only succeeds once the user's server completed
+ * its handshake through the hop underneath).
  *
  * ONE DEADLINE (perf/fast-connect). [start] runs under a single deadline, and
- * every wait inside it - port, Psiphon readiness, every Tor rung - is
- * min(its own budget, what is left). The budget the service computed for a
- * chain used to be handed to the ENGINE port wait only, which a chain without
- * an Aether hop never even performs, so Psiphon's region retry and the Tor
- * bridge ladder could each spend several full budgets back to back.
+ * every wait inside it - port, Psiphon readiness, Xray readiness, every Tor
+ * rung - is min(its own budget, what is left).
  *
  * SSTP is NOT a hop of this class: it is a packet tunnel with no SOCKS5 entry,
  * and its session is run by the service through [NativeStack.startSstp].
@@ -102,6 +122,9 @@ internal class ChainStack(
 ) {
     @Volatile
     private var psiphon: PsiphonCore? = null
+
+    @Volatile
+    private var xray: XrayCore? = null
 
     @Volatile
     private var tor: TorCore? = null
@@ -117,18 +140,14 @@ internal class ChainStack(
 
     /** True while every core this chain started is still running. */
     val alive: Boolean
-        get() = (psiphon?.isAlive ?: true) && (tor?.isAlive ?: true)
+        get() = (psiphon?.isAlive ?: true) && (xray?.isAlive ?: true) && (tor?.isAlive ?: true)
 
     /**
      * Cores [mode] needs that this build does not ship.
      *
      * Reads the SAME snapshot the Chain settings page reads
-     * ([CoreAvailability]), which is the point: a mode the picker offers and the
-     * session then refuses is a worse experience than a mode that was never
-     * offered, and that is exactly what two independent availability checks
-     * eventually produce. It also stops this question from having a side effect -
-     * the previous version constructed a PsiphonCore and a TorCore just to ask,
-     * and both create their data directory in their initializer.
+     * ([CoreAvailability]): a mode the picker offers and the session then
+     * refuses is a worse experience than a mode that was never offered.
      */
     fun missingCores(mode: ChainMode): List<Hop> = CoreAvailability.of(context).missing(mode)
 
@@ -151,16 +170,22 @@ internal class ChainStack(
         check(!mode.usesSstp) { "SSTP is a packet tunnel and has no SOCKS chain to start" }
         val until = deadline ?: (SystemClock.elapsedRealtime() + VpnTunables.chainBudgetMs(mode))
         ChainRuntime.begin(mode)
-        if (mode.usesAether) ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
 
         // Every hop dials through the one before it; null means "straight out".
-        var upstream: Int? = if (mode.usesAether) TunnelConfig.ENGINE_SOCKS_PORT else null
-
-        if (mode.usesPsiphon) {
-            upstream = startPsiphon(profile, upstream, until)
-        }
-        if (mode.usesTor) {
-            upstream = startTor(profile, upstream, until)
+        var upstream: Int? = null
+        for (hop in mode.hops) {
+            upstream = when (hop) {
+                // Already up (started by the service); it only becomes the
+                // upstream of whatever comes next.
+                Hop.AETHER -> {
+                    ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
+                    TunnelConfig.ENGINE_SOCKS_PORT
+                }
+                Hop.PSIPHON -> startPsiphon(profile, upstream, until)
+                Hop.XRAY -> startXray(upstream, until)
+                Hop.TOR -> startTor(profile, upstream, until)
+                Hop.SSTP -> error("SSTP has no SOCKS entry")
+            }
         }
 
         val entry = when (mode.entryHop) {
@@ -173,18 +198,20 @@ internal class ChainStack(
             } else {
                 TunnelConfig.ENGINE_SOCKS_PORT
             }
+            // Xray's inbound speaks UDP ASSOCIATE and answers port-53 UDP with
+            // its own resolver over TCP through the user's server (see
+            // XrayConfig), so it is an entry by itself, like the engine.
+            Hop.XRAY -> requireNotNull(upstream)
             Hop.PSIPHON, Hop.TOR -> startFront(mode, requireNotNull(upstream))
             // Unreachable (checked above); spelled out so the `when` stays
             // exhaustive and a new hop has to decide where its traffic enters.
             Hop.SSTP -> error("SSTP has no SOCKS entry")
         }
 
-        // READINESS BEFORE PUBLISHING (perf/fast-connect): a front's port is
-        // open the instant it binds, long before its resolver has chosen a
-        // path or the hop behind it has built a first circuit. One bounded
-        // DNS query through it moves that warm-up from the user's first
-        // request to here. The engine's own port was already proven by the
-        // service's data-plane check.
+        // READINESS BEFORE PUBLISHING (perf/fast-connect): one bounded DNS
+        // query through the entry moves the first-lookup warm-up from the
+        // user's first request to here. The engine's own port was already
+        // proven by the service's data-plane check.
         if (entry != TunnelConfig.ENGINE_SOCKS_PORT) warmEntry(entry, until)
 
         ChainRuntime.publish(mode, entry)
@@ -196,24 +223,24 @@ internal class ChainStack(
      * Parks until a core dies or [timeoutMs] elapses.
      *
      * Parks on the ENTRY core, because that is the one whose death makes the
-     * tunnel stop carrying traffic immediately. A deeper hop dying is caught by
-     * [alive] on the next supervisor cycle instead, which costs at most one
-     * watchdog interval and keeps this a single blocking wait rather than a poll
-     * over three processes.
+     * tunnel stop carrying traffic immediately. Tor is always the top hop when
+     * present, and Xray is always above Psiphon. A deeper hop dying is caught
+     * by [alive] on the next supervisor cycle instead.
      */
     suspend fun awaitExit(timeoutMs: Long): Boolean = when {
         tor != null -> tor?.awaitExit(timeoutMs) ?: true
+        xray != null -> xray?.awaitExit(timeoutMs) ?: true
         psiphon != null -> psiphon?.awaitExit(timeoutMs) ?: true
         else -> true
     }
 
     /**
-     * Stops everything, fronts first.
+     * Stops everything, fronts first, then entry side to internet side.
      *
-     * Order is load-bearing: the fronts hold live sockets INTO the engine,
-     * tor or Psiphon, so closing them first means the cores see clean
-     * disconnects instead of a process dying under them, and nothing is left
-     * holding a port the next connect has to bind.
+     * Order is load-bearing: the fronts hold live sockets INTO the cores, so
+     * closing them first means the cores see clean disconnects instead of a
+     * process dying under them, and nothing is left holding a port the next
+     * connect has to bind.
      */
     fun stop() = synchronized(lock) {
         runCatching { smartFront?.stop() }
@@ -222,6 +249,8 @@ internal class ChainStack(
         front = null
         runCatching { tor?.stop() }
         tor = null
+        runCatching { xray?.stop() }
+        xray = null
         runCatching { psiphon?.stop() }
         psiphon = null
     }
@@ -234,16 +263,14 @@ internal class ChainStack(
      * ROOT CAUSE this handles: `EgressRegion` is a HARD filter inside
      * psiphon-tunnel-core. If no server is currently reachable in the country the
      * user picked, the controller keeps hunting for an egress that will never
-     * appear; the app sits on "Connecting" for the full readiness budget and then
-     * reports a timeout, with nothing in the log that explains why. A working
-     * tunnel in the wrong country beats no tunnel, so a hand-picked country gets
-     * ONE retry with the filter removed and a fresh datastore. Nothing is retried
-     * when the user already chose Automatic - there is no filter left to relax.
+     * appear. A working tunnel in the wrong country beats no tunnel, so a
+     * hand-picked country gets ONE retry with the filter removed and a fresh
+     * datastore. Nothing is retried when the user already chose Automatic.
      *
      * BUDGET: both passes share [deadline]. The pinned-region pass gets
      * [VpnTunables.PSIPHON_REGION_ATTEMPT_WAIT_MS] so the retry still fits, and
      * the retry is skipped when less than [VpnTunables.PSIPHON_RETRY_MIN_MS] is
-     * left - it used to be a second full 180 s budget after the first.
+     * left.
      *
      * The retry uses a NEW core rather than restarting the old one: the previous
      * attempt's datastore is wiped between passes, and a child that is still on
@@ -323,19 +350,86 @@ internal class ChainStack(
     }
 
     /**
+     * Brings Xray up on top of [upstream] and proves the user's server answers.
+     *
+     * THE CHAINING: the user's config is read from the Keystore-sealed
+     * [XrayConfigStore] (never from the profile, which is exported), parsed by
+     * [XrayLink], and run with a `dialerProxy` pointing at [upstream]. Xray's
+     * whole connection to the server - TCP, TLS / REALITY handshake, the
+     * VLESS / VMess / Trojan / Shadowsocks session - is therefore carried by
+     * the hop underneath (WARP, Psiphon, or WARP + Psiphon), and the network
+     * only ever sees that hop. With no hop underneath (Tor over Xray) Xray
+     * dials the server itself, and tor rides on top of it.
+     *
+     * READY means a real CONNECT through Xray's inbound got out, which can only
+     * happen once the handshake with the user's server succeeded THROUGH the
+     * chain. An open port alone only proves the config loaded.
+     */
+    private suspend fun startXray(upstream: Int?, deadline: Long): Int {
+        val core = XrayCore(context, filesDir)
+        if (!core.isAvailable) {
+            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, "not bundled")
+            throw ChainException(ChainFailure.XRAY_MISSING)
+        }
+        val text = withContext(Dispatchers.IO) {
+            runCatching { XrayConfigStore(context).read() }.getOrDefault("")
+        }
+        val outbound = XrayLink.parse(text)
+        if (outbound == null) {
+            val why = if (text.isBlank()) "no config" else "config not understood"
+            DiagnosticsLog.w(TAG, "Xray: $why - paste a share link or Xray JSON on the Chain page.")
+            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, why)
+            throw ChainException(ChainFailure.XRAY_CONFIG)
+        }
+        synchronized(lock) { xray = core }
+
+        val label = outbound.remark.ifBlank { outbound.summary }
+        ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.STARTING, label)
+        withContext(Dispatchers.IO) { core.start(outbound, upstream) }
+
+        val listening = PortProbe.awaitOpen(
+            TunnelConfig.SOCKS_HOST,
+            TunnelConfig.XRAY_SOCKS_PORT,
+            minOf(VpnTunables.XRAY_PORT_WAIT_MS, remainingMs(deadline)),
+        ) { core.isAlive }
+        if (!listening) {
+            val reason = core.failure
+            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, if (reason != null) "config rejected" else "did not start")
+            if (reason != null) DiagnosticsLog.w(TAG, "Xray refused the config: $reason")
+            // A process that died on its own config is a config problem; one
+            // that is alive but never bound is the core misbehaving.
+            throw ChainException(if (reason != null || !core.isAlive) ChainFailure.XRAY_CONFIG else ChainFailure.XRAY_TIMEOUT)
+        }
+
+        val budget = minOf(VpnTunables.XRAY_READY_WAIT_MS, remainingMs(deadline))
+        if (budget > 0 &&
+            Readiness.awaitDataplane(TunnelConfig.SOCKS_HOST, TunnelConfig.XRAY_SOCKS_PORT, budget) { core.isAlive }
+        ) {
+            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.READY, label)
+            return TunnelConfig.XRAY_SOCKS_PORT
+        }
+
+        DiagnosticsLog.w(
+            TAG,
+            "Xray is running but nothing got through ${outbound.summary}" +
+                (if (upstream != null) " via 127.0.0.1:$upstream" else "") +
+                " - check the server, its UUID / password and its TLS / REALITY settings.",
+        )
+        ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, "no handshake")
+        throw ChainException(ChainFailure.XRAY_TIMEOUT)
+    }
+
+    /**
      * Brings tor up, walking the bridge ladder until one rung bootstraps.
      *
      * ROOT CAUSE this handles: a blocked TRANSPORT is not a blocked network.
-     * obfs4 is what every censor spends its effort on, because it is what every
-     * client tries first - and the same DPI box is routinely blind to a snowflake
-     * WebRTC flow. Before this loop existed, one filtered transport was the end
-     * of the session: tor sat at 5% for four minutes and the user was told Tor
-     * was blocked here, when the next rung would have worked.
+     * obfs4 is what every censor spends its effort on, and the same DPI box is
+     * routinely blind to a snowflake WebRTC flow, so one filtered transport must
+     * not be the end of the session.
      *
      * Each rung is a NEW [TorCore], because tor reads its torrc exactly once at
-     * startup - there is no way to change bridges in place - and because the
-     * outgoing process must be reaped before its replacement binds the same local
-     * ports.
+     * startup, and because the outgoing process must be reaped before its
+     * replacement binds the same local ports.
      *
      * BUDGETS: every rung shares [deadline] (at most
      * [VpnTunables.TOR_CHAIN_BUDGET_MS] for the whole ladder). An earlier rung
@@ -402,13 +496,11 @@ internal class ChainStack(
     }
 
     /**
-     * Brings up the DNS-capable front in front of a non-Aether entry core.
+     * Brings up the DNS-capable front in front of a Psiphon or Tor entry.
      *
      * Tor gets its own DNSPort (resolution happens inside the Tor network, so
      * names never leave the device in the clear); anything else gets DNS over
-     * TCP through the tunnel, to the app's default resolvers. (A user-set
-     * resolver list used to be honoured here; that setting was retired
-     * together with the engine's --dns, see ConnectionProfile.dnsServers.)
+     * TCP through the tunnel, to the app's default resolvers.
      */
     private fun startFront(mode: ChainMode, upstream: Int): Int {
         val route = if (mode.usesTor) {
@@ -431,13 +523,10 @@ internal class ChainStack(
      * Brings up the Smart DNS front in front of the engine and returns its
      * port, which becomes the chain entry.
      *
-     * It answers the virtual resolver the TUN advertises
-     * ([TunnelConfig.SMART_DNS_RESOLVER]) over plain DNS, DoH or DoT - through
-     * the tunnel first, and straight out of the phone automatically when the
-     * provider only answers local addresses - and relays every other flow to
-     * the engine verbatim. Domain targets are only rewritten through Smart DNS
-     * when the profile has no domain routing rules, because the engine can only
-     * match those against a name.
+     * ONE server: the Smart DNS page lets the user pick exactly one, and a
+     * profile saved by an older build with several is cut down to its first
+     * here as well, so the front never fans out over a list the user can no
+     * longer see.
      */
     private fun startSmartDnsFront(profile: ConnectionProfile): Int {
         val smart = SmartDnsFront(
@@ -445,7 +534,7 @@ internal class ChainStack(
             upstreamHost = TunnelConfig.SOCKS_HOST,
             upstreamPort = TunnelConfig.ENGINE_SOCKS_PORT,
             protocol = profile.smartDnsProtocol,
-            servers = profile.sanitizedSmartDns(),
+            servers = profile.sanitizedSmartDns().take(1),
             rewriteDomains = !profile.hasDomainRoutingRules,
         )
         if (!smart.start()) throw ChainException(ChainFailure.FRONT_BIND)
@@ -454,7 +543,7 @@ internal class ChainStack(
     }
 
     /**
-     * One bounded DNS query through the front on [entry], to the resolver the
+     * One bounded DNS query through the entry on [entry], to the resolver the
      * TUN will advertise for it. Non-fatal by design; see [Readiness.warmDns].
      */
     private suspend fun warmEntry(entry: Int, deadline: Long) {
