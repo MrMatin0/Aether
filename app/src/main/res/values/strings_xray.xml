@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chain_xray_over_aether">Xray over Aether</string>
+    <string name="chain_xray_over_aether_desc">Your Xray server, with its whole handshake carried through WARP.</string>
+    <string name="chain_xray_over_psiphon">Xray over Psiphon</string>
+    <string name="chain_xray_over_psiphon_desc">Your Xray server, reached through Psiphon.</string>
+    <string name="chain_xray_over_psiphon_over_aether">Xray over Psiphon over Aether</string>
+    <string name="chain_xray_over_psiphon_over_aether_desc">WARP, then Psiphon, then your Xray server on top.</string>
+    <string name="chain_tor_over_xray">Tor over Xray</string>
+    <string name="chain_tor_over_xray_desc">Tor rides on top of your Xray server.</string>
+    <string name="chain_tor_over_xray_over_aether">Tor over Xray over Aether</string>
+    <string name="chain_tor_over_xray_over_aether_desc">WARP, then your Xray server, then Tor.</string>
+    <string name="xray_config_label">Xray config</string>
+    <string name="xray_config_hint">vless://, vmess://, trojan://, ss:// or Xray JSON</string>
+    <string name="xray_config_help">Paste a share link, a subscription body or an Xray outbound. Only the first proxy is used.</string>
+    <string name="xray_config_ok">Ready: %1$s</string>
+    <string name="xray_config_invalid">This isn\'t a config Aether can run.</string>
+    <string name="xray_config_empty">No Xray config saved yet.</string>
+    <string name="xray_chain_note">Xray\'s handshake to your server is dialled through the hop underneath it.</string>
+    <string name="xray_missing">This build does not include the Xray core.</string>
+    <string name="xray_config_stored">Stored encrypted on this device and never exported.</string>
+    <string name="err_xray_config">Xray has no usable config. Paste a working link on the Chain page.</string>
+    <string name="err_xray_timeout">Your Xray server did not answer through the chain. Check the server, UUID / password and TLS / REALITY settings.</string>
+</resources>
