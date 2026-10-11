@@ -3,7 +3,6 @@ package studio.cluvex.aether.ui
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -24,6 +23,13 @@ import studio.cluvex.aether.ui.engine.ProfileEdit
  *
  * Picking a relay keeps the user's own options (verify, SNI, MRU/MTU) and only
  * swaps the server, through [toSstpConfig] on the current config.
+ *
+ * THE BROWSER IS NOT PART OF THE LOCK. It used to be closed the moment the
+ * tunnel came up and could not be reopened until it went down again, so a
+ * connected user could not even refresh the relay list or test a relay -
+ * none of which touches the live session. Browsing, refreshing and testing
+ * now work in every state; only USING a relay writes the profile, so only
+ * that waits for an idle tunnel ([enabled]), and the screen says so.
  */
 @Composable
 internal fun SstpDestination(
@@ -32,13 +38,12 @@ internal fun SstpDestination(
     edit: ProfileEdit,
 ) {
     var browsing by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(enabled) { if (!enabled) browsing = false }
 
     SstpSettingsPanel(
         config = config,
         onConfigChange = { changed -> edit { copy(sstpConfig = changed) } },
         enabled = enabled,
-        onBrowseVpnGate = { if (enabled) browsing = true },
+        onBrowseVpnGate = { browsing = true },
     )
     Spacer(Modifier.height(8.dp))
     Hint(stringResource(R.string.sstp_packet_tunnel_note))
@@ -50,11 +55,14 @@ internal fun SstpDestination(
         ) {
             VpnGateScreen(
                 onServerSelected = { server ->
-                    edit { copy(sstpConfig = server.toSstpConfig(sstpConfig)) }
-                    browsing = false
+                    if (enabled) {
+                        edit { copy(sstpConfig = server.toSstpConfig(sstpConfig)) }
+                        browsing = false
+                    }
                 },
                 onBack = { browsing = false },
                 selectedHostname = config.hostname.takeIf { it.isNotBlank() },
+                canSelect = enabled,
             )
         }
     }

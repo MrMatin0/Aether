@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
+import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.WarpKeyFetcher
 import studio.cluvex.aether.core.WarpKeyPhase
 import studio.cluvex.aether.model.Protocol
@@ -75,6 +76,10 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  * Manual WARP key request on the diagnostics tab: one tile per protocol that
  * needs an identity. See [WarpKeyFetcher] for what a tap does. The pill on the
  * header lights up while another VPN carries this device's traffic.
+ *
+ * Usable at rest AND beside a live session that does not run the Aether engine
+ * (Tor, Psiphon, SSTP): the chain is observed here so the tiles unlock the
+ * moment such a session has published it, see [WarpKeyFetcher.canRun].
  */
 @Composable
 internal fun WarpKeyCard(modifier: Modifier = Modifier) {
@@ -82,8 +87,9 @@ internal fun WarpKeyCard(modifier: Modifier = Modifier) {
     val accents = LocalAetherAccents.current
     val keys by WarpKeyFetcher.state.collectAsStateWithLifecycle()
     val connection by AetherController.state.collectAsStateWithLifecycle()
+    val liveChain by ChainRuntime.mode.collectAsStateWithLifecycle()
     val vpnActive = rememberVpnActive()
-    val allowed = WarpKeyFetcher.canRun(connection)
+    val allowed = WarpKeyFetcher.canRun(connection, liveChain)
 
     Surface(
         modifier = modifier.fillMaxWidth(),
