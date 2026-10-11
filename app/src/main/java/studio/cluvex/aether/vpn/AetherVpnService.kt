@@ -26,6 +26,7 @@ import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
 import studio.cluvex.aether.core.SstpCore
+import studio.cluvex.aether.core.VpnConsent
 import studio.cluvex.aether.core.auto.StrategyLadder
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.data.SecretStore
@@ -52,7 +53,9 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  *   2. waits until the chain ENTRY can actually carry a connection (a real
  *      SOCKS5 CONNECT through the engine, each overlay core's own readiness
  *      signal, a warmed front) - an open port alone is not "ready",
- *   3. builds the VPN TUN interface,
+ *   3. claims the device's VPN slot and builds the VPN TUN interface - only
+ *      now, so another VPN that was carrying the device keeps doing so until
+ *      Aether's own tunnel is really there (see [claimVpnSlot]),
  *   4. starts the embedded hev-socks5-tunnel core (libhev-socks5-tunnel.so) to
  *      forward all traffic through that entry - replacing v2rayNG entirely,
  *   5. supervises every core and auto-reconnects on failure.
@@ -152,10 +155,13 @@ class AetherVpnService : VpnService() {
             // session: the error notification keeps its Disconnect action
             // even after a failed connect, and engaging a device-wide
             // blackhole from that dead end would strand the user offline.
+            // Never in proxy mode: there is no device tunnel to fail closed,
+            // and the blackhole would take the VPN slot from whatever VPN
+            // the user runs beside the proxy.
             val last = lastProfile
             when {
                 lockdownTunActive -> stopEverything()
-                runJob?.isActive == true && last != null && last.strictKillSwitch ->
+                runJob?.isActive == true && last != null && last.strictKillSwitch && !last.proxyMode ->
                     enterLockdown(last)
                 else -> stopEverything()
             }
@@ -456,6 +462,12 @@ class AetherVpnService : VpnService() {
                 cleanupNatives()
                 Diagnostics.resetChecks()
                 throw IllegalStateException(chainFailureMessage(e.failure), e)
+            } catch (e: VpnConsentException) {
+                // Not a rung failure either: no other strategy can grant the
+                // VPN permission the user just refused (or never saw).
+                cleanupNatives()
+                Diagnostics.resetChecks()
+                throw IllegalStateException(e.message, e)
             } catch (e: Exception) {
                 lastError = e
                 DiagnosticsLog.w(
@@ -587,7 +599,19 @@ class AetherVpnService : VpnService() {
         )
         val entryPort = natives.startChain(profile, chainDeadline)
 
-        if (profile.proxyMode) startLocalProxy(profile) else startFullTunnel(profile, entryPort)
+        if (profile.proxyMode) {
+            // Proxy mode never touches the VPN slot: no TUN, so a VPN the user
+            // runs beside the proxy keeps running (see VpnConsent).
+            startLocalProxy(profile)
+        } else {
+            // SECONDARY-VPN FIX: the slot is claimed HERE - the engine has
+            // passed its data-plane check and the chain is up - and not at
+            // the connect tap, which revoked another VPN minutes before
+            // Aether had anything to replace it with.
+            val handedOver = claimVpnSlot()
+            startFullTunnel(profile, entryPort)
+            if (handedOver) awaitChainAfterHandover(profile, entryPort, sessionDeadline)
+        }
 
         // GATING: Connected is reported ONLY after the connect gate passes -
         // port, handshake and a real outbound TCP connection through the entry
@@ -605,6 +629,74 @@ class AetherVpnService : VpnService() {
         if (!selfTest(profile)) {
             DiagnosticsLog.e(TAG, "Connect gate failed - refusing to report Connected.")
             throw IllegalStateException(getString(R.string.err_selftest))
+        }
+    }
+
+    /**
+     * Takes the device's VPN slot NOW, and not one moment earlier.
+     *
+     * `VpnService.prepare()` is what takes it: with consent already given it
+     * silently revokes whichever VPN holds the slot and returns null. That
+     * used to happen at the connect tap (MainActivity), so a secondary VPN
+     * the user relied on died the instant Connect was pressed. The tap now
+     * leaves it alone whenever another VPN is up (see [VpnConsent]) and this
+     * runs right before the TUN is established instead - or, on SSTP, right
+     * before the dial, because its TCP session could not survive the handover.
+     *
+     * When consent was never given, the system dialog is requested through
+     * [VpnConsent] and shown by the activity; a refusal (or nobody answering
+     * within [VPN_CONSENT_WAIT_MS]) ends the session with that reason.
+     *
+     * Returns true when another VPN was carrying the device until this call,
+     * i.e. when connections opened through it have just been cut.
+     *
+     * @throws VpnConsentException when the permission is missing.
+     */
+    private suspend fun claimVpnSlot(): Boolean {
+        val handover = VpnConsent.anyVpnActive(this)
+        val consent = VpnService.prepare(this)
+        if (consent != null) {
+            DiagnosticsLog.i(TAG, "VPN permission is still needed - asking for it now that the tunnel is ready.")
+            val granted = VpnConsent.request(consent, VPN_CONSENT_WAIT_MS)
+            if (!granted || VpnService.prepare(this) != null) {
+                DiagnosticsLog.e(TAG, "VPN permission was not granted - not taking over the device.")
+                throw VpnConsentException(getString(R.string.conn_vpn_denied))
+            }
+        }
+        if (handover) {
+            DiagnosticsLog.i(TAG, "Another VPN carried this device until now - Aether takes over from here.")
+        }
+        return handover
+    }
+
+    /**
+     * After a handover, wait for the chain entry to carry a real CONNECT again
+     * before the connect gate judges it.
+     *
+     * Whatever the engine (or Psiphon / Tor) had opened THROUGH the other VPN
+     * died with it, and the cores need a moment to re-dial over the device's
+     * own network. Never fatal on its own: the gate right after this is still
+     * the one that decides.
+     */
+    private suspend fun awaitChainAfterHandover(
+        profile: ConnectionProfile,
+        entryPort: Int,
+        sessionDeadline: Long,
+    ) {
+        val budget = minOf(
+            VpnTunables.ENGINE_DATAPLANE_WAIT_MS,
+            (sessionDeadline - SystemClock.elapsedRealtime())
+                .coerceAtLeast(VpnTunables.DATAPLANE_MIN_WAIT_MS),
+        )
+        DiagnosticsLog.i(TAG, "Checking the chain still carries traffic after the VPN handover…")
+        val carries = Readiness.awaitDataplane(VpnTunables.SOCKS_HOST, entryPort, budget) {
+            natives.coresAlive(profile)
+        }
+        if (!carries) {
+            DiagnosticsLog.w(
+                TAG,
+                "No CONNECT through the chain since the handover yet - the connect gate decides.",
+            )
         }
     }
 
@@ -756,6 +848,11 @@ class AetherVpnService : VpnService() {
         // Same rule as connectAttempt: never start on top of a dying session,
         // and this is also what lifts a kill-switch lockdown.
         cleanupNatives()
+        // The VPN slot, right before the dial and not at the tap. Not later
+        // either: the SSTP socket has to be protect()ed, which needs the slot,
+        // and a TCP session opened through another VPN would die the moment
+        // that VPN is revoked. See claimVpnSlot.
+        claimVpnSlot()
 
         AetherController.setState(ConnectionState.Connecting)
         notifications.update(getString(R.string.state_connecting))
@@ -856,8 +953,11 @@ class AetherVpnService : VpnService() {
 
             if (attempt >= maxRetries(profile)) {
                 // KILL SWITCH (1.2.4): instead of tearing the VPN down and
-                // leaking direct, engage the blackhole lockdown.
-                if (profile.killSwitch || profile.strictKillSwitch) {
+                // leaking direct, engage the blackhole lockdown. Not in proxy
+                // mode: there is no device tunnel to fail closed, and the
+                // blackhole would take the VPN slot from whatever VPN the user
+                // runs beside the proxy.
+                if ((profile.killSwitch || profile.strictKillSwitch) && !profile.proxyMode) {
                     enterLockdown(profile)
                     return
                 }
@@ -1060,6 +1160,20 @@ class AetherVpnService : VpnService() {
          */
         private const val SSTP_CONNECT_TIMEOUT_MS = 95_000L
 
+        /**
+         * How long a session waits for the user to answer a VPN consent dialog
+         * it asked for (see [claimVpnSlot]). Long enough to read it; bounded so
+         * a dialog nobody can see (the activity is not on screen) does not
+         * hold the session forever.
+         */
+        private const val VPN_CONSENT_WAIT_MS = 120_000L
+
         private const val TAG = "vpn"
     }
 }
+
+/**
+ * The VPN permission is missing and was not granted when asked. Not a rung
+ * failure: no other strategy of the ladder can fix it (see runLadder).
+ */
+private class VpnConsentException(message: String) : Exception(message)
