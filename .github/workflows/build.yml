@@ -28,10 +28,10 @@ name: Build
 #     reserved for `v*` tags. That is what stops a dispatch from an old feature
 #     branch (see v1.3.0-build.48) from advertising itself as the current
 #     download while main is already on 1.4.5.
-#  5. ONE MISSING CORE COSTS EXACTLY THAT CORE. Psiphon and Tor are built as two
-#     independent steps, never as one `all` invocation: the script is set -e, so
-#     a Go hiccup used to cost libtor.so too - and tor is just a signed download
-#     that had nothing to do with the failure.
+#  5. ONE MISSING CORE COSTS EXACTLY THAT CORE. Psiphon, Tor and Xray are built
+#     as three independent steps, never as one `all` invocation: the scripts
+#     are set -e, so a Go hiccup used to cost libtor.so too - and tor is just a
+#     signed download that had nothing to do with the failure.
 #  6. EVERY JOB HAS A CEILING. Without timeout-minutes a hung sdkmanager, cargo
 #     or `go build` sits on a runner for the six-hour default.
 #  7. A RELEASE MAY NOT SHIP WITHOUT THE CORES IT ADVERTISES. Rules 3 and 5 make
@@ -44,7 +44,8 @@ name: Build
 #     tag, checked twice: after the natives job builds, and against the contents
 #     of the assembled APKs. The same rule covers Psiphon's bootstrap server
 #     list: a core with nowhere to start dialling advertises a mode that cannot
-#     connect, which is the failure this rule exists to prevent.
+#     connect, which is the failure this rule exists to prevent. libxray.so is
+#     one of those cores (the five Xray chain modes, docs/XRAY.md).
 # ---------------------------------------------------------------------------
 
 on:
@@ -96,6 +97,14 @@ env:
   # than the whole feature; scripts/build-overlay-cores.sh reads the requirement
   # out of upstream's go.mod and fails with the fix in the message.
   GO_VERSION: "1.26"
+  # Xray core (cgo through the NDK). SEPARATE from GO_VERSION on purpose, for
+  # the same load-bearing reason: XTLS/Xray-core v26.9.30's go.mod says
+  # `go 1.27`, which Go 1.26 under GOTOOLCHAIN=local refuses outright. Psiphon
+  # is proven on 1.26, so it keeps its toolchain and Xray gets its own instead
+  # of dragging Psiphon onto an untested compiler. The Xray step also runs with
+  # GOTOOLCHAIN=auto, and scripts/build-xray-core.sh checks upstream's go.mod
+  # against this toolchain and fails with the fix in the message.
+  XRAY_GO_VERSION: "1.27"
   # Pinned on purpose. `cargo install cargo-ndk` unpinned means the toolchain
   # that links a release is whatever crates.io published that morning, which is
   # rule 2 above with extra steps.
@@ -127,8 +136,9 @@ jobs:
       #   key - and since a cache hit used to skip every build step, every later
       #   run restored that incomplete payload and never retried. One transient
       #   Go or upstream-layout hiccup silently removed the chain feature from
-      #   every subsequent release. Key bumped to v4 with the Go fix, so no entry
-      #   written by a build that could not compile Psiphon is inherited.
+      #   every subsequent release. Key bumped to v5 with the Xray core: a v4
+      #   entry has no libxray.so and its key does not cover
+      #   build-xray-core.sh, so bumping XRAY_REF there would never rebuild.
       - name: Restore prebuilt native cores
         id: natives-cache
         uses: actions/cache/restore@v6
@@ -137,20 +147,20 @@ jobs:
             app/src/main/jniLibs
             app/src/main/assets/tor
           key: >-
-            jnilibs-v4-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-go${{
-            env.GO_VERSION }}-${{
+            jnilibs-v5-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-go${{
+            env.GO_VERSION }}-xgo${{ env.XRAY_GO_VERSION }}-${{
             hashFiles('scripts/build-natives.sh', 'scripts/fetch-natives.sh',
-            'scripts/build-overlay-cores.sh', 'scripts/aethertun-jni.c',
-            'native/aether/**') }}
+            'scripts/build-overlay-cores.sh', 'scripts/build-xray-core.sh',
+            'scripts/aethertun-jni.c', 'native/aether/**') }}
 
       # A restored cache is trusted only for what it actually contains. Anything
       # missing is rebuilt, so a cache that lost the chain cores costs one slow
       # job instead of costing the feature forever.
       #
-      # psiphon and tor are reported SEPARATELY rather than as one `chain` flag:
-      # they come from two unrelated toolchains (a Go cross-compile and a signed
-      # AAR download), so there is no reason a missing one should drag the other
-      # into a rebuild - or be blocked by it failing.
+      # psiphon, tor and xray are reported SEPARATELY rather than as one `chain`
+      # flag: they come from unrelated toolchains (two Go cross-compiles and a
+      # signed AAR download), so there is no reason a missing one should drag
+      # the others into a rebuild - or be blocked by one failing.
       - name: Decide what still has to be built
         id: payload
         run: |
@@ -158,25 +168,28 @@ jobs:
           mandatory=true
           psiphon=true
           tor=true
+          xray=true
           for abi in arm64-v8a armeabi-v7a; do
             for lib in libaether.so libhev-socks5-tunnel.so libaethertun.so; do
               [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || mandatory=false
             done
             [ -f "app/src/main/jniLibs/${abi}/libpsiphon.so" ] || psiphon=false
             [ -f "app/src/main/jniLibs/${abi}/libtor.so" ] || tor=false
+            [ -f "app/src/main/jniLibs/${abi}/libxray.so" ] || xray=false
           done
           chain=false
-          if [ "${psiphon}" = true ] && [ "${tor}" = true ]; then chain=true; fi
+          if [ "${psiphon}" = true ] && [ "${tor}" = true ] && [ "${xray}" = true ]; then chain=true; fi
           build=true
           if [ "${mandatory}" = true ] && [ "${chain}" = true ]; then build=false; fi
           {
             echo "mandatory=${mandatory}"
             echo "psiphon=${psiphon}"
             echo "tor=${tor}"
+            echo "xray=${xray}"
             echo "chain=${chain}"
             echo "build=${build}"
           } >> "$GITHUB_OUTPUT"
-          echo "restored: mandatory=${mandatory} psiphon=${psiphon} tor=${tor} -> build=${build}"
+          echo "restored: mandatory=${mandatory} psiphon=${psiphon} tor=${tor} xray=${xray} -> build=${build}"
 
       - name: Set up Android SDK
         if: steps.payload.outputs.build == 'true'
@@ -248,21 +261,21 @@ jobs:
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
 
-      # ---- OVERLAY CORES (Psiphon + Tor) -----------------------------------
+      # ---- OVERLAY CORES (Psiphon + Tor + Xray) ----------------------------
       # Deliberately non-fatal, and deliberately AFTER the mandatory cores.
       #
-      # These two are additive: the app detects a build without them and says so
+      # These are additive: the app detects a build without them and says so
       # (the Chain settings page disables the modes that need them and names the
       # missing core, instead of failing at connect time). A Go toolchain hiccup
       # or an upstream layout change must therefore cost the chain feature for
       # one build - not the whole APK, which is what would happen if this were
       # part of the step above.
       #
-      # And it must cost ONE core, not both. `build-overlay-cores.sh all` builds
-      # Psiphon first under set -e, so a Go failure returned before tor - a
-      # plain signed-AAR download - was ever attempted, and a single flaky Go
-      # step took out both chain cores. Two steps, two independent failures,
-      # each gated on the core it actually produces.
+      # And it must cost ONE core, not all of them. `build-overlay-cores.sh all`
+      # builds Psiphon first under set -e, so a Go failure returned before tor -
+      # a plain signed-AAR download - was ever attempted, and a single flaky Go
+      # step took out both chain cores. One step per core, independent
+      # failures, each gated on the core it actually produces.
       #
       # What none of this may cost is a RELEASE: see the verify step below, which
       # turns a missing core into a hard failure on a `v*` tag.
@@ -296,6 +309,28 @@ jobs:
         env:
           ANDROID_API: ${{ env.ANDROID_API }}
 
+      # Its own Go, installed AFTER Psiphon's build so the Psiphon step above
+      # keeps the toolchain it is proven on. setup-go prepends to PATH, so from
+      # here on `go` is XRAY_GO_VERSION.
+      - name: Set up Go ${{ env.XRAY_GO_VERSION }} (Xray)
+        if: steps.payload.outputs.xray != 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.XRAY_GO_VERSION }}
+          cache: false
+
+      # XTLS/Xray-core's ./main as libxray.so, from the tag pinned in the script
+      # (XRAY_REF, v26.9.30). That pin is covered by the cache key above via
+      # hashFiles, so bumping it is a rebuild, not a stale cache hit.
+      - name: Build the Xray core
+        id: xray_core
+        if: steps.payload.outputs.xray != 'true'
+        continue-on-error: true
+        run: bash scripts/build-xray-core.sh
+        env:
+          ANDROID_API: ${{ env.ANDROID_API }}
+          GOTOOLCHAIN: auto
+
       # Re-inspect AFTER building: this decides what the summary says, whether
       # the payload is allowed into the cache, and - on a tag - whether this is
       # publishable at all.
@@ -305,6 +340,7 @@ jobs:
           IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
           PSIPHON_OUTCOME: ${{ steps.psiphon_core.outcome }}
           TOR_OUTCOME: ${{ steps.tor_core.outcome }}
+          XRAY_OUTCOME: ${{ steps.xray_core.outcome }}
         run: |
           set -euo pipefail
           # `find` on a missing root is fatal under set -e, and "No such file or
@@ -324,8 +360,9 @@ jobs:
             echo "### Chain cores"
             echo "- Psiphon build step: \`${PSIPHON_OUTCOME:-skipped}\`"
             echo "- Tor build step: \`${TOR_OUTCOME:-skipped}\`"
+            echo "- Xray build step: \`${XRAY_OUTCOME:-skipped}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          for lib in libpsiphon.so libtor.so; do
+          for lib in libpsiphon.so libtor.so libxray.so; do
             present=true
             for abi in arm64-v8a armeabi-v7a; do
               [ -f "app/src/main/jniLibs/${abi}/${lib}" ] || present=false
@@ -349,7 +386,7 @@ jobs:
           # this existed the whole signal was a ::warning:: in a green log, and
           # every published APK told users the Psiphon core was not included.
           if [ "${complete}" != true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
-            echo "::error::refusing to publish a release without the Psiphon and Tor cores"
+            echo "::error::refusing to publish a release without the Psiphon, Tor and Xray cores"
             exit 1
           fi
 
@@ -517,7 +554,7 @@ jobs:
             # disables the modes that need a missing core and names it, so a
             # missing one is a warning there. On a `v*` tag it is fatal - see
             # rule 7 at the top of this file.
-            for lib in libpsiphon.so libtor.so; do
+            for lib in libpsiphon.so libtor.so libxray.so; do
               if [ ! -f "app/src/main/jniLibs/${abi}/${lib}" ]; then
                 chain_missing=true
                 echo "::warning::${abi}/${lib} is missing - the chain modes that need it will be unavailable in this build"
@@ -527,7 +564,7 @@ jobs:
             done
           done
           if [ "${chain_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
-            echo "::error::a tagged release must include libpsiphon.so and libtor.so for every ABI"
+            echo "::error::a tagged release must include libpsiphon.so, libtor.so and libxray.so for every ABI"
             exit 1
           fi
           echo "Native payload complete for arm64-v8a and armeabi-v7a."
@@ -705,7 +742,7 @@ jobs:
           done
 
       # Full VPN mode needs all three mandatory cores for every ABI in the APK,
-      # and a release needs the two chain cores as well. Proxy mode alone would
+      # and a release needs the three chain cores as well. Proxy mode alone would
       # still work, which is exactly why this is checked here instead of being
       # left to a user's bug report.
       - name: Verify native libraries inside the APKs
@@ -724,7 +761,7 @@ jobs:
                 printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}" \
                   || { echo "::error::$(basename "$apk") lacks ${lib} for ${abi}"; exit 1; }
               done
-              for lib in libpsiphon.so libtor.so; do
+              for lib in libpsiphon.so libtor.so libxray.so; do
                 if ! printf '%s\n' "$entries" | grep -qx "lib/${abi}/${lib}"; then
                   chain_missing=true
                   echo "::warning::$(basename "$apk") has no ${lib} for ${abi} (chain feature reduced)"
@@ -743,7 +780,7 @@ jobs:
             echo "OK  $(basename "$apk")  cores present for ${abis[*]}"
           done
           if [ "${chain_missing}" = true ] && [ "${IS_RELEASE_TAG}" = "true" ]; then
-            echo "::error::a tagged release must not ship an APK without libpsiphon.so, libtor.so and the Psiphon server list"
+            echo "::error::a tagged release must not ship an APK without libpsiphon.so, libtor.so, libxray.so and the Psiphon server list"
             exit 1
           fi
 
