@@ -16,6 +16,7 @@
     <string name="xray_config_ok">آماده: %1$s</string>
     <string name="xray_config_invalid">این کانفیگ قابل اجرا نیست.</string>
     <string name="xray_config_empty">هنوز کانفیگ Xray ذخیره نشده.</string>
+    <string name="xray_config_not_saved">کانفیگ روی این دستگاه ذخیره نشد. دوباره بچسبانید.</string>
     <string name="xray_chain_note">هندشیک Xray با سرور شما از داخل هاپ زیرین زده می‌شود.</string>
     <string name="xray_missing">این نسخه هسته Xray را ندارد.</string>
     <string name="xray_config_stored">رمزنگاری‌شده روی همین دستگاه ذخیره می‌شود و هرگز اکسپورت نمی‌شود.</string>
