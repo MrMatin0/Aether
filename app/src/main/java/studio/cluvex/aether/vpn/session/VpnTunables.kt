@@ -163,6 +163,22 @@ internal object VpnTunables {
     /** Psiphon's automatic-exit retry is only started with at least this left. */
     const val PSIPHON_RETRY_MIN_MS = 45_000L
 
+    /**
+     * How long Xray's local SOCKS5 inbound gets to appear. Xray binds it as soon
+     * as the config has loaded, so a miss here means the config was rejected or
+     * the process is broken - never that the network is slow.
+     */
+    const val XRAY_PORT_WAIT_MS = 15_000L
+
+    /**
+     * How long the first real CONNECT through Xray gets, i.e. the user's server
+     * completing its handshake THROUGH the hop underneath. One server, no
+     * discovery: a minute is generous even through Psiphon, and a config that
+     * is wrong (bad UUID, REALITY key, SNI) never gets there however long it is
+     * given.
+     */
+    const val XRAY_READY_WAIT_MS = 60_000L
+
     /** Same reasoning as [PSIPHON_PORT_WAIT_MS]: tor binds its ports at once. */
     const val TOR_PORT_WAIT_MS = 20_000L
 
@@ -205,16 +221,17 @@ internal object VpnTunables {
     fun chainBudgetMs(mode: ChainMode): Long {
         var budget = CHAIN_SLACK_MS
         if (mode.usesPsiphon) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
+        if (mode.usesXray) budget += XRAY_PORT_WAIT_MS + XRAY_READY_WAIT_MS
         if (mode.usesTor) budget += TOR_CHAIN_BUDGET_MS
         return budget
     }
 
     /**
      * What a session with an Aether hop adds to its own ladder budget for the
-     * Psiphon / Tor hops on top of it; zero for an Aether-only chain.
+     * Psiphon / Xray / Tor hops on top of it; zero for an Aether-only chain.
      */
     fun overlayBudgetMs(mode: ChainMode): Long =
-        if (mode.usesPsiphon || mode.usesTor) chainBudgetMs(mode) else 0L
+        if (mode.usesPsiphon || mode.usesTor || mode.usesXray) chainBudgetMs(mode) else 0L
 }
 
 /**

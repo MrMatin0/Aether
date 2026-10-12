@@ -15,6 +15,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.HourglassEmpty
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
@@ -24,7 +25,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,10 +39,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.PsiphonCdnFronting
 import studio.cluvex.aether.core.PsiphonRegions
+import studio.cluvex.aether.core.XrayLink
+import studio.cluvex.aether.core.XrayOutbound
+import studio.cluvex.aether.data.XrayConfigStore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.PsiphonProtocol
@@ -60,14 +75,14 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  *
  * ### Why this page is cards and not a dropdown
  *
- * Three facts decide whether one of these seven modes is the right choice, and a
+ * Three facts decide whether one of these modes is the right choice, and a
  * dropdown could show none of them at once:
  *
- *  1. **Is the core even in this build.** Psiphon and Tor are optional; a build
- *     without them is valid. That used to be discovered by picking the mode,
- *     tapping Connect, and reading an error - after the app had already torn
- *     down and rebuilt its natives. Unavailable modes are now disabled here,
- *     with the missing core named.
+ *  1. **Is the core even in this build.** Psiphon, Tor and Xray are optional; a
+ *     build without them is valid. That used to be discovered by picking the
+ *     mode, tapping Connect, and reading an error - after the app had already
+ *     torn down and rebuilt its natives. Unavailable modes are now disabled
+ *     here, with the missing core named.
  *  2. **What it costs.** Every added hop is latency, and Tor is minutes of
  *     bootstrap. A user picking blind picks the biggest chain, which is the
  *     slowest one, and then concludes the app is broken.
@@ -75,14 +90,14 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  *     Persian, so the literal path is printed on every card rather than once
  *     under the selection.
  *
- * ### Where the Psiphon exit country lives
+ * ### Where the per-core options live
  *
- * Directly under the selected Psiphon mode card, not in a block at the bottom
- * of the page. The exit country belongs to the choice the user just made, and
- * with seven cards in between a block at the bottom was easy to never see. Only
- * the SELECTED card opens it, so the page never shows two pickers for one
- * setting. The Psiphon protocol / CDN fronting options live there too, for the
- * same reason.
+ * Directly under the selected mode card, not in a block at the bottom of the
+ * page. The Psiphon exit country (and its protocol / CDN fronting options)
+ * belongs to the choice the user just made, and so does the Xray config: with
+ * a dozen cards in between, a block at the bottom was easy to never see. Only
+ * the SELECTED card opens them, so the page never shows two editors for one
+ * setting.
  *
  * ### What the Psiphon block used to be
  *
@@ -92,6 +107,10 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * nothing pasted and nothing bundled, every Psiphon mode failed before the core
  * was even started. It is gone: [studio.cluvex.aether.core.PsiphonCore] carries
  * its own config, and the only thing left to choose is where to come out.
+ *
+ * The Xray block is the opposite case on purpose: there the config IS the
+ * user's (their own server), so pasting it is the whole point. See
+ * [XrayOptions].
  *
  * ### Why Tor has no exit country any more
  *
@@ -128,6 +147,7 @@ internal fun ChainSection(
         val absent = buildList {
             if (!cores.psiphonBinary) add(Hop.PSIPHON.label)
             if (!cores.torBinary) add(Hop.TOR.label)
+            if (!cores.xrayBinary) add(Hop.XRAY.label)
         }
         if (absent.isNotEmpty()) {
             NoticeBar(
@@ -138,7 +158,7 @@ internal fun ChainSection(
             Spacer(Modifier.height(EngineSpacing.Field))
         }
 
-        // ONE radio group for all seven modes: the two headings group them
+        // ONE radio group for every mode: the two headings group them
         // visually without making them two independent selections.
         Column(Modifier.fillMaxWidth().selectableGroup()) {
             FieldLabel(stringResource(R.string.chain_group_single))
@@ -183,15 +203,16 @@ private data class PsiphonUi(
     val cdnSni: String,
 )
 
-/** Aether alone, Psiphon alone, Tor alone. */
+/** Every core alone: Aether, Psiphon, Tor, SSTP. Xray is never offered alone. */
 private val SingleCoreModes: List<ChainMode> = ChainMode.entries.filterNot { it.isChained }
 
-/** The four stackings, cheapest first - which is also fewest-hops first. */
+/** Every stacking, Xray's included, in declaration order. */
 private val StackedModes: List<ChainMode> = ChainMode.entries.filter { it.isChained }
 
 /**
- * One mode card, plus - for a Psiphon mode that is the current selection - the
- * Psiphon options opened right underneath it.
+ * One mode card, plus - for the mode that is the current selection - the
+ * options of the cores it runs, opened right underneath it: Psiphon's for a
+ * Psiphon mode, the Xray config for an Xray mode (both, for Xray over Psiphon).
  */
 @Composable
 private fun ColumnScope.ChainModeEntry(
@@ -212,6 +233,17 @@ private fun ColumnScope.ChainModeEntry(
                 serverListBundled = cores.psiphonServerList,
                 enabled = enabled,
                 edit = edit,
+            )
+        }
+    }
+    if (mode.usesXray) {
+        DependentBlock(visible = mode == selected) {
+            XrayOptions(
+                // Tor over Xray: Xray is the internet-facing hop and dials
+                // its server itself, so there is no hop to mention.
+                viaUpstream = mode.upstreamOf(Hop.XRAY) != null,
+                binaryBundled = cores.xrayBinary,
+                enabled = enabled,
             )
         }
     }
@@ -272,6 +304,164 @@ private fun PsiphonOptions(
             edit = edit,
         )
     }
+}
+
+/** How long the Xray field waits after the last change before sealing it. */
+private const val XRAY_SAVE_DEBOUNCE_MS = 400L
+
+/**
+ * Outlives the Chain page, so a paste made right before leaving it is still
+ * sealed (see [XrayOptions]). SupervisorJob: one failed write must not cancel
+ * the next one.
+ */
+private val XrayFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+/**
+ * The Xray hop's one input: the user's own server config, shown under the
+ * selected Xray mode.
+ *
+ * ### Why this is not a profile field
+ *
+ * A share link IS a credential (see [XrayConfigStore]). The profile is
+ * exported, travels in the service Intent and sits in DataStore in plaintext,
+ * so the config is read from and written to the Keystore-sealed store here,
+ * off the main thread, and never goes through [ProfileEdit]. The session reads
+ * the same store when the Xray hop starts
+ * (studio.cluvex.aether.vpn.session.ChainStack).
+ *
+ * ### Saving
+ *
+ * Debounced: a paste is one change, typing is many, and every save is a
+ * Keystore operation. Whatever is still pending when the block leaves the
+ * screen is flushed on [XrayFlushScope], so backing out right after a paste
+ * does not lose it. A write the Keystore refused is said so, instead of
+ * looking saved and failing at the next connect.
+ *
+ * ### Masked
+ *
+ * Like the Zero Trust secrets: a password keyboard (no suggestions learned
+ * from a UUID) and dots on screen (nothing readable over a shoulder or in a
+ * screenshot). What the paste was read as is shown underneath instead,
+ * without the secret ([XrayOutbound.summary]).
+ *
+ * Locked like every other field while a session is up or on its way: the
+ * running Xray already read its config, so an edit could only look applied.
+ */
+@Composable
+private fun XrayOptions(
+    viaUpstream: Boolean,
+    binaryBundled: Boolean,
+    enabled: Boolean,
+) {
+    val accents = LocalAetherAccents.current
+    val context = LocalContext.current
+    val store = remember(context) { XrayConfigStore(context.applicationContext) }
+    // remember, NOT rememberSaveable: the saved-state bundle is no place for a
+    // credential, and the sealed store is the copy that survives anyway.
+    var text by remember(store) { mutableStateOf("") }
+    var loaded by remember(store) { mutableStateOf(false) }
+    var sealed by remember(store) { mutableStateOf("") }
+    var saveFailed by remember(store) { mutableStateOf(false) }
+
+    LaunchedEffect(store) {
+        val stored = withContext(Dispatchers.IO) { runCatching { store.read() }.getOrDefault("") }
+        text = stored
+        sealed = stored.trim()
+        loaded = true
+    }
+    LaunchedEffect(store, text, loaded) {
+        if (!loaded || text.trim() == sealed) return@LaunchedEffect
+        delay(XRAY_SAVE_DEBOUNCE_MS)
+        val pending = text
+        val ok = withContext(Dispatchers.IO) { runCatching { store.write(pending) }.getOrDefault(false) }
+        if (ok) sealed = pending.trim()
+        saveFailed = !ok
+    }
+    DisposableEffect(store) {
+        onDispose {
+            val pending = text
+            if (loaded && pending.trim() != sealed) {
+                XrayFlushScope.launch { runCatching { store.write(pending) } }
+            }
+        }
+    }
+
+    val parsed = remember(text) { XrayLink.parse(text) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, top = 8.dp, bottom = 12.dp),
+    ) {
+        if (!binaryBundled) {
+            NoticeBar(
+                text = stringResource(R.string.xray_missing),
+                tone = accents.failed,
+                icon = Icons.Rounded.Warning,
+            )
+            Spacer(Modifier.height(EngineSpacing.Field))
+        }
+
+        ProfileTextField(
+            value = text,
+            onValueChange = { value -> if (loaded) text = value.take(XrayLink.MAX_LENGTH) },
+            label = stringResource(R.string.xray_config_label),
+            placeholder = stringResource(R.string.xray_config_hint),
+            helpText = stringResource(R.string.xray_config_help),
+            singleLine = true,
+            masked = true,
+            enabled = enabled && loaded,
+        )
+
+        if (loaded) {
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            when {
+                text.isBlank() -> NoticeBar(
+                    text = stringResource(R.string.xray_config_empty),
+                    tone = accents.working,
+                    icon = Icons.Rounded.Info,
+                )
+                parsed == null -> NoticeBar(
+                    text = stringResource(R.string.xray_config_invalid),
+                    tone = accents.failed,
+                    icon = Icons.Rounded.Warning,
+                )
+                else -> NoticeBar(
+                    text = stringResource(R.string.xray_config_ok, xrayReadout(parsed)),
+                    tone = accents.protected,
+                    icon = Icons.Rounded.CheckCircle,
+                )
+            }
+        }
+        if (saveFailed) {
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            NoticeBar(
+                text = stringResource(R.string.xray_config_not_saved),
+                tone = accents.failed,
+                icon = Icons.Rounded.Warning,
+            )
+        }
+        if (viaUpstream) {
+            Spacer(Modifier.height(EngineSpacing.Inline))
+            Hint(stringResource(R.string.xray_chain_note))
+        }
+        Spacer(Modifier.height(EngineSpacing.Inline))
+        Hint(stringResource(R.string.xray_config_stored))
+    }
+}
+
+/**
+ * What the paste was read as: its own name (when it has one) and the
+ * secret-free summary, isolated LTR so a Persian UI does not reorder the
+ * address and the dots.
+ */
+private fun xrayReadout(outbound: XrayOutbound): String {
+    val remark = outbound.remark.trim()
+    val text = if (remark.isEmpty() || remark == outbound.summary) {
+        outbound.summary
+    } else {
+        "$remark \u00B7 ${outbound.summary}"
+    }
+    return "\u2066$text\u2069"
 }
 
 /**
@@ -445,7 +635,8 @@ private fun ChainModeCard(
  * Not a benchmark and not pretending to be one: it is the ordering a user needs
  * in order not to reach for the three-core chain first, and the ordering is a
  * property of the modes (Tor is always the slowest thing in any chain that has
- * it) rather than of the network.
+ * it) rather than of the network. Xray adds one proxy hop to the user's own
+ * server and no bootstrap, so it does not move a mode out of its tier.
  */
 @Composable
 private fun CostBadge(mode: ChainMode) {

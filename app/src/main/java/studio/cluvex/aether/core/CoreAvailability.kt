@@ -10,13 +10,14 @@ import java.io.File
  *
  * ### Why this exists
  *
- * The Psiphon and Tor cores are OPTIONAL (see `scripts/build-overlay-cores.sh`):
- * a build without them is a valid Aether build that simply cannot offer the
- * chain modes needing them. That was already handled correctly at connect time -
- * and only at connect time, which is the problem. A user on a build without
- * `libtor.so` could pick "Tor over Aether", tap Connect, and learn from an error
- * toast that the feature was never there. The settings page had the answer
- * available the whole time and no way to read it.
+ * The Psiphon, Tor and Xray cores are OPTIONAL (see
+ * `scripts/build-overlay-cores.sh` and `scripts/build-xray-core.sh`): a build
+ * without them is a valid Aether build that simply cannot offer the chain modes
+ * needing them. That was already handled correctly at connect time - and only at
+ * connect time, which is the problem. A user on a build without `libtor.so`
+ * could pick "Tor over Aether", tap Connect, and learn from an error toast that
+ * the feature was never there. The settings page had the answer available the
+ * whole time and no way to read it.
  *
  * So the payload is inspected ONCE, here, and both the UI and
  * [studio.cluvex.aether.vpn.session.ChainStack] read the same snapshot. Two
@@ -82,6 +83,11 @@ object CoreAvailability {
          * this build shipped something fresher.
          */
         val torBridgeListBundled: Boolean = false,
+        /**
+         * `libxray.so` is in the APK for this device's ABI. Appended last, with a
+         * default, for the same reason as [psiphonServerList].
+         */
+        val xrayBinary: Boolean = false,
     ) {
         /**
          * The Aether engine is mandatory, so it is available by construction.
@@ -91,13 +97,15 @@ object CoreAvailability {
          * bootstrap list is a DIFFERENT problem from a build with no core, and
          * reporting it as "no Psiphon core" would send whoever reads it to the
          * wrong build step. [psiphonServerList] carries that case, and ChainStack
-         * fails with its own reason.
+         * fails with its own reason. Xray likewise: a missing CONFIG is the
+         * user's to fix on the Chain page, not a missing core.
          */
         fun has(hop: Hop): Boolean = when (hop) {
             Hop.AETHER -> true
             Hop.PSIPHON -> psiphonBinary
             Hop.TOR -> torBinary
             Hop.SSTP -> true
+            Hop.XRAY -> xrayBinary
         }
 
         /** Cores [mode] needs that this build does not ship. */
@@ -125,11 +133,12 @@ object CoreAvailability {
             torGeoipBundled = hasAsset(context, "${TorCore.ASSET_DIR}/geoip"),
             psiphonServerList = hasAsset(context, PsiphonCore.ASSET_SERVER_LIST),
             torBridgeListBundled = hasAsset(context, BridgeCatalog.ASSET),
+            xrayBinary = hasBinary(nativeDir, XrayCore.BINARY),
         )
         DiagnosticsLog.i(
             TAG,
             "Build payload: psiphon=${snapshot.psiphonBinary} tor=${snapshot.torBinary} " +
-                "psiphonServers=${snapshot.psiphonServerList} " +
+                "xray=${snapshot.xrayBinary} psiphonServers=${snapshot.psiphonServerList} " +
                 "psiphonConfig=${snapshot.psiphonConfigBundled} geoip=${snapshot.torGeoipBundled} " +
                 "bridgeList=${snapshot.torBridgeListBundled}",
         )

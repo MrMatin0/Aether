@@ -25,7 +25,7 @@ object TunnelConfig {
 
     /**
      * The DNS-capable SOCKS5 front ([SocksFront]). Used as the chain entry
-     * whenever the entry core is NOT Aether, because neither Psiphon's nor
+     * whenever the entry core is Psiphon or Tor, because neither Psiphon's nor
      * Tor's local SOCKS5 implements UDP ASSOCIATE and the TUN forwarder needs
      * *something* to answer the device's UDP DNS queries. Deliberately adjacent
      * to 1819 so the two ports read as one block in a `netstat` dump.
@@ -38,6 +38,15 @@ object TunnelConfig {
      * and relays everything else to the engine on [ENGINE_SOCKS_PORT].
      */
     const val SMART_DNS_FRONT_PORT = 1821
+
+    /**
+     * Xray's local SOCKS5 inbound ([XrayCore]).
+     *
+     * NOT 10808 / 10809: those are v2rayNG's (and most Xray clients') defaults,
+     * i.e. exactly what a user of this feature already has installed. Its UDP
+     * ASSOCIATE works, so an Xray entry needs no [SocksFront].
+     */
+    const val XRAY_SOCKS_PORT = 1849
 
     /**
      * Psiphon's local SOCKS5 (`LocalSocksProxyPort`).

@@ -14,11 +14,12 @@ import kotlin.test.assertTrue
  */
 class CoreAvailabilityTest {
 
-    private fun snapshot(psiphon: Boolean, tor: Boolean) = CoreAvailability.Snapshot(
+    private fun snapshot(psiphon: Boolean, tor: Boolean, xray: Boolean = false) = CoreAvailability.Snapshot(
         psiphonBinary = psiphon,
         torBinary = tor,
         psiphonConfigBundled = false,
         torGeoipBundled = false,
+        xrayBinary = xray,
     )
 
     @Test
@@ -44,11 +45,23 @@ class CoreAvailabilityTest {
             listOf(Hop.PSIPHON, Hop.TOR),
             bare.missing(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER),
         )
+        assertEquals(
+            listOf(Hop.XRAY, Hop.TOR),
+            bare.missing(ChainMode.TOR_OVER_XRAY_OVER_AETHER),
+        )
     }
 
     @Test
-    fun `a full build can run all seven modes`() {
-        val full = snapshot(psiphon = true, tor = true)
+    fun `a build without Xray names Xray and nothing else`() {
+        val noXray = snapshot(psiphon = true, tor = true, xray = false)
+        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.XRAY_OVER_AETHER))
+        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.XRAY_OVER_PSIPHON_OVER_AETHER))
+        assertTrue(noXray.canRun(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER))
+    }
+
+    @Test
+    fun `a full build can run every mode`() {
+        val full = snapshot(psiphon = true, tor = true, xray = true)
         ChainMode.entries.forEach { mode ->
             assertTrue(full.canRun(mode), "$mode must be runnable on a complete build")
         }

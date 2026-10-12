@@ -23,8 +23,11 @@ private const val TAG = "ready"
  * app then brought up TUN + hev on top of it and let the 90 s self-test absorb
  * the difference, which is exactly the "connecting takes forever" users saw.
  *
- * Both checks here are bounded and use REAL traffic through the port:
+ * Every check here is bounded and uses REAL traffic through the port:
  *  - [awaitDataplane]: a full SOCKS5 CONNECT to an IP literal (no DNS).
+ *  - [awaitRoundTrip]: a request whose ANSWER has to come back through the
+ *    port, for a SOCKS5 server that acknowledges CONNECT before it has
+ *    reached anything (Xray's inbound).
  *  - [warmDns]: one DNS-over-TCP query to the resolver the TUN advertises,
  *    through the entry - which also pays the first-query warm-up (resolver
  *    path choice, DoH/DoT handshake, first Tor circuit) before the user does.
@@ -36,6 +39,13 @@ internal object Readiness {
     private const val WARM_QUERY_TIMEOUT_MS = 4_000
     private const val WARM_MIN_QUERY_TIMEOUT_MS = 500L
     private const val WARM_RETRY_MS = 400L
+
+    /**
+     * One round trip may include a whole TLS / REALITY handshake with the
+     * user's server, carried through WARP or Psiphon first: give each attempt
+     * more room than a warm-up query through a core that is already up.
+     */
+    private const val ROUND_TRIP_QUERY_TIMEOUT_MS = 8_000
 
     /**
      * Polls a real SOCKS5 CONNECT through [host]:[port] until one succeeds,
@@ -82,6 +92,60 @@ internal object Readiness {
     }
 
     /**
+     * Polls one DNS-over-TCP query to [resolver] THROUGH [host]:[port] until an
+     * answer comes back, [budgetMs] passes, or [isAlive] reports the process
+     * behind the port is gone.
+     *
+     * WHY NOT [awaitDataplane]: that one trusts the SOCKS5 CONNECT reply, which
+     * the engine only sends once its own dial succeeded. Xray's inbound sends
+     * it as soon as it has PARSED the request, before its outbound has reached
+     * anything, so a CONNECT "succeeds" the moment the config has loaded -
+     * wrong UUID, wrong REALITY key and all. An answer coming BACK can only
+     * have crossed the whole chain: the hop underneath, the handshake with the
+     * user's server, and the server's own way out.
+     *
+     * NOERROR is not required, only a well-formed reply: whether the resolver
+     * likes the name says nothing about the path, the reply arriving does.
+     */
+    suspend fun awaitRoundTrip(
+        host: String,
+        port: Int,
+        resolver: String,
+        budgetMs: Long,
+        isAlive: () -> Boolean = { true },
+    ): Boolean {
+        val started = SystemClock.elapsedRealtime()
+        val deadline = started + budgetMs.coerceAtLeast(0L)
+        var attempts = 0
+        do {
+            attempts++
+            val window = (deadline - SystemClock.elapsedRealtime())
+                .coerceIn(WARM_MIN_QUERY_TIMEOUT_MS, ROUND_TRIP_QUERY_TIMEOUT_MS.toLong())
+                .toInt()
+            val answered = withContext(Dispatchers.IO) {
+                queryOverTcp(host, port, resolver, window, requireNoError = false)
+            }
+            if (answered) {
+                DiagnosticsLog.i(
+                    TAG,
+                    "Round trip through $host:$port: $resolver answered in " +
+                        "${SystemClock.elapsedRealtime() - started} ms ($attempts attempt(s)).",
+                )
+                return true
+            }
+            if (!isAlive()) return false
+            val more = SystemClock.elapsedRealtime() + VpnTunables.DATAPLANE_RETRY_MS < deadline
+            if (more) delay(VpnTunables.DATAPLANE_RETRY_MS)
+        } while (more)
+        DiagnosticsLog.w(
+            TAG,
+            "Nothing came back through $host:$port from $resolver in " +
+                "${SystemClock.elapsedRealtime() - started} ms ($attempts attempt(s)).",
+        )
+        return false
+    }
+
+    /**
      * One DNS-over-TCP query to [resolver] THROUGH the SOCKS5 entry at
      * [host]:[port], retried inside [budgetMs]. True when an answer with
      * RCODE=NOERROR came back. Never fatal for the caller: a front that fails
@@ -116,7 +180,13 @@ internal object Readiness {
         return false
     }
 
-    private fun queryOverTcp(host: String, port: Int, resolver: String, timeoutMs: Int): Boolean {
+    private fun queryOverTcp(
+        host: String,
+        port: Int,
+        resolver: String,
+        timeoutMs: Int,
+        requireNoError: Boolean = true,
+    ): Boolean {
         val id = (SystemClock.elapsedRealtimeNanos() and 0xFFFF).toInt()
         val query = DnsMessage.buildQuery(WARM_NAME, DnsMessage.TYPE_A, id) ?: return false
         val socket = Socks5Wire.dial(host, port, resolver, DNS_PORT, timeoutMs, timeoutMs) ?: return false
@@ -128,7 +198,11 @@ internal object Readiness {
             val length = Socks5Wire.readExact(input, 2)
             val size = if (length == null) 0 else Socks5Wire.u16(length, 0)
             val answer = if (size >= 12) Socks5Wire.readExact(input, size) else null
-            answer != null && (answer[3].toInt() and 0x0F) == 0
+            when {
+                answer == null -> false
+                !requireNoError -> true
+                else -> (answer[3].toInt() and 0x0F) == 0
+            }
         } catch (_: Exception) {
             false
         } finally {

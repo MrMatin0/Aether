@@ -9,6 +9,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -74,16 +77,21 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  * decides whether Gemini & co. open at all, and people flip it between
  * attempts, so it now lives under the quick controls:
  *
- *   card    the glyph, what is in use ("GeoHide EU +2"), the live path while a
- *           session runs, and the switch. Tap anywhere else to open the sheet.
- *   sheet   the switch, the ready-made servers (sealed in the app, see
- *           model/SmartDnsPresets.kt), the user's own servers, and a Test chip
- *           next to every one of them.
+ *   card    the glyph, the ONE server in use (with its country flag), the live
+ *           path while a session runs, and the switch. Tap anywhere else to
+ *           open the sheet.
+ *   sheet   the switch, YOUR OWN server first (at the top, because a user who
+ *           has one came here to type it), then the ready-made servers (sealed
+ *           in the app, see model/SmartDnsPresets.kt), each with the flag of
+ *           the country it answers from, and a Test chip next to every one.
  *
- * NO PROTOCOL PICKER. UDP, DoH and DoT are detected per entry
- * ([SmartDnsServers.parseAuto]), so presets and typed servers of any kind mix
- * in one list, tried in order: picked presets first (the number on each row is
- * its place), then the user's own.
+ * ONE SERVER. Smart DNS is a single choice now, a radio group: picking a
+ * preset replaces whatever was in use, and typing a valid server of your own
+ * selects it instead. There is no try-order and no numbering any more. A list
+ * saved by an older build is shown (and used) as its first usable entry.
+ *
+ * NO PROTOCOL PICKER. UDP, DoH and DoT are detected from the address
+ * ([SmartDnsServers.parseAuto]).
  *
  * LOCKING follows the rest of the tab: while a session is up or on its way the
  * card's switch and the sheet's choices are disabled - but the sheet still
@@ -203,17 +211,20 @@ private fun sdnsCustomKey(server: SmartDnsServer): String = "custom:" + server.l
 
 /**
  * Switching on with nothing usable picks the priority preset, so "on" always
- * does something. Switching off keeps the list for next time.
+ * does something; switching on with a list saved by an older build keeps only
+ * its first usable server (the one that build asked first). Switching off
+ * keeps the choice for next time.
  */
 private fun ConnectionProfile.withSmartDnsSwitch(on: Boolean): ConnectionProfile {
     if (!on) return copy(smartDns = false)
-    if (sanitizedSmartDns().isNotEmpty()) return copy(smartDns = true)
+    val primary = SmartDnsPresets.primary(smartDnsServers, smartDnsProtocol)
     return copy(
         smartDns = true,
-        smartDnsServers = SmartDnsPresets.compose(
-            listOf(SmartDnsPresets.DEFAULT.id),
-            SmartDnsPresets.customPart(smartDnsServers, smartDnsProtocol),
-        ),
+        smartDnsServers = if (primary != null) {
+            SmartDnsPresets.storedFor(primary)
+        } else {
+            SmartDnsPresets.single(SmartDnsPresets.DEFAULT.id)
+        },
         smartDnsProtocol = SmartDnsProtocol.PLAIN,
     )
 }
@@ -227,21 +238,36 @@ private fun sdnsPresetTitle(preset: SmartDnsPreset): String = when (preset.group
     SmartDnsPresetGroup.CLASSIC -> stringResource(R.string.sdns_node, preset.title)
 }
 
+/** The flag of the country the preset answers from, then its name: "🇪🇺 GeoHide EU". */
 @Composable
-private fun sdnsPresetSubtitle(preset: SmartDnsPreset): String = when (preset.region) {
-    "EU" -> stringResource(R.string.sdns_region_eu)
-    "US" -> stringResource(R.string.sdns_region_us)
-    "GLOBAL" -> stringResource(R.string.sdns_region_global)
-    else -> stringResource(
-        if (preset.protocol == SmartDnsProtocol.PLAIN) R.string.sdns_kind_udp else R.string.sdns_kind_doh,
-    )
+private fun sdnsPresetLabel(preset: SmartDnsPreset): String =
+    "${CountryFlags.flag(preset.country)} ${sdnsPresetTitle(preset)}"
+
+/**
+ * Region (or kind) and, where the region does not already say it, the
+ * country the resolver answers from, in the UI language.
+ */
+@Composable
+private fun sdnsPresetSubtitle(preset: SmartDnsPreset): String {
+    val base = when (preset.region) {
+        "EU" -> stringResource(R.string.sdns_region_eu)
+        "US" -> stringResource(R.string.sdns_region_us)
+        "GLOBAL" -> stringResource(R.string.sdns_region_global)
+        else -> stringResource(
+            if (preset.protocol == SmartDnsProtocol.PLAIN) R.string.sdns_kind_udp else R.string.sdns_kind_doh,
+        )
+    }
+    if (preset.region == "EU" || preset.region == "US") return base
+    val locale = LocalConfiguration.current.locales.get(0)
+    val country = remember(preset.country, locale) { CountryFlags.displayName(preset.country, locale) }
+    return "$base \u00B7 $country"
 }
 
-/** A preset by its name, anything else by its address, isolated LTR so Persian does not reorder it. */
+/** A preset by its flag and name, anything else by its address, isolated LTR so Persian does not reorder it. */
 @Composable
 private fun sdnsServerTitle(server: SmartDnsServer): String {
     val preset = SmartDnsPresets.fromToken(server.alias)
-    return if (preset != null) sdnsPresetTitle(preset) else "\u2066${server.endpoint}\u2069"
+    return if (preset != null) sdnsPresetLabel(preset) else "\u2066${server.endpoint}\u2069"
 }
 
 private fun sdnsProtocolShort(protocol: SmartDnsProtocol): String = when (protocol) {
@@ -251,12 +277,11 @@ private fun sdnsProtocolShort(protocol: SmartDnsProtocol): String = when (protoc
 }
 
 @Composable
-private fun sdnsSummary(profile: ConnectionProfile, servers: List<SmartDnsServer>): String = when {
+private fun sdnsSummary(profile: ConnectionProfile, server: SmartDnsServer?): String = when {
     !profile.smartDns -> stringResource(R.string.hub_state_off)
     profile.chain != ChainMode.AETHER -> stringResource(R.string.sdns_state_route)
-    servers.isEmpty() -> stringResource(R.string.sdns_state_none)
-    servers.size == 1 -> sdnsServerTitle(servers.first())
-    else -> stringResource(R.string.sdns_state_more, sdnsServerTitle(servers.first()), servers.size - 1)
+    server == null -> stringResource(R.string.sdns_state_none)
+    else -> sdnsServerTitle(server)
 }
 
 // -------------------------------------------------------------------- card --
@@ -279,9 +304,10 @@ internal fun SmartDnsHomeCard(
     val live by SmartDnsRuntime.status.collectAsStateWithLifecycle()
     val latest by rememberUpdatedState(profile)
     val canEdit by rememberUpdatedState(editable)
-    val servers = profile.sanitizedSmartDns()
+    // One server: the first usable entry is the one in use.
+    val server = profile.sanitizedSmartDns().firstOrNull()
     val active = profile.usesSmartDns
-    val value = sdnsSummary(profile, servers)
+    val value = sdnsSummary(profile, server)
     val path = live?.path?.takeIf { active }
     val shape = RoundedCornerShape(AetherRadius.Card)
     val edge by animateColorAsState(
@@ -404,36 +430,36 @@ private fun SdnsSheet(
     val canEdit by rememberUpdatedState(editable)
     val live by SmartDnsRuntime.status.collectAsStateWithLifecycle()
 
-    val selected = remember(profile.smartDnsServers) { SmartDnsPresets.selectedIds(profile.smartDnsServers) }
-    var custom by rememberSaveable {
-        mutableStateOf(SmartDnsPresets.customPart(profile.smartDnsServers, profile.smartDnsProtocol))
+    // The ONE server in use, and whether it is a preset or the user's own.
+    val primary = remember(profile.smartDnsServers, profile.smartDnsProtocol) {
+        SmartDnsPresets.primary(profile.smartDnsServers, profile.smartDnsProtocol)
     }
-    val customServers = remember(custom) { SmartDnsServers.parse(custom) }
-    val inUse = profile.sanitizedSmartDns().size
+    val selectedId = primary?.takeIf { it.isPreset }?.let { SmartDnsPresets.fromToken(it.alias)?.id }
+    val customInUse = primary != null && !primary.isPreset
+    var custom by rememberSaveable { mutableStateOf(primary?.takeIf { !it.isPreset }?.endpoint ?: "") }
+    val customServer = remember(custom) { SmartDnsServers.parse(custom).firstOrNull() }
     val encrypted = remember { SmartDnsPresets.ALL.filter { it.group == SmartDnsPresetGroup.ENCRYPTED } }
     val classic = remember { SmartDnsPresets.ALL.filter { it.group == SmartDnsPresetGroup.CLASSIC } }
 
-    // Every write goes through here: refused once locked, stored with no
-    // protocol hint (the transport is detected per entry now), and a no-op
-    // does not rewrite the profile.
-    val write: (List<String>, String, Boolean?) -> Unit = { ids, text, enable ->
+    // Every write goes through here: refused once locked, exactly ONE entry,
+    // stored with no protocol hint (the transport is detected from the
+    // address), and a no-op does not rewrite the profile.
+    val write: (String, Boolean?) -> Unit = { entry, enable ->
         if (canEdit) {
             val base = latest
             val next = base.copy(
                 smartDns = enable ?: base.smartDns,
-                smartDnsServers = SmartDnsPresets.compose(ids, text),
+                smartDnsServers = entry,
                 smartDnsProtocol = SmartDnsProtocol.PLAIN,
             )
             if (next != base) onProfileChange(next)
         }
     }
-    val toggle: (SmartDnsPreset) -> Unit = { preset ->
-        val turningOn = preset.id !in selected
-        write(SmartDnsPresets.toggle(selected, preset.id), custom, if (turningOn) true else null)
-    }
+    val pick: (SmartDnsPreset) -> Unit = { preset -> write(SmartDnsPresets.single(preset.id), true) }
+    val useCustom: (SmartDnsServer) -> Unit = { server -> write(SmartDnsPresets.storedFor(server), true) }
     val testAll: () -> Unit = {
+        customServer?.let { SdnsPingBoard.test(sdnsCustomKey(it), it) }
         SmartDnsPresets.ALL.forEach { preset -> preset.server?.let { SdnsPingBoard.test(sdnsPresetKey(preset), it) } }
-        customServers.forEach { SdnsPingBoard.test(sdnsCustomKey(it), it) }
     }
 
     ModalBottomSheet(
@@ -482,6 +508,74 @@ private fun SdnsSheet(
                 SdnsNote(stringResource(R.string.sdns_locked), accents.working, Icons.Rounded.Lock)
             }
 
+            // ---- your own server: FIRST, at the top of the sheet ----
+            Spacer(Modifier.height(20.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.sdns_custom_label),
+                    Modifier
+                        .weight(1f)
+                        .semantics { heading() },
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                if (customInUse) SdnsInUsePill()
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = custom,
+                onValueChange = { text ->
+                    custom = text
+                    val server = SmartDnsServers.parse(text).firstOrNull()
+                    when {
+                        // A valid server of your own IS the choice: it replaces a preset.
+                        server != null -> useCustom(server)
+                        // Cleared while it was the one in use: nothing is chosen any more.
+                        text.isBlank() && customInUse -> write("", null)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = editable,
+                singleLine = true,
+                placeholder = {
+                    Text(
+                        stringResource(R.string.sdns_custom_hint),
+                        style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = AetherMono,
+                    textDirection = TextDirection.Ltr,
+                ),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                shape = RoundedCornerShape(AetherRadius.Card),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.sdns_custom_help),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+            )
+            if (custom.isNotBlank() && customServer == null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    stringResource(R.string.sdns_custom_invalid),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = accents.failed,
+                )
+            }
+            if (customServer != null) {
+                Spacer(Modifier.height(6.dp))
+                SdnsCustomRow(
+                    server = customServer,
+                    inUse = customInUse,
+                    enabled = editable,
+                    onUse = { useCustom(customServer) },
+                )
+            }
+
+            // ---- ready-made servers ----
             Spacer(Modifier.height(20.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -504,79 +598,33 @@ private fun SdnsSheet(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-            SdnsGroupLabel(stringResource(R.string.sdns_group_encrypted), Icons.Rounded.EnhancedEncryption, accents.brand)
-            encrypted.forEach { preset ->
-                SdnsPresetRow(
-                    preset = preset,
-                    order = selected.indexOf(preset.id) + 1,
-                    enabled = editable,
-                    onToggle = { toggle(preset) },
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            SdnsGroupLabel(stringResource(R.string.sdns_group_classic), Icons.Rounded.Bolt, colors.onSurfaceVariant)
-            classic.forEach { preset ->
-                SdnsPresetRow(
-                    preset = preset,
-                    order = selected.indexOf(preset.id) + 1,
-                    enabled = editable,
-                    onToggle = { toggle(preset) },
-                )
-            }
-
-            Spacer(Modifier.height(20.dp))
-            Text(
-                stringResource(R.string.sdns_custom_label),
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.semantics { heading() },
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = custom,
-                onValueChange = { text ->
-                    custom = text
-                    write(selected, text, null)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = editable,
-                placeholder = {
-                    Text(
-                        stringResource(R.string.sdns_custom_hint),
-                        style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr),
+            // ONE radio group for both kinds: the labels group them visually
+            // without making them two independent choices.
+            Column(Modifier.fillMaxWidth().selectableGroup()) {
+                Spacer(Modifier.height(12.dp))
+                SdnsGroupLabel(stringResource(R.string.sdns_group_encrypted), Icons.Rounded.EnhancedEncryption, accents.brand)
+                encrypted.forEach { preset ->
+                    SdnsPresetRow(
+                        preset = preset,
+                        chosen = preset.id == selectedId,
+                        enabled = editable,
+                        onPick = { pick(preset) },
                     )
-                },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = AetherMono,
-                    textDirection = TextDirection.Ltr,
-                ),
-                minLines = 2,
-                maxLines = 5,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                shape = RoundedCornerShape(AetherRadius.Card),
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                stringResource(R.string.sdns_custom_help),
-                style = MaterialTheme.typography.bodySmall,
-                color = colors.onSurfaceVariant,
-            )
-            if (custom.isNotBlank() && customServers.isEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    stringResource(R.string.sdns_custom_invalid),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = accents.failed,
-                )
-            }
-            if (customServers.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                customServers.forEach { server -> SdnsCustomRow(server) }
+                }
+                Spacer(Modifier.height(12.dp))
+                SdnsGroupLabel(stringResource(R.string.sdns_group_classic), Icons.Rounded.Bolt, colors.onSurfaceVariant)
+                classic.forEach { preset ->
+                    SdnsPresetRow(
+                        preset = preset,
+                        chosen = preset.id == selectedId,
+                        enabled = editable,
+                        onPick = { pick(preset) },
+                    )
+                }
             }
 
             Spacer(Modifier.height(16.dp))
             SdnsHowItWorks(
-                inUse = inUse,
                 livePath = live?.path,
                 proxyRanges = live?.proxyRanges ?: 0,
             )
@@ -633,20 +681,41 @@ private fun SdnsGroupLabel(text: String, icon: ImageVector, tint: Color) {
     }
 }
 
+/** "In use", next to the heading of the user's own server while it is the choice. */
+@Composable
+private fun SdnsInUsePill() {
+    val accents = LocalAetherAccents.current
+    Surface(color = accents.protected.copy(alpha = 0.14f), shape = CircleShape) {
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.CheckCircle, null, Modifier.size(12.dp), accents.protected)
+            Spacer(Modifier.width(4.dp))
+            Text(
+                stringResource(R.string.sdns_in_use),
+                style = AetherMetaLabel,
+                color = accents.protected,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 /**
- * One ready-made server. The mark at the start is its place in the try order
- * once picked (1 is asked first); the chip at the end tests it.
+ * One ready-made server: a radio row. The mark at the start shows whether it
+ * is THE server in use; the flag is where it answers from; the chip at the
+ * end tests it.
  */
 @Composable
 private fun SdnsPresetRow(
     preset: SmartDnsPreset,
-    order: Int,
+    chosen: Boolean,
     enabled: Boolean,
-    onToggle: () -> Unit,
+    onPick: () -> Unit,
 ) {
     val accents = LocalAetherAccents.current
     val colors = MaterialTheme.colorScheme
-    val chosen = order > 0
     val shape = RoundedCornerShape(AetherRadius.Card)
     val alpha = if (enabled) 1f else 0.6f
     Surface(
@@ -654,7 +723,7 @@ private fun SdnsPresetRow(
             .fillMaxWidth()
             .padding(vertical = 3.dp)
             .clip(shape)
-            .toggleable(value = chosen, enabled = enabled, role = Role.Checkbox, onValueChange = { onToggle() }),
+            .selectable(selected = chosen, enabled = enabled, role = Role.RadioButton, onClick = onPick),
         shape = shape,
         color = if (chosen) accents.brandWash else colors.surface,
         border = BorderStroke(1.dp, if (chosen) accents.brand else accents.cardBorder),
@@ -665,8 +734,14 @@ private fun SdnsPresetRow(
                 .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SdnsOrderMark(order)
-            Spacer(Modifier.width(12.dp))
+            SdnsChoiceMark(chosen)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                CountryFlags.flag(preset.country),
+                style = MaterialTheme.typography.titleLarge,
+                color = colors.onSurface.copy(alpha = alpha),
+            )
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -716,9 +791,12 @@ private fun SdnsPresetRow(
     }
 }
 
-/** One server the user typed, with the transport it was read as. */
+/**
+ * The server the user typed, with the transport it was read as. While a preset
+ * is the choice instead, "Use this server" switches back to it.
+ */
 @Composable
-private fun SdnsCustomRow(server: SmartDnsServer) {
+private fun SdnsCustomRow(server: SmartDnsServer, inUse: Boolean, enabled: Boolean, onUse: () -> Unit) {
     val key = sdnsCustomKey(server)
     Row(
         Modifier
@@ -740,31 +818,31 @@ private fun SdnsCustomRow(server: SmartDnsServer) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        if (!inUse) {
+            Spacer(Modifier.width(4.dp))
+            TextButton(onClick = onUse, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text(stringResource(R.string.sdns_custom_use), maxLines = 1)
+            }
+        }
         Spacer(Modifier.width(8.dp))
         SdnsPingChip(SdnsPingBoard.results[key]) { SdnsPingBoard.test(key, server) }
     }
 }
 
-/** The try-order number on a picked row, an empty ring otherwise. */
+/** A filled check on THE chosen row, an empty ring on the others. */
 @Composable
-private fun SdnsOrderMark(order: Int) {
+private fun SdnsChoiceMark(chosen: Boolean) {
     val accents = LocalAetherAccents.current
-    val on = order > 0
     Box(
         Modifier
-            .size(26.dp)
+            .size(24.dp)
             .clip(CircleShape)
-            .background(if (on) accents.brand else Color.Transparent)
-            .border(1.5.dp, if (on) accents.brand else MaterialTheme.colorScheme.outline, CircleShape),
+            .background(if (chosen) accents.brand else Color.Transparent)
+            .border(1.5.dp, if (chosen) accents.brand else MaterialTheme.colorScheme.outline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        if (on) {
-            Text(
-                order.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = accents.onBrand,
-                maxLines = 1,
-            )
+        if (chosen) {
+            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp), accents.onBrand)
         }
     }
 }
@@ -874,9 +952,9 @@ private fun SdnsNote(text: String, tone: Color, icon: ImageVector) {
     }
 }
 
-/** What happens to the chosen servers, the live path, and the one Android setting that can break it. */
+/** What happens to the chosen server, the live path, and the one Android setting that can break it. */
 @Composable
-private fun SdnsHowItWorks(inUse: Int, livePath: SmartDnsPath?, proxyRanges: Int) {
+private fun SdnsHowItWorks(livePath: SmartDnsPath?, proxyRanges: Int) {
     val colors = MaterialTheme.colorScheme
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -888,13 +966,6 @@ private fun SdnsHowItWorks(inUse: Int, livePath: SmartDnsPath?, proxyRanges: Int
                 Icon(Icons.Rounded.Info, null, Modifier.size(16.dp), colors.onSurfaceVariant)
                 Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.sdns_how_title), style = MaterialTheme.typography.labelLarge)
-            }
-            if (inUse > 0) {
-                Text(
-                    stringResource(R.string.sdns_order_note, inUse),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurface,
-                )
             }
             Text(
                 stringResource(R.string.smart_dns_route_auto),
