@@ -21,6 +21,13 @@ internal object XrayJson {
 
     private const val MAX_DEPTH = 64
 
+    /**
+     * What [Reader.peek] returns past the last character. No JSON token starts
+     * with NUL, so every caller that peeks at the end of a truncated document
+     * falls through to its own "expected ..." ParseException.
+     */
+    private const val END = ''
+
     /** Parses [text]; throws [ParseException] on anything that is not one JSON value. */
     fun parse(text: String): Any? {
         val reader = Reader(text)
@@ -152,7 +159,7 @@ internal object XrayJson {
             }
         }
 
-        private fun peek(): Char = if (pos < text.length) text[pos] else ''
+        private fun peek(): Char = if (pos < text.length) text[pos] else END
 
         private fun expect(c: Char) {
             if (peek() != c) throw ParseException("expected '$c' at $pos")
