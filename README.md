@@ -1,6 +1,6 @@
 # Aether+ for Android! :)
 
-**An Android client for censorship circumvention, powered by Aether, Psiphon, and Tor**
+**An Android client for censorship circumvention, powered by Aether, Psiphon, Xray, and Tor**
 
 [English](README.md) · [فارسی](README.fa.md) · [Downloads](https://github.com/MrMatin0/Aether/releases) · [Build workflow](https://github.com/MrMatin0/Aether/actions/workflows/build.yml)
 
@@ -27,9 +27,9 @@ Aether+ brings endpoint discovery, encrypted tunneling, and configurable routing
 
 - **Multiple transports:** Smart Auto selection, MASQUE over HTTP/3 or HTTP/2, WireGuard, and nested WireGuard (`gool`) through the Aether engine.
 - **Adaptive endpoint discovery:** Turbo, Precise, and Ultra scanning, plus a manually selected endpoint or custom IP ranges.
-- **Three connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains when the required binaries and assets are included.
+- **Four connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains, plus **your own Xray server** (VLESS, VMess, Trojan, Shadowsocks) stacked on top of Aether and/or Psiphon or under Tor, when the required binaries and assets are included.
 - **Device-wide or selective access:** Android `VpnService`, proxy-only mode, per-app split tunneling, and routing controls.
-- **Connection controls:** DNS and MTU settings, reconnection options, optional kill switch, IPv6 leak-protection setting, and advanced transport tuning.
+- **Connection controls:** DNS and MTU settings, Smart DNS (one server, with the flag of the country it answers from), reconnection options, optional kill switch, IPv6 leak-protection setting, and advanced transport tuning.
 - **Everyday usability:** English and Persian UI, RTL support, bundled Vazirmatn typography, live traffic information, session history, diagnostics, Quick Settings tile, and home-screen widget.
 - **Optional LAN sharing:** expose SOCKS5 and HTTP proxies to other devices on a trusted local network.
 
@@ -72,7 +72,7 @@ Start with **Auto** unless you are diagnosing a specific network restriction. Ad
 
 The app allows approximately 60, 190, and 340 seconds respectively for these scans. A manually pinned endpoint bypasses scanning. Overlay cores have their own startup budgets.
 
-### Psiphon and Tor chains
+### Psiphon, Tor, and Xray chains
 
 The supported combinations are:
 
@@ -83,10 +83,17 @@ The supported combinations are:
 - Tor over Aether
 - Tor over Psiphon
 - Tor over Psiphon over Aether
+- Xray over Aether
+- Xray over Psiphon
+- Xray over Psiphon over Aether
+- Tor over Xray
+- Tor over Xray over Aether
 
 Here, **X over Y** means X establishes its upstream connections through Y's local SOCKS5 proxy. For example, Tor over Aether carries Tor's relay connections through Aether; it does not put a fixed Aether proxy after the Tor exit. See [chaining internals](docs/CHAINING.md) for the exact wiring.
 
 Psiphon includes a built-in client configuration; ordinary users do **not** need to obtain or paste a configuration. The APK still needs the Psiphon executable and bootstrap server list. Tor requires its executable, and exit-country selection additionally requires its GeoIP assets.
+
+**Xray is your own server, and it is never offered alone.** Paste a share link (`vless://`, `vmess://`, `trojan://`, `ss://`), a subscription body, or an Xray JSON outbound under the selected Xray mode on the Chain page. Its whole handshake to your server is dialled through the hop underneath it, so the network sees WARP or Psiphon rather than your server's address. The config is a credential: it is stored encrypted with the Android Keystore on the device, and it is never part of the profile, an export, or a backup. See [the Xray hop](docs/XRAY.md).
 
 **Important limitations:**
 
@@ -94,6 +101,7 @@ Psiphon includes a built-in client configuration; ordinary users do **not** need
 - Tor can take several minutes to bootstrap. More layers add latency and are not automatically safer or more reliable.
 - Bundled Tor integration does not include pluggable transports such as obfs4 or Snowflake.
 - Country selection depends on reachable exits. Psiphon can retry with automatic selection if the requested country fails; Tor's strict country setting can prevent connection entirely.
+- The bundled Xray-core (v26.9.30) no longer accepts `allowInsecure` (use the link's `pcs` certificate pin instead), the HTTP/2 and QUIC transports, or VLESS / Trojan without TLS or REALITY to a public server. The Chain page says so when a pasted config cannot run.
 - Development APKs can omit overlay cores or assets. The app reports unavailable modes; tagged-release CI requires the chain binaries and Psiphon bootstrap list.
 
 ## Privacy and security
@@ -106,7 +114,7 @@ Aether+ is a circumvention client, **not a promise of anonymity or undetectable 
 - The Android app does not contain an in-app APK installer. Install updates yourself from the repository's release page.
 - Existing security-review documents record findings at particular revisions; they are not certification of the current build.
 
-Never publish credentials, enrollment tokens, private keys, or unredacted logs in an issue. For a suspected vulnerability, use GitHub's private vulnerability reporting option if the repository exposes one; otherwise arrange a private channel with the maintainer before disclosing sensitive details.
+Never publish credentials, enrollment tokens, private keys, Xray share links, or unredacted logs in an issue. For a suspected vulnerability, use GitHub's private vulnerability reporting option if the repository exposes one; otherwise arrange a private channel with the maintainer before disclosing sensitive details.
 
 ## Build from source
 
@@ -121,6 +129,7 @@ The checked-in configuration currently specifies:
 - Android SDK platform **37** and NDK **26.3.11579264**.
 - Rust stable, the two Android targets below, and `cargo-ndk` **4.1.2**.
 - Go **1.26** for Psiphon, with `GOTOOLCHAIN=auto` to satisfy the upstream module's toolchain directive when newer.
+- Go **1.27** for Xray-core v26.9.30 (CI installs it separately as `XRAY_GO_VERSION`; `GOTOOLCHAIN=auto` fetches it locally).
 - Git, Bash, C/C++ build tools, CMake, Make, curl, unzip, and Python 3.
 
 Install Android SDK command-line tools and required build tools, accept SDK licenses, and make `sdkmanager` available. Dependency and asset downloads need network access. The build uses AGP **9.4.0-alpha04**, Kotlin **2.4.20-RC3**, and preview AndroidX dependencies: use the versions in [the version catalog](gradle/libs.versions.toml), not assumptions about a stable Android toolchain.
@@ -157,18 +166,19 @@ bash scripts/build-natives.sh all
 
 These scripts use the vendored engine in `native/aether`, fetch hev-socks5-tunnel, and produce `libaether.so`, `libhev-socks5-tunnel.so`, and the project's JNI bridge `libaethertun.so` for both ARM ABIs under `app/src/main/jniLibs/`.
 
-### 3. Add Psiphon, Tor, and assets
+### 3. Add Psiphon, Tor, Xray, and assets
 
 For a full-featured build, run each core build separately so failures are visible:
 
 ```bash
 GOTOOLCHAIN=auto bash scripts/build-overlay-cores.sh psiphon
 bash scripts/build-overlay-cores.sh tor
+GOTOOLCHAIN=auto bash scripts/build-xray-core.sh
 bash scripts/fetch-psiphon-serverlist.sh
 bash scripts/fetch-fonts.sh
 ```
 
-Psiphon is compiled from upstream source. Tor is extracted from the published `tor-android` AAR by default; `TOR_FROM_SOURCE=1` selects the alternative source-build path. See [chain-core build notes](docs/CHAIN_CORES.md).
+Psiphon is compiled from upstream source. Tor is extracted from the published `tor-android` AAR by default; `TOR_FROM_SOURCE=1` selects the alternative source-build path. Xray-core is compiled from the tag pinned in `scripts/build-xray-core.sh` (`XRAY_REF`, default `v26.9.30`). See [chain-core build notes](docs/CHAIN_CORES.md) and [the Xray hop](docs/XRAY.md).
 
 Overlay cores are optional for an Aether-only development build. Omitting their binaries or bootstrap assets makes the corresponding modes unavailable. Font retrieval also runs automatically before the Android build; fetching fonts explicitly is useful when preparing dependencies in advance.
 
@@ -189,7 +199,7 @@ APKs are written to `app/build/outputs/apk/debug/` or `app/build/outputs/apk/rel
 
 For a private release key, start with [keystore.properties.example](keystore.properties.example) and follow [SIGNING.md](docs/SIGNING.md). Local builds support `keystore.properties` or `KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD`; CI accepts the keystore through `KEYSTORE_BASE64`. Keep private signing material out of Git. Without a configured private key, the checked-in CI fallback may be used; see the security warning above.
 
-The [build workflow](.github/workflows/build.yml) builds native components, assembles APKs, runs unit tests, and checks signing and packaged payloads. Pushes to the default branch can publish prereleases; `v*` tags publish releases and enforce the full chain payload. Documentation-only pull requests are excluded from that build workflow, but default-branch pushes are not.
+The [build workflow](.github/workflows/build.yml) builds native components, assembles APKs, runs unit tests, and checks signing and packaged payloads. Pushes to the default branch can publish prereleases; `v*` tags publish releases and enforce the full chain payload (Psiphon, Tor, and Xray). Documentation-only pull requests are excluded from that build workflow, but default-branch pushes are not.
 
 ## Architecture
 
@@ -208,7 +218,7 @@ docs/         Technical documentation and review history
 .github/      Build and core-sync workflows, release metadata
 ```
 
-In device-wide mode, Android supplies a TUN interface. The in-process hev tunnel and JNI bridge forward traffic into the selected local SOCKS5 entry. Aether, Psiphon, and Tor run as supervised child processes; `SocksFront` handles the DNS adaptation needed for Psiphon/Tor entries.
+In device-wide mode, Android supplies a TUN interface. The in-process hev tunnel and JNI bridge forward traffic into the selected local SOCKS5 entry. Aether, Psiphon, Xray, and Tor run as supervised child processes; `SocksFront` handles the DNS adaptation needed for Psiphon/Tor entries, while an Xray entry answers DNS through its own resolver.
 
 The executables are packaged under `.so` filenames so Android extracts them into an executable native-library directory. Preserve `useLegacyPackaging = true` unless this launch mechanism is redesigned.
 
@@ -216,7 +226,8 @@ The executables are packaged under `.so` filenames so Android extracts them into
 
 - **Connected, but applications cannot load content:** check proxy-only mode, routing and split-tunneling rules, DNS settings, and whether the application needs UDP. Try Aether alone to isolate chain limitations.
 - **Scanning appears stuck:** Precise and Ultra have longer budgets. Let the attempt finish, examine diagnostics, and try a different protocol or network instead of repeatedly restarting the same scan.
-- **Psiphon or Tor is unavailable:** install a build containing the required core. For Psiphon, also check the bootstrap server list; changing connection settings cannot repair a missing APK asset.
+- **Psiphon, Tor, or Xray is unavailable:** install a build containing the required core. For Psiphon, also check the bootstrap server list; changing connection settings cannot repair a missing APK asset.
+- **Xray says the config cannot run, or the server does not answer:** check the link against the limitations above (self-signed servers need `pcs`), then the server address, UUID / password, and TLS / REALITY settings. A wrong credential ends in a timeout, never a false "connected".
 - **APK will not install as an update:** confirm the application ID, signing certificate, architecture, and version. Avoid uninstalling until you have considered the loss of application data.
 - **Gradle or native build fails:** compare your installed versions with the checked-in toolchain, verify `ANDROID_NDK_HOME`, and check access to dependency repositories. A plain Android build without the native preparation steps is not a complete runnable VPN build.
 - **Vazirmatn download fails:** run `bash scripts/fetch-fonts.sh` with network access, or supply the expected font files in `app/src/main/res-fonts/font/` as described by the build error.
@@ -245,6 +256,7 @@ To report a security problem, do not open a public issue — see [SECURITY.md](S
 - [Security policy and how to report a vulnerability](SECURITY.md)
 - [Chaining architecture and limitations](docs/CHAINING.md)
 - [Chain-core packaging and build notes](docs/CHAIN_CORES.md)
+- [The Xray hop: modes, config, chaining, and build](docs/XRAY.md)
 - [APK signing and update compatibility](docs/SIGNING.md)
 - [Security review history](docs/) (historical — written against the 1.2.x line)
 - [Vendored engine documentation](native/aether/README.md)
@@ -268,6 +280,7 @@ This project builds on the work of Aether Mobile contributors and these upstream
 - [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel): TUN-to-SOCKS forwarding.
 - [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core): Psiphon connectivity.
 - [Tor Android](https://github.com/guardianproject/tor-android) and the [Tor Project](https://www.torproject.org/): Tor integration.
+- [Xray-core](https://github.com/XTLS/Xray-core) (Project X, MPL-2.0): the Xray hop.
 - [Vazirmatn](https://github.com/rastikerdar/vazirmatn): Persian and Latin typography.
 
 The repository's [LICENSE](LICENSE) declares **GNU AGPL version 3 or later**, with no warranty. Bundled and downloaded third-party components retain their own licenses and notices; review those obligations before redistribution. Project and product names belong to their respective owners; integration does not imply endorsement.

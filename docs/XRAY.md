@@ -1,8 +1,8 @@
 # Xray hop
 
 The user's own Xray server (VLESS / VMess / Trojan / Shadowsocks over TCP, WS,
-gRPC, XHTTP, HTTPUpgrade, mKCP or HTTP/2, with TLS or REALITY) as a hop of the
-chain. Xray is **never offered alone**: a bare Xray mode would be a plain v2ray
+gRPC, XHTTP, HTTPUpgrade or mKCP, with TLS or REALITY) as a hop of the chain.
+Xray is **never offered alone**: a bare Xray mode would be a plain v2ray
 client, which is not what this app adds.
 
 | Mode | Path (device first) |
@@ -21,13 +21,34 @@ percent-encoded 2022 and legacy forms), a base64 subscription body (its first
 link is used), or Xray JSON (one outbound, or a full config whose first proxy
 outbound is used). Parsed by `core/XrayConfig.kt` (`XrayLink`), pure Kotlin,
 pinned by `XrayConfigTest`. Refused up front: REALITY without a public key,
-Shadowsocks with a SIP003 plugin, anything that is not a proxy outbound.
+Shadowsocks with a SIP003 plugin, anything that is not a proxy outbound, and
+everything the pinned core itself refuses (next section).
+
+Share-link extras that are carried: `pcs` (`pinnedPeerCertSha256`), `vcn`
+(`verifyPeerCertByName`), `ech` (`echConfigList`), `pqv` (REALITY
+`mldsa65Verify`), and XHTTP's `extra`.
 
 The config is a credential. It is stored only in the Keystore-sealed
 `SecretStore` (`data/XrayConfigStore.kt`), never in the profile, so it is
 never exported, never in the service Intent and never in DataStore. The field
 is masked and uses a password keyboard; what was understood is shown as
 `XrayOutbound.summary`, which carries no UUID, password or key.
+
+## What Xray-core v26.9.30 refuses
+
+Xray refuses the WHOLE config over any one of these, so `XrayLink` deals with
+them before Xray ever sees the text (each pinned by `XrayConfigTest`):
+
+| Old config | v26.9.30 | What the app does |
+|---|---|---|
+| `allowInsecure: true` / `allowInsecure=1` | removed feature, hard error | never written; dropped from pasted JSON. Use `pcs=<sha256>` (and `vcn=`) in the link for a self-signed server. |
+| `type=h2` / `http` / `h3`, `quic` | removed (migrated to XHTTP) | refused: "not a config Aether can run" |
+| VLESS (no VLESS Encryption) or Trojan without TLS / REALITY | refused unless the server is a private address | refused, except for loopback / RFC 1918 / link-local / ULA / `localhost` servers |
+| `proxySettings` | removed (migrated to `sockopt.dialerProxy`) | dropped; the chaining is the app's |
+
+mKCP's `seed` and `header` are still accepted by the parser but no longer do
+anything in the core (obfuscation moved to Finalmask), so an mKCP server that
+relies on a seed needs a JSON outbound with its Finalmask settings.
 
 ## Chaining
 
@@ -69,32 +90,33 @@ Failures map to `ChainFailure.XRAY_MISSING` (no or unstartable binary),
 
 ```bash
 export ANDROID_NDK_HOME=<ndk>
-GOTOOLCHAIN=auto bash scripts/build-xray-core.sh      # both ABIs
-XRAY_REF=v26.9.30 bash scripts/build-xray-core.sh    # another tag / branch / SHA
+GOTOOLCHAIN=auto bash scripts/build-xray-core.sh      # both ABIs, v26.9.30
+XRAY_REF=v26.10.10 bash scripts/build-xray-core.sh   # another tag / branch / SHA
 ```
 
-XTLS/Xray-core `./main`, pinned by tag (default `v26.7.28`), CGO through the
-NDK clang, `-checklinkname=0` (as upstream builds for Android), reproducible
-flags, 16 KB page alignment, ELF-verified per ABI, written to
-`app/src/main/jniLibs/<abi>/libxray.so`. Optional: without it the Xray modes
-are disabled on the Chain page with the core named.
+XTLS/Xray-core `./main`, pinned by tag (default `v26.9.30`, which needs
+**Go 1.27**), CGO through the NDK clang, `-checklinkname=0` (as upstream builds
+for Android), reproducible flags, 16 KB page alignment, ELF-verified per ABI,
+written to `app/src/main/jniLibs/<abi>/libxray.so`. Optional: without it the
+Xray modes are disabled on the Chain page with the core named.
+
+Every Xray-core release since v26.3.27 is marked pre-release upstream; the pin
+is moved deliberately, after reading what the new tag stopped accepting.
 
 ### CI
 
-`.github/workflows/build.yml` needs the following, which has to be committed
-by someone whose token has the `workflow` scope:
+`.github/workflows/build.yml` builds it in the natives job:
 
-1. Natives job: add `'scripts/build-xray-core.sh'` to the cache key's
-   `hashFiles(...)` (and bump `jnilibs-v4` to `jnilibs-v5`); in "Decide what
-   still has to be built" track `xray` like `psiphon` / `tor` and include it
-   in `chain`.
-2. Run "Set up Go" when `psiphon != 'true' || xray != 'true'`, then add a step
-   `Build the Xray core` (`id: xray_core`, `if: steps.payload.outputs.xray != 'true'`,
-   `continue-on-error: true`, `run: bash scripts/build-xray-core.sh`,
-   env `ANDROID_API` and `GOTOOLCHAIN: auto`).
-3. Add `libxray.so` to the three chain-core loops ("Verify the built
-   payload", "Check the native payload", "Verify native libraries inside the
-   APKs"), so it is a warning on a branch and fatal on a `v*` tag (rule 7).
+1. The native cache key is `jnilibs-v5-...` and hashes
+   `scripts/build-xray-core.sh`, so moving `XRAY_REF` is a rebuild, not a stale
+   cache hit. "Decide what still has to be built" tracks `xray` next to
+   `psiphon` / `tor`, and a cache without `libxray.so` rebuilds.
+2. `XRAY_GO_VERSION` (1.27) is set up AFTER the Psiphon build, so Psiphon keeps
+   the `GO_VERSION` it is proven on. "Build the Xray core" (`id: xray_core`)
+   is `continue-on-error`, with `GOTOOLCHAIN: auto`.
+3. `libxray.so` is in the three chain-core checks ("Verify the built payload",
+   "Check the native payload", "Verify native libraries inside the APKs"): a
+   warning on a branch, fatal on a `v*` tag (rule 7).
 
 ## Licence
 

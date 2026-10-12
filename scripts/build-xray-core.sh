@@ -4,7 +4,7 @@
 # Psiphon (and under Tor):
 #
 #   libxray.so  <- XTLS/Xray-core's ./main, cross-compiled from source with the
-#                  NDK toolchain, pinned by tag (default v26.7.28).
+#                  NDK toolchain, pinned by tag (default v26.9.30).
 #
 # It lands in app/src/main/jniLibs/<abi>/ under a .so name, which is how
 # Android gives us an executable with the exec bit set in a directory we are
@@ -28,7 +28,14 @@
 # This repository's rule is "nothing prebuilt", and Psiphon honours it the same
 # way: the binary is compiled here from a named upstream revision rather than
 # downloaded, so what ships is inspectable. XRAY_REF may be a tag, a branch or a
-# full 40-character commit SHA; bumping it is a reviewed one-line diff.
+# full 40-character commit SHA; bumping it is a reviewed one-line diff, and
+# because CI keys its native cache on this file, that diff is also a rebuild.
+#
+# v26.9.30 needs Go 1.27 (its go.mod says `go 1.27`), which is why CI installs
+# XRAY_GO_VERSION for this step instead of Psiphon's GO_VERSION. It is also
+# stricter about configs than v26.7.28 (allowInsecure, the HTTP/2 and QUIC
+# transports, plaintext VLESS / Trojan); core/XrayConfig.kt refuses or rewrites
+# those before Xray ever sees them. See docs/XRAY.md before bumping again.
 #
 # ============================================================================
 # WHY THESE FLAGS
@@ -77,7 +84,7 @@ unset _abi
 GH="https://""github.com"
 
 XRAY_REPO="${XRAY_REPO:-XTLS/Xray-core}"
-XRAY_REF="${XRAY_REF:-v26.7.28}"
+XRAY_REF="${XRAY_REF:-v26.9.30}"
 XRAY_SRC="${NATIVE_DIR}/xray-core"
 XRAY_STAMP="${XRAY_SRC}/.aether-source"
 
@@ -87,11 +94,11 @@ if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME}" ]; then
   echo "ERROR: ANDROID_NDK_HOME is not set or does not exist." >&2
   exit 1
 fi
-if ! command -v go >/dev/null 2>&1; then
+if ! command -v go > /dev/null 2>&1; then
   echo "ERROR: Go is not installed - cannot build the Xray core." >&2
   exit 1
 fi
-if ! command -v git >/dev/null 2>&1; then
+if ! command -v git > /dev/null 2>&1; then
   echo "ERROR: git is not installed - cannot fetch the Xray-core source." >&2
   exit 1
 fi
@@ -214,8 +221,8 @@ assert_go_can_build_xray() {
   if [ "${GOTOOLCHAIN:-auto}" = "local" ]; then
     echo "ERROR: Xray-core ${XRAY_REF} needs Go >= ${want}, this toolchain is ${have}," >&2
     echo "       and GOTOOLCHAIN=local forbids fetching a newer one." >&2
-    echo "       FIX: raise GO_VERSION in .github/workflows/build.yml to ${want%.*} or" >&2
-    echo "       newer, or run this step with GOTOOLCHAIN=auto." >&2
+    echo "       FIX: raise XRAY_GO_VERSION in .github/workflows/build.yml to" >&2
+    echo "       $(printf '%s' "${want}" | cut -d. -f1-2) or newer, or run this step with GOTOOLCHAIN=auto." >&2
     exit 1
   fi
   echo "    Go ${have} is older than ${want}; GOTOOLCHAIN=${GOTOOLCHAIN:-auto} will fetch it."
@@ -240,7 +247,7 @@ clone_xray() {
       # the pinned commit works without the history.
       if mkdir -p "${XRAY_SRC}" && ( cd "${XRAY_SRC}" && \
            git init -q && \
-           { git remote get-url origin >/dev/null 2>&1 || git remote add origin "${url}"; } && \
+           { git remote get-url origin > /dev/null 2>&1 || git remote add origin "${url}"; } && \
            git fetch -q --depth 1 origin "${XRAY_REF}" && \
            git -c advice.detachedHead=false checkout -q FETCH_HEAD ); then
         ok=1

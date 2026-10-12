@@ -65,15 +65,33 @@ high-level shape of the divergence, by area:
 - **The component, engine, probe, log and moat packages** under
   `studio/cluvex/aether/` — 116 Kotlin source files were added and 39 removed
   relative to the fork point.
+- **Smart DNS takes one server** (2026-10-11 → 2026-10-12,
+  `feat/xray-chain-smartdns-single`). The sheet is a single choice: picking a
+  ready-made server replaces the one in use, and a valid server typed into
+  the manual field (now at the top of the sheet) selects it instead. Every
+  preset shows the flag of the country its resolver answers from. A list
+  saved by an older build is read, and used, as its first usable entry
+  (`SmartDnsPresets.primary`), and the Smart DNS front is only ever handed
+  that one server.
 
 ### Added
 
 - **Chained transport modes.** Aether can now stack its own engine with
   Psiphon and with Tor. See `docs/CHAINING.md`, `docs/CHAIN_CORES.md` and
   `docs/TOR_BRIDGES.md`.
+- **The Xray hop** (2026-10-11 → 2026-10-12,
+  `feat/xray-chain-smartdns-single`). XTLS/Xray-core runs the user's own
+  server config (VLESS / VMess / Trojan / Shadowsocks share links, a
+  subscription body, or Xray JSON) as a supervised child process, offered only
+  stacked: `XRAY_OVER_AETHER`, `XRAY_OVER_PSIPHON`,
+  `XRAY_OVER_PSIPHON_OVER_AETHER`, `TOR_OVER_XRAY` and
+  `TOR_OVER_XRAY_OVER_AETHER`. Its handshake is dialled through the hop
+  underneath with `sockopt.dialerProxy`; readiness is an answer that came
+  back through it; the config is sealed in the Keystore and never exported.
+  `ChainStack` now starts hops in `ChainMode.hops` order. See `docs/XRAY.md`.
 - **Overlay core build tooling.** `scripts/build-overlay-cores.sh`,
-  `scripts/build-pt-transports.sh`, `scripts/fetch-tor-bridges.sh` and
-  `scripts/fetch-psiphon-serverlist.sh`.
+  `scripts/build-xray-core.sh`, `scripts/build-pt-transports.sh`,
+  `scripts/fetch-tor-bridges.sh` and `scripts/fetch-psiphon-serverlist.sh`.
 - **A centralised dependency catalogue** (`gradle/libs.versions.toml`), which
   upstream does not have. This project deliberately tracks pre-release
   dependency lines; the file documents the stable equivalents to fall back to.
@@ -190,6 +208,8 @@ refused to run, or with `CORE_SYNC_ALLOW_DRIFT=1` deleted the rest. See
   from the engine patches listed above it is not hand-edited.
 - hev-socks5-tunnel, for TUN-to-SOCKS forwarding.
 - Tor, via the Tor Project / Guardian Project build.
+- Xray-core (MPL-2.0), compiled unmodified from the tag pinned in
+  `scripts/build-xray-core.sh` (`v26.9.30`) and run as its own process.
 - The AGPL-3.0 license and the copyright notices of the Aether Mobile
   contributors.
 
@@ -201,7 +221,9 @@ refused to run, or with `CORE_SYNC_ALLOW_DRIFT=1` deleted the rest. See
   `native/aether/LICENSE`; do not remove it.
 - If you distribute a build of this app, or run a modified version as a
   network service, the AGPL source-offer obligations apply. Serving the
-  corresponding source for your build is your responsibility.
+  corresponding source for your build is your responsibility. A build that
+  ships `libxray.so` must also tell recipients where Xray-core's source is
+  (MPL-2.0 section 3.2); see `THIRD_PARTY_NOTICES.md`.
 
 ## Reporting
 
