@@ -57,19 +57,22 @@ class SmartAutoTest {
 
     @Test
     fun offDoesNotRemoveTransportFallbackOrOverwriteAPinnedEndpoint() {
+        // ECH is on by default now; switched off here so the check below is
+        // about the ladder never turning it on by itself.
         val user = ConnectionProfile(
             noize = Noize.OFF,
             endpointMode = EndpointMode.MANUAL_PEER,
             manualPeer = "162.159.197.1:443",
             scanMode = ScanMode.ULTRA,
+            ech = false,
         )
         val plan = SmartAuto.buildPlan(user, fingerprint(DpiClass.HOSTILE, true))
         val first = plan.first().profile
         assertEquals(Protocol.MASQUE, first.protocol)
         assertTrue(first.masqueHttp2)
         assertTrue(first.fragment)
-        // fix/masque-scan: the WARP MASQUE endpoint does not accept ECH.
-        assertFalse("--ech" in first.toArgs(), "MASQUE rungs never send --ech")
+        // fix/masque-scan: no MASQUE rung switches ECH on by itself.
+        assertFalse("--ech" in first.toArgs(), "MASQUE rungs never send --ech on their own")
         plan.forEach {
             assertEquals(Noize.OFF, it.profile.noize)
             assertEquals(user.endpointMode, it.profile.endpointMode)

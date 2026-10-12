@@ -36,7 +36,7 @@ class WarpKeyFetcherTest {
             assertEquals(protocol, profile.protocol)
             assertTrue(profile.sendsEch, "$protocol")
             assertTrue(profile.toArgs().windowed(2).contains(listOf("--ech", "auto")), "$protocol")
-            assertEquals("ip.gs", profile.toEnv()["AETHER_ECH_DOMAIN"], "$protocol")
+            assertEquals("cloudflare-ech.com", profile.toEnv()["AETHER_ECH_DOMAIN"], "$protocol")
             assertEquals(IpVersion.BOTH, profile.ipVersion)
             assertEquals(Noize.GFW, profile.noize)
         }
