@@ -23,10 +23,14 @@ internal object XrayJson {
 
     /**
      * What [Reader.peek] returns past the last character. No JSON token starts
-     * with NUL, so every caller that peeks at the end of a truncated document
+     * with it, so every caller that peeks at the end of a truncated document
      * falls through to its own "expected ..." ParseException.
+     *
+     * Deliberately a named constant and not an escaped NUL literal: a NUL
+     * escape does not survive every editor and pipeline, and an empty char
+     * literal - which is what it degrades to - does not compile.
      */
-    private const val END = ''
+    private const val END = Char.MAX_VALUE
 
     /** Parses [text]; throws [ParseException] on anything that is not one JSON value. */
     fun parse(text: String): Any? {
