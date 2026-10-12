@@ -64,7 +64,9 @@ class ProfileCodecTest {
         manualRange = "188.114.96.0/24",
         keepalive = 25,
         fragment = true,
-        ech = true,
+        // OFF on purpose: ECH defaults to ON in the model now, so only false
+        // proves the codec actually carries the switch.
+        ech = false,
         mtu = 1420,
         proxyMode = true,
         splitMode = SplitMode.EXCLUDE,
