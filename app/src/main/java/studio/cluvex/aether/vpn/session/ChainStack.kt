@@ -67,7 +67,7 @@ internal enum class ChainFailure {
     /** The DNS-capable SOCKS front (or the Smart DNS front) could not bind its port. */
     FRONT_BIND,
 
-    /** This build does not bundle libxray.so. */
+    /** This build does not bundle libxray.so, or the bundled one cannot be started. */
     XRAY_MISSING,
 
     /**
@@ -105,9 +105,9 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  *
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
  * every core binds its listener before it can carry traffic (see
- * [PsiphonCore.awaitReady], [TorCore.awaitReady] and, for Xray, a real CONNECT
- * through its inbound - which only succeeds once the user's server completed
- * its handshake through the hop underneath).
+ * [PsiphonCore.awaitReady], [TorCore.awaitReady] and, for Xray, an answer that
+ * came back through its inbound - which only happens once the user's server
+ * completed its handshake through the hop underneath).
  *
  * ONE DEADLINE (perf/fast-connect). [start] runs under a single deadline, and
  * every wait inside it - port, Psiphon readiness, Xray readiness, every Tor
@@ -361,9 +361,11 @@ internal class ChainStack(
      * only ever sees that hop. With no hop underneath (Tor over Xray) Xray
      * dials the server itself, and tor rides on top of it.
      *
-     * READY means a real CONNECT through Xray's inbound got out, which can only
-     * happen once the handshake with the user's server succeeded THROUGH the
-     * chain. An open port alone only proves the config loaded.
+     * READY means an ANSWER came back through Xray's inbound
+     * ([Readiness.awaitRoundTrip]), which can only happen once the handshake
+     * with the user's server succeeded THROUGH the chain. Neither an open port
+     * nor a CONNECT reply proves that: Xray binds as soon as the config
+     * loaded, and acknowledges a CONNECT before its outbound has dialled.
      */
     private suspend fun startXray(upstream: Int?, deadline: Long): Int {
         val core = XrayCore(context, filesDir)
@@ -385,7 +387,15 @@ internal class ChainStack(
 
         val label = outbound.remark.ifBlank { outbound.summary }
         ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.STARTING, label)
-        withContext(Dispatchers.IO) { core.start(outbound, upstream) }
+        // A binary that is present but cannot be spawned (wrong ABI, no exec
+        // bit, a config file that could not be written) is reported like every
+        // other hop's failure, not as an exception the service cannot map.
+        val spawned = withContext(Dispatchers.IO) { runCatching { core.start(outbound, upstream) } }
+        spawned.exceptionOrNull()?.let { error ->
+            DiagnosticsLog.w(TAG, "Xray could not be started: ${error.message}")
+            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, "did not start")
+            throw ChainException(ChainFailure.XRAY_MISSING)
+        }
 
         val listening = PortProbe.awaitOpen(
             TunnelConfig.SOCKS_HOST,
@@ -403,7 +413,12 @@ internal class ChainStack(
 
         val budget = minOf(VpnTunables.XRAY_READY_WAIT_MS, remainingMs(deadline))
         if (budget > 0 &&
-            Readiness.awaitDataplane(TunnelConfig.SOCKS_HOST, TunnelConfig.XRAY_SOCKS_PORT, budget) { core.isAlive }
+            Readiness.awaitRoundTrip(
+                TunnelConfig.SOCKS_HOST,
+                TunnelConfig.XRAY_SOCKS_PORT,
+                TunnelConfig.DNS_SERVERS.first(),
+                budget,
+            ) { core.isAlive }
         ) {
             ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.READY, label)
             return TunnelConfig.XRAY_SOCKS_PORT
