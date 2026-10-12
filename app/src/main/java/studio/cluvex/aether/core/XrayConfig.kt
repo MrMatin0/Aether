@@ -17,7 +17,7 @@ data class XrayOutbound(
     val protocol: String,
     val address: String,
     val port: Int,
-    /** Transport: `tcp`, `ws`, `grpc`, `xhttp`, `httpupgrade`, `kcp`, `http`. */
+    /** Transport: `tcp`, `ws`, `grpc`, `xhttp`, `httpupgrade`, `kcp`. */
     val network: String,
     /** `none`, `tls` or `reality`. */
     val security: String,
@@ -62,6 +62,22 @@ data class XrayOutbound(
  * anything that would only fail later inside Xray (a REALITY link without its
  * public key, an SS link that needs a SIP003 plugin Xray cannot run) is refused
  * here, where the Chain page can say so.
+ *
+ * ### What the pinned core refuses (XTLS/Xray-core v26.9.30)
+ *
+ * Xray stopped accepting several things that older share links still carry,
+ * and it refuses the WHOLE config over any one of them, so they are handled
+ * here instead of surfacing as "config rejected" at connect time:
+ *
+ *  - `allowInsecure` is a removed feature (a hard error). It is never written;
+ *    a link's `pcs` (`pinnedPeerCertSha256`) and `vcn`
+ *    (`verifyPeerCertByName`) are what replace it, and a pasted JSON outbound
+ *    has the key dropped. A server with a self-signed certificate therefore
+ *    needs `pcs` in its link to connect.
+ *  - The HTTP/2 (`http` / `h2` / `h3`) and QUIC transports are removed
+ *    (migrated to XHTTP), so such configs are refused.
+ *  - VLESS without VLESS Encryption, and Trojan, are refused WITHOUT TLS or
+ *    REALITY unless the server is a private address. So are they here.
  */
 object XrayLink {
 
@@ -70,6 +86,9 @@ object XrayLink {
 
     private val PROXY_PROTOCOLS =
         setOf("vless", "vmess", "trojan", "shadowsocks", "socks", "http", "wireguard", "hysteria")
+
+    /** Transports the pinned Xray-core no longer has (see the class KDoc). */
+    private val REMOVED_NETWORKS = setOf("http", "h2", "h3", "quic")
 
     /** The outbound [text] describes, or null when it is not a config this app can run. */
     fun parse(text: String): XrayOutbound? = parse(text, allowSubscription = true)
@@ -99,6 +118,52 @@ object XrayLink {
         }
     }
 
+    /**
+     * Whether Xray will run a VLESS / Trojan outbound with this [security] and
+     * VLESS [encryption] to [address]: TLS or REALITY, VLESS Encryption, or a
+     * private server address (Xray's `validateOutboundTransportSecurity`).
+     */
+    private fun transportSecured(security: String, encryption: String, address: String): Boolean {
+        val sec = security.trim().lowercase(Locale.ROOT)
+        if (sec.isNotEmpty() && sec != "none") return true
+        val enc = encryption.trim().lowercase(Locale.ROOT)
+        if (enc.isNotEmpty() && enc != "none") return true
+        return isPrivateAddress(address)
+    }
+
+    /**
+     * Loopback, RFC 1918, link-local and unique-local literals, and
+     * `localhost`. Deliberately NARROWER than Xray's own list: refusing a
+     * config Xray would have run costs a paste, accepting one Xray refuses
+     * costs a connect attempt that can only fail.
+     */
+    internal fun isPrivateAddress(address: String): Boolean {
+        val host = address.trim().removePrefix("[").removeSuffix("]").trimEnd('.').lowercase(Locale.ROOT)
+        if (host.isEmpty()) return false
+        if (host == "localhost" || host.endsWith(".localhost")) return true
+        ipv4(host)?.let { (a, b) ->
+            return a == 10 || a == 127 || (a == 172 && b in 16..31) || (a == 192 && b == 168) ||
+                (a == 169 && b == 254)
+        }
+        if (':' !in host) return false
+        if (host == "::1") return true
+        val first = host.substringBefore(':').padStart(4, '0')
+        val group = first.toIntOrNull(16) ?: return false
+        // fc00::/7 (unique local) and fe80::/10 (link-local).
+        return (group and 0xFE00) == 0xFC00 || (group and 0xFFC0) == 0xFE80
+    }
+
+    /** The first two octets of a dotted-quad IPv4 literal, or null for anything else. */
+    private fun ipv4(host: String): Pair<Int, Int>? {
+        val parts = host.split('.')
+        if (parts.size != 4) return null
+        val octets = parts.map { part ->
+            if (part.isEmpty() || part.length > 3 || part.any { it !in '0'..'9' }) return null
+            part.toInt().takeIf { it in 0..255 } ?: return null
+        }
+        return octets[0] to octets[1]
+    }
+
     // ---------------------------------------------------------------- links
 
     private fun vless(link: String): XrayOutbound? {
@@ -107,9 +172,11 @@ object XrayLink {
         if (id.isEmpty()) return null
         val stream = Stream.of(parts.query, defaultSecurity = "none")
         if (!stream.isComplete) return null
+        val encryption = parts.query["encryption"].orEmpty().trim().ifEmpty { "none" }
+        if (!transportSecured(stream.sec, encryption, parts.host)) return null
         val user = linkedMapOf<String, Any?>(
             "id" to id,
-            "encryption" to parts.query["encryption"].orEmpty().ifEmpty { "none" },
+            "encryption" to encryption,
         )
         parts.query["flow"]?.takeIf { it.isNotBlank() }?.let { user["flow"] = it.trim() }
         val outbound = linkedMapOf<String, Any?>(
@@ -130,6 +197,7 @@ object XrayLink {
         if (password.isEmpty()) return null
         val stream = Stream.of(parts.query, defaultSecurity = "tls")
         if (!stream.isComplete) return null
+        if (!transportSecured(stream.sec, "none", parts.host)) return null
         val server = linkedMapOf<String, Any?>("address" to parts.host, "port" to parts.port, "password" to password)
         val outbound = linkedMapOf<String, Any?>(
             "protocol" to "trojan",
@@ -176,7 +244,9 @@ object XrayLink {
             mode = if (net == "grpc" && header.equals("multi", ignoreCase = true)) "multi" else field("mode"),
             headerType = if (net == "grpc") "" else header,
             seed = if (net == "kcp") field("path") else "",
-            insecure = field("allowInsecure") == "1" || field("allowInsecure").equals("true", ignoreCase = true),
+            pinnedSha256 = field("pcs"),
+            verifyName = field("vcn"),
+            ech = field("ech"),
         )
         if (!stream.isComplete) return null
         val user = linkedMapOf<String, Any?>("id" to id, "security" to field("scy").ifEmpty { "auto" })
@@ -304,9 +374,26 @@ object XrayLink {
                 port = endpointPort
             }
         }
-        val stream = outbound["streamSettings"] as? Map<*, *>
+        val stream = (outbound["streamSettings"] as? Map<*, *>)?.let(XrayJson::copyObject)
+        if (stream != null) {
+            // A removed feature is a hard error for the WHOLE config; dropping
+            // the key lets the rest run (see the class KDoc).
+            (stream["tlsSettings"] as? Map<*, *>)?.let { tls ->
+                stream["tlsSettings"] = XrayJson.copyObject(tls).apply { remove("allowInsecure") }
+            }
+            outbound["streamSettings"] = stream
+        }
         val network = (stream?.get("network") as? String)?.lowercase(Locale.ROOT) ?: "tcp"
+        if (network in REMOVED_NETWORKS) return null
         val security = (stream?.get("security") as? String)?.lowercase(Locale.ROOT) ?: "none"
+        when (protocol) {
+            "vless" -> {
+                val user = (first?.get("users") as? List<*>)?.firstOrNull() as? Map<*, *>
+                val encryption = (user?.get("encryption") ?: settings?.get("encryption"))?.toString().orEmpty()
+                if (!transportSecured(security, encryption, address)) return null
+            }
+            "trojan" -> if (!transportSecured(security, "none", address)) return null
+        }
         val remark = (source["tag"] as? String).orEmpty()
         return XrayOutbound(protocol, address, port, network, security, remark, outbound)
     }
@@ -430,8 +517,15 @@ object XrayLink {
         val headerType: String = "",
         val seed: String = "",
         val authority: String = "",
-        val insecure: Boolean = false,
         val extra: String = "",
+        /** `pcs`: hex SHA-256 of the server's certificate(s), comma-separated. Replaces allowInsecure. */
+        val pinnedSha256: String = "",
+        /** `vcn`: the name(s) the certificate is verified against instead of the SNI. */
+        val verifyName: String = "",
+        /** `ech`: the ECHConfigList (or where Xray should look it up). */
+        val ech: String = "",
+        /** `pqv`: REALITY's ML-DSA-65 verification key. */
+        val mldsa65Verify: String = "",
     ) {
         val net: String
             get() = when (val n = network.trim().lowercase(Locale.ROOT)) {
@@ -449,8 +543,12 @@ object XrayLink {
                 if (it.isEmpty() || it == "0" || it == "false") "none" else it
             }
 
-        /** REALITY cannot handshake without the server's public key. */
-        val isComplete: Boolean get() = sec != "reality" || publicKey.isNotBlank()
+        /**
+         * REALITY cannot handshake without the server's public key, and a
+         * transport the pinned Xray removed cannot run at all.
+         */
+        val isComplete: Boolean
+            get() = (sec != "reality" || publicKey.isNotBlank()) && net !in REMOVED_NETWORKS
 
         fun toMap(): Map<String, Any?> {
             val out = linkedMapOf<String, Any?>("network" to net, "security" to sec)
@@ -465,7 +563,10 @@ object XrayLink {
                     if (fingerprint.isNotBlank()) tls["fingerprint"] = fingerprint.trim()
                     val alpnList = alpn.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                     if (alpnList.isNotEmpty()) tls["alpn"] = alpnList
-                    if (insecure) tls["allowInsecure"] = true
+                    // Never allowInsecure: the pinned core refuses the config over it.
+                    if (pinnedSha256.isNotBlank()) tls["pinnedPeerCertSha256"] = pinnedSha256.trim()
+                    if (verifyName.isNotBlank()) tls["verifyPeerCertByName"] = verifyName.trim()
+                    if (ech.isNotBlank()) tls["echConfigList"] = ech.trim()
                     out["tlsSettings"] = tls
                 }
                 "reality" -> {
@@ -475,6 +576,7 @@ object XrayLink {
                     reality["publicKey"] = publicKey.trim()
                     if (shortId.isNotBlank()) reality["shortId"] = shortId.trim()
                     if (spiderX.isNotBlank()) reality["spiderX"] = spiderX
+                    if (mldsa65Verify.isNotBlank()) reality["mldsa65Verify"] = mldsa65Verify.trim()
                     out["realitySettings"] = reality
                 }
             }
@@ -492,11 +594,6 @@ object XrayLink {
                     if (mode.trim().equals("multi", ignoreCase = true)) grpc["multiMode"] = true
                     if (authority.isNotBlank()) grpc["authority"] = authority.trim()
                     out["grpcSettings"] = grpc
-                }
-                "http" -> {
-                    val http = linkedMapOf<String, Any?>("path" to path.ifEmpty { "/" })
-                    if (hosts.isNotEmpty()) http["host"] = hosts
-                    out["httpSettings"] = http
                 }
                 "kcp" -> {
                     val kcp = linkedMapOf<String, Any?>()
@@ -542,9 +639,11 @@ object XrayLink {
                 headerType = q["headerType"].orEmpty().ifEmpty { q["headertype"].orEmpty() },
                 seed = q["seed"].orEmpty(),
                 authority = q["authority"].orEmpty(),
-                insecure = q["allowInsecure"] == "1" || q["allowInsecure"].equals("true", ignoreCase = true) ||
-                    q["insecure"] == "1",
                 extra = q["extra"].orEmpty(),
+                pinnedSha256 = q["pcs"].orEmpty(),
+                verifyName = q["vcn"].orEmpty(),
+                ech = q["ech"].orEmpty(),
+                mldsa65Verify = q["pqv"].orEmpty(),
             )
         }
     }

@@ -23,6 +23,8 @@ class XrayConfigTest {
         "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome" +
         "&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=6ba85179e30d4fc2&type=tcp#My%20Server"
 
+    private val pin = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
     @Test
     fun aVlessRealityLinkBecomesAnOutbound() {
         val out = assertNotNull(XrayLink.parse(reality))
@@ -161,6 +163,96 @@ class XrayConfigTest {
         val sockopt = obj(obj(proxy["streamSettings"])["sockopt"])
         assertEquals(XrayConfig.UPSTREAM_TAG, sockopt["dialerProxy"], "the paste never decides the chaining")
         assertEquals(true, sockopt["tcpFastOpen"], "the user's own socket options survive")
+    }
+
+    // ------------------------------------------- what Xray v26.9.30 refuses
+
+    @Test
+    fun allowInsecureIsNeverWrittenAndPinsReplaceIt() {
+        val link = "trojan://pw@self.example.com:443?sni=self.example.com&allowInsecure=1" +
+            "&pcs=$pin&vcn=origin.example.com#self-signed"
+        val out = assertNotNull(XrayLink.parse(link))
+        val tls = obj(obj(out.outbound["streamSettings"])["tlsSettings"])
+        assertNull(tls["allowInsecure"], "allowInsecure is a removed feature: Xray refuses the whole config")
+        assertEquals(pin, tls["pinnedPeerCertSha256"])
+        assertEquals("origin.example.com", tls["verifyPeerCertByName"])
+        assertFalse("allowInsecure" in XrayConfig.build(out, 1849, 1819))
+
+        val vmessJson = "{\"add\":\"vm.example.com\",\"port\":443,\"id\":\"b831381d-6324-4d53-ad4f-8cda48b30811\"," +
+            "\"net\":\"ws\",\"tls\":\"tls\",\"allowInsecure\":\"1\"}"
+        val vmess = assertNotNull(XrayLink.parse("vmess://" + Base64.getEncoder().encodeToString(vmessJson.toByteArray())))
+        assertFalse("allowInsecure" in XrayConfig.build(vmess, 1849, null))
+    }
+
+    @Test
+    fun aPastedJsonOutboundLosesItsAllowInsecure() {
+        val json = """
+            {"protocol":"trojan","settings":{"servers":[{"address":"t.example.com","port":443,"password":"pw"}]},
+             "streamSettings":{"network":"tcp","security":"tls",
+               "tlsSettings":{"serverName":"t.example.com","allowInsecure":true,"fingerprint":"chrome"}}}
+        """.trimIndent()
+        val out = assertNotNull(XrayLink.parse(json))
+        val text = XrayConfig.build(out, 1849, 1819)
+        assertFalse("allowInsecure" in text)
+        val tls = obj(obj(obj(list(obj(XrayJson.parse(text))["outbounds"])[0])["streamSettings"])["tlsSettings"])
+        assertEquals("chrome", tls["fingerprint"], "the rest of the TLS settings survive")
+    }
+
+    @Test
+    fun realityAndEchExtrasAreCarried() {
+        val out = assertNotNull(XrayLink.parse(reality.replace("&type=tcp#", "&type=tcp&pqv=QUJD#")))
+        assertEquals("QUJD", obj(obj(out.outbound["streamSettings"])["realitySettings"])["mldsa65Verify"])
+        val ech = assertNotNull(XrayLink.parse("trojan://pw@e.example.com:443?sni=e.example.com&ech=AEX%2B"))
+        assertEquals("AEX+", obj(obj(ech.outbound["streamSettings"])["tlsSettings"])["echConfigList"])
+    }
+
+    @Test
+    fun transportsTheCoreRemovedAreRefused() {
+        listOf(
+            "vless://id@h.example.com:443?security=tls&type=h2&sni=h.example.com",
+            "vless://id@h.example.com:443?security=tls&type=http&sni=h.example.com",
+            "trojan://pw@h.example.com:443?type=quic",
+            "{\"protocol\":\"vless\",\"settings\":{\"vnext\":[{\"address\":\"h.example.com\",\"port\":443," +
+                "\"users\":[{\"id\":\"x\",\"encryption\":\"none\"}]}]}," +
+                "\"streamSettings\":{\"network\":\"h2\",\"security\":\"tls\"}}",
+        ).forEach { assertNull(XrayLink.parse(it), "'$it' uses a transport Xray no longer has") }
+        val h2 = "{\"add\":\"vm.example.com\",\"port\":443,\"id\":\"b831381d-6324-4d53-ad4f-8cda48b30811\"," +
+            "\"net\":\"h2\",\"tls\":\"tls\"}"
+        assertNull(XrayLink.parse("vmess://" + Base64.getEncoder().encodeToString(h2.toByteArray())))
+        // tcp with an HTTP *header* is not the removed HTTP/2 transport.
+        assertNotNull(XrayLink.parse("vmess://id@h.example.com:80?type=tcp&headerType=http&host=h.example.com"))
+    }
+
+    @Test
+    fun plaintextVlessAndTrojanOnlyReachPrivateServers() {
+        assertNull(XrayLink.parse("vless://id@203.0.113.5:80?security=none&type=ws"))
+        assertNull(XrayLink.parse("vless://id@v.example.com:80"))
+        assertNull(XrayLink.parse("trojan://pw@203.0.113.5:80?security=none"))
+        assertNull(
+            XrayLink.parse(
+                "{\"protocol\":\"vless\",\"settings\":{\"address\":\"v.example.com\",\"port\":80,\"id\":\"x\"," +
+                    "\"encryption\":\"none\"},\"streamSettings\":{\"network\":\"ws\"}}",
+            ),
+        )
+        assertNotNull(XrayLink.parse("vless://id@10.0.0.2:80?security=none&type=ws"))
+        assertNotNull(XrayLink.parse("vless://id@[fd00::2]:80"))
+        assertNotNull(XrayLink.parse("trojan://pw@192.168.1.4:80?security=none"))
+        // VLESS Encryption is its own transport security.
+        assertNotNull(XrayLink.parse("vless://id@203.0.113.5:80?encryption=mlkem768x25519plus.native.0rtt.abc"))
+        // VMess and Shadowsocks are not covered by the rule.
+        assertNotNull(XrayLink.parse("vmess://id@203.0.113.5:80?type=ws"))
+    }
+
+    @Test
+    fun privateAddressesAreTheNarrowSet() {
+        listOf("10.1.2.3", "127.0.0.1", "172.16.0.1", "172.31.255.1", "192.168.0.1", "169.254.1.1",
+            "localhost", "box.localhost", "::1", "[::1]", "fd12::1", "fc00::1", "fe80::1").forEach {
+            assertTrue(XrayLink.isPrivateAddress(it), it)
+        }
+        listOf("8.8.8.8", "172.32.0.1", "100.64.0.1", "203.0.113.5", "example.com", "10.0.0", "1.2.3.256",
+            "2001:db8::1", "").forEach {
+            assertFalse(XrayLink.isPrivateAddress(it), it)
+        }
     }
 
     @Test
