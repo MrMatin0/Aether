@@ -84,10 +84,25 @@ class MasqueScanBudgetTest {
         }
     }
 
+    /**
+     * ECH is on out of the box: WARP enrollment is the first Cloudflare request
+     * a session makes, so a default of off sent api.cloudflareclient.com in the
+     * clear before the user had a chance to switch it on.
+     */
     @Test
-    fun ech_stays_off_until_switched_on() {
+    fun ech_is_on_by_default() {
         for (protocol in Protocol.entries) {
-            val off = ConnectionProfile(protocol = protocol)
+            val fresh = ConnectionProfile(protocol = protocol)
+            assertTrue(fresh.sendsEch, "$protocol")
+            assertTrue(fresh.toArgs(core21).windowed(2).contains(listOf("--ech", "auto")), "$protocol")
+            assertEquals("auto", fresh.toEnv()["AETHER_ECH"], "$protocol")
+        }
+    }
+
+    @Test
+    fun ech_stays_off_when_switched_off() {
+        for (protocol in Protocol.entries) {
+            val off = ConnectionProfile(protocol = protocol, ech = false)
             assertFalse(off.sendsEch, "$protocol")
             assertFalse("--ech" in off.toArgs(core21), "$protocol")
             assertFalse(off.toEnv().containsKey("AETHER_ECH"), "$protocol")
@@ -96,8 +111,9 @@ class MasqueScanBudgetTest {
 
     /**
      * The WARP API's camouflaged route offers ECH whether or not the switch is
-     * on, so every session says where the key lives: ip.gs over 8.8.8.8, which
-     * answers from Iran.
+     * on, so every session says where the key lives: cloudflare-ech.com, asked
+     * over DNS-over-HTTPS of 1.1.1.1 (dns.rs races it with its own DoH
+     * fallbacks).
      */
     @Test
     fun every_session_tells_the_engine_where_the_ech_key_lives() {
@@ -115,6 +131,6 @@ class MasqueScanBudgetTest {
     fun the_ech_lookup_never_becomes_an_argument() {
         val args = ConnectionProfile(protocol = Protocol.MASQUE, ech = true).toArgs(core21)
         assertFalse(args.any { it.startsWith("--ech-") }, "$args")
-        assertFalse(args.any { it.contains("ip.gs") || it.contains("8.8.8.8") }, "$args")
+        assertFalse(args.any { it.contains("cloudflare-ech.com") || it.contains("dns-query") }, "$args")
     }
 }

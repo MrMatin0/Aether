@@ -25,10 +25,13 @@ class ConnectionPlannerTest {
      * ring it walks first, so a scan that was slow but working was killed
      * before it could finish. The transport fallback must not override the
      * obfuscation setting either.
+     *
+     * ECH is on by default now, so it is switched off explicitly here to check
+     * that the anti-DPI pass never turns it back on by itself.
      */
     @Test
     fun `masque gets a full first pass and an http2 second one`() {
-        val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF)
+        val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF, ech = false)
         val plan = ConnectionPlanner.manualProtocol(profile)
 
         assertEquals(2, plan.size)
@@ -56,7 +59,7 @@ class ConnectionPlannerTest {
     fun `ech on masque attempts follows the switch`() {
         for (protocol in listOf(Protocol.MASQUE, Protocol.MIM)) {
             for (http2 in listOf(false, true)) {
-                val off = ConnectionProfile(protocol = protocol, masqueHttp2 = http2)
+                val off = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = false)
                 ConnectionPlanner.manualProtocol(off).forEach {
                     assertFalse("--ech" in it.profile.toArgs(), it.label)
                 }
