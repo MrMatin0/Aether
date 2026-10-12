@@ -1025,6 +1025,8 @@ internal fun hopIcon(hop: Hop): ImageVector = when (hop) {
     Hop.PSIPHON -> Icons.Rounded.Cloud
     Hop.TOR -> Icons.Rounded.Layers
     Hop.SSTP -> Icons.Rounded.VpnLock
+    // The user's own server, linked into the chain.
+    Hop.XRAY -> Icons.Rounded.Link
 }
 
 /** You -> the hops in the order traffic enters them -> Internet. */
