@@ -16,6 +16,7 @@ distributed builds and to modified versions run as a network service.
 | [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) | MIT, with an Apache-2.0 build script | TUN-to-SOCKS forwarding. The `LICENSE` is MIT; `Android.mk` / `Application.mk` are derived from the Android Open Source Project and carry Apache-2.0. |
 | [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core), via [shirokhorshid's fork](https://github.com/shirokhorshid/psiphon-tunnel-core) | **GPL-3.0** | **Built from source** by `scripts/build-overlay-cores.sh`, not taken as a prebuilt AAR. By default from shirokhorshid's fork (CDN fronting), pinned at commit `df55f0a`. See the provenance note below. |
 | [Tor](https://www.torproject.org/) / [tor-android](https://github.com/guardianproject/tor-android) | BSD-3-Clause | Consumed from the Tor Project / Guardian Project published build, or built from source with `TOR_FROM_SOURCE=1`. The Guardian Project's `LICENSE` carries the 3-clause BSD text for Orbot and for Tor. |
+| [Xray-core](https://github.com/XTLS/Xray-core) (Project X) | **MPL-2.0** | **Built from source** by `scripts/build-xray-core.sh` as `libxray.so`, pinned by tag (`v26.7.28` by default). Run as a separate executable for the Xray chain modes. See `docs/XRAY.md`. |
 | [Vazirmatn](https://github.com/rastikerdar/vazirmatn) | SIL OFL 1.1 | Persian and Latin typography. Fetched by `scripts/fetch-fonts.sh`. |
 | [quiche](https://github.com/cloudflare/quiche) | BSD-2-Clause | Vendored under `native/aether/quiche`, used by the engine. License vendored with it. |
 
@@ -38,6 +39,13 @@ releasing the app under GPL-3.0 instead.
 Note that Psiphon is GPL, not AGPL. The AGPL's network-use clause (section 13)
 comes from the app and the engine, not from Psiphon.
 
+Xray-core is MPL-2.0, a file-level copyleft that lists the GPL family as
+Secondary Licenses (MPL-2.0 section 3.3), so it may be combined with this
+AGPL work. It is not modified here and runs as its own process. When you
+distribute a build, MPL-2.0 section 3.2 requires telling recipients where the
+Source Code Form of the Xray-core files is available: the tag pinned in
+`scripts/build-xray-core.sh` at `github.com/XTLS/Xray-core` satisfies that.
+
 ## Provenance of the Psiphon component
 
 Earlier releases of the upstream project committed a prebuilt
@@ -56,6 +64,9 @@ The source is shirokhorshid's GPL-3.0 fork of psiphon-tunnel-core, which adds
 the FRONTED-MEEK-CDN-* protocols, fetched by full commit SHA
 (`df55f0ac0eed3d6846501744b7f086a42fcadfaf`) rather than by a moving branch.
 `PSIPHON_REPO` / `PSIPHON_REF` switch the build back to upstream.
+
+Xray-core follows the same rule: compiled from a named upstream revision, no
+prebuilt binary committed or downloaded.
 
 ## Names and endorsement
 
