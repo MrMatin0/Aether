@@ -176,7 +176,19 @@ class XrayConfigTest {
             "vless://id@host.example:443?security=reality&sni=a.example",
             "{\"outbounds\":[{\"protocol\":\"freedom\"}]}",
             "{not json",
+            // Truncated documents: the reader peeks past the last character.
+            "{\"protocol\":\"vless\"",
+            "{\"outbounds\":[",
+            "[1,2",
+            "{",
         ).forEach { assertNull(XrayLink.parse(it), "'$it' must not parse") }
+    }
+
+    @Test
+    fun truncatedJsonIsAParseErrorNotACrash() {
+        listOf("{", "[", "{\"a\":1", "[1,", "{\"a\"").forEach { text ->
+            assertNull(XrayJson.parseOrNull(text), "'$text' must be refused")
+        }
     }
 
     @Test
