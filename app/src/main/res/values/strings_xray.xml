@@ -16,6 +16,7 @@
     <string name="xray_config_ok">Ready: %1$s</string>
     <string name="xray_config_invalid">This isn\'t a config Aether can run.</string>
     <string name="xray_config_empty">No Xray config saved yet.</string>
+    <string name="xray_config_not_saved">The config could not be saved on this device. Paste it again.</string>
     <string name="xray_chain_note">Xray\'s handshake to your server is dialled through the hop underneath it.</string>
     <string name="xray_missing">This build does not include the Xray core.</string>
     <string name="xray_config_stored">Stored encrypted on this device and never exported.</string>
