@@ -4,21 +4,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
@@ -29,21 +22,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
@@ -54,14 +40,11 @@ import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.LanguageToggle
-import studio.cluvex.aether.ui.components.accentFor
 import studio.cluvex.aether.ui.theme.AetherDur
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherEaseOutExpo
-import studio.cluvex.aether.ui.theme.AetherRadius
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.LocalReducedMotion
-import studio.cluvex.aether.ui.theme.aetherDuration
 
 internal enum class HomeTab { HOME, DIAGNOSTICS, SETTINGS }
 internal data class HomeRoute(val tab: HomeTab = HomeTab.HOME, val page: SettingsPage? = null) {
@@ -108,16 +91,6 @@ private fun tabIcon(tab: HomeTab): ImageVector = when (tab) {
     HomeTab.DIAGNOSTICS -> Icons.Rounded.Terminal
 }
 
-/**
- * THE APP SHELL, Aurora.
- *
- * A backdrop gradient behind everything, a brand-mark header on the
- * connection tab, and a FLOATING GLASS DOCK instead of a flat navigation bar.
- * The connection tab's dock item carries a live status dot in the state
- * colour, so every other tab still answers "am I protected" at a glance; it
- * replaces the old "Connection - status" text row, which cost a whole line of
- * height on every non-home tab. Wide windows keep the navigation rail.
- */
 @Composable
 fun HomeScreen(
     state: ConnectionState, profile: ConnectionProfile, connectedSince: Long?,
@@ -126,52 +99,26 @@ fun HomeScreen(
 ) {
     var route by rememberSaveable(stateSaver = HomeRouteSaver) { mutableStateOf(HomeRoute()) }
     var focusErrors by rememberSaveable { mutableStateOf(false) }
-    // The connection tab is a fixed, non-scrolling layout (see ConnectionHome),
-    // so only Settings keeps a scroll position.
+    val homeScroll = rememberScrollState()
     val settingsScroll = rememberScrollState()
     val pages = rememberSaveableStateHolder()
     val haptics = LocalHapticFeedback.current
-    // One rule for the whole shell; the quick controls and the settings pages
-    // lock on exactly the same states.
-    val editable = quickControlsEditable(state)
+    val editable = state is ConnectionState.Idle || state is ConnectionState.Error
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val reduced = LocalReducedMotion.current
-    val accents = LocalAetherAccents.current
-    val statusTone = accentFor(buttonMode(state))
-    val statusLabel = stringResource(connectionStatusLabel(state))
     BackHandler(route.canGoBack) { route = route.back() }
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        BoxWithConstraints(
-            Modifier
-                .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(accents.backdropTop, accents.backdropBottom)))
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding(),
-        ) {
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
             val rail = maxWidth >= 720.dp && LocalDensity.current.fontScale < 1.5f
             Row(Modifier.fillMaxSize()) {
-                if (rail) NavigationRail(containerColor = accents.dock) {
-                    Spacer(Modifier.height(28.dp))
-                    BrandMark(40.dp)
-                    Spacer(Modifier.height(36.dp))
+                if (rail) NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
+                    Spacer(Modifier.height(32.dp))
+                    Icon(Icons.Rounded.Shield, null, Modifier.size(32.dp), MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(40.dp))
                     destinations.forEach { tab ->
-                        val home = tab == HomeTab.HOME
-                        NavigationRailItem(
-                            selected = route.tab == tab,
-                            onClick = { route = route.select(tab) },
-                            icon = {
-                                TabGlyph(
-                                    tab = tab,
-                                    tint = LocalContentColor.current,
-                                    dot = if (home) statusTone else null,
-                                    ring = accents.dock,
-                                    status = if (home) statusLabel else null,
-                                )
-                            },
-                            label = { Text(stringResource(tabLabel(tab))) },
-                            modifier = Modifier.padding(vertical = 12.dp),
-                        )
+                        NavigationRailItem(selected = route.tab == tab, onClick = { route = route.select(tab) },
+                            icon = { Icon(tabIcon(tab), null) }, label = { Text(stringResource(tabLabel(tab))) },
+                            modifier = Modifier.padding(vertical = 12.dp))
                     }
                 }
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -216,7 +163,7 @@ fun HomeScreen(
                                         focusErrors = focusErrors,
                                         onFocusConsumed = { focusErrors = false },
                                     )
-                                    else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading,
+                                    else -> ConnectionHome(state, profile, connectedSince, ipInfo, ipLoading, homeScroll,
                                         editable = editable,
                                         onProfileChange = onProfileChange,
                                         onToggleConnection = {
@@ -226,25 +173,30 @@ fun HomeScreen(
                                         onOpenDiagnostics = {
                                             focusErrors = true
                                             route = route.select(HomeTab.DIAGNOSTICS)
-                                        },
-                                        // The quick-controls sheet hands over to the page
-                                        // that owns the rest; back returns via the hub.
-                                        onOpenSettings = { route = route.open(it) })
+                                        })
                                 }
                             }
                         }
                     }
-                    if (!rail) {
-                        FloatingDock(
-                            selected = route.tab,
-                            statusTone = statusTone,
-                            statusLabel = statusLabel,
-                            onSelect = { route = route.select(it) },
-                            modifier = Modifier
-                                .widthIn(max = 520.dp)
-                                .fillMaxWidth()
-                                .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
-                        )
+                    Surface(color = MaterialTheme.colorScheme.surface) {
+                        Column(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            if (route.tab != HomeTab.HOME) {
+                                TextButton(onClick = { route = route.select(HomeTab.HOME) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                    Icon(Icons.Rounded.Shield, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.nav_connection) + " · " + stringResource(connectionStatusLabel(state)))
+                                }
+                            }
+                            if (!rail) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
+                                windowInsets = WindowInsets(0, 0, 0, 0)) {
+                                destinations.forEach { tab ->
+                                    NavigationBarItem(selected = route.tab == tab, onClick = { route = route.select(tab) },
+                                        icon = { Icon(tabIcon(tab), null) }, label = { Text(stringResource(tabLabel(tab))) },
+                                        colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -252,162 +204,22 @@ fun HomeScreen(
     }
 }
 
-/** The app's mark: a shield on the brand-to-protected gradient. Decorative. */
-@Composable
-private fun BrandMark(size: Dp) {
-    val accents = LocalAetherAccents.current
-    Box(
-        Modifier
-            .size(size)
-            .clip(RoundedCornerShape(size * 0.32f))
-            .background(Brush.linearGradient(listOf(accents.brand, accents.protected))),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(Icons.Rounded.Shield, null, Modifier.size(size * 0.56f), accents.onBrand)
-    }
-}
-
-/** A tab's icon, with the live status dot on the connection tab. */
-@Composable
-private fun TabGlyph(tab: HomeTab, tint: Color, dot: Color?, ring: Color, status: String?) {
-    Box {
-        Icon(tabIcon(tab), null, Modifier.size(22.dp), tint)
-        if (dot != null) {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 3.dp, y = (-1).dp)
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(ring)
-                    .padding(2.dp)
-                    .clip(CircleShape)
-                    .background(dot)
-                    .then(
-                        if (status != null) Modifier.semantics { contentDescription = status } else Modifier,
-                    ),
-            )
-        }
-    }
-}
-
-/**
- * The floating dock: one rounded glass bar above the gesture area. The
- * selected destination sits on a brand-wash pill; the connection item carries
- * the status dot (and the status words, for TalkBack).
- */
-@Composable
-private fun FloatingDock(
-    selected: HomeTab,
-    statusTone: Color,
-    statusLabel: String,
-    onSelect: (HomeTab) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val accents = LocalAetherAccents.current
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(AetherRadius.Sheet),
-        color = accents.dock,
-        border = BorderStroke(1.dp, accents.cardBorder),
-        shadowElevation = 10.dp,
-    ) {
-        Row(
-            Modifier
-                .selectableGroup()
-                .padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            destinations.forEach { tab ->
-                val home = tab == HomeTab.HOME
-                DockItem(
-                    tab = tab,
-                    selected = selected == tab,
-                    dot = if (home) statusTone else null,
-                    status = if (home) statusLabel else null,
-                    onClick = { onSelect(tab) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DockItem(
-    tab: HomeTab,
-    selected: Boolean,
-    dot: Color?,
-    status: String?,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val accents = LocalAetherAccents.current
-    val fill by animateColorAsState(
-        targetValue = if (selected) accents.brandWash else Color.Transparent,
-        animationSpec = tween(aetherDuration(AetherDur.Quick), easing = AetherEaseOut),
-        label = "dock-fill",
-    )
-    val ink by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(aetherDuration(AetherDur.Quick), easing = AetherEaseOut),
-        label = "dock-ink",
-    )
-    Column(
-        modifier
-            .clip(RoundedCornerShape(22.dp))
-            .background(fill)
-            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
-            .heightIn(min = 56.dp)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        TabGlyph(tab = tab, tint = ink, dot = dot, ring = if (selected) fill else accents.dock, status = status)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            stringResource(tabLabel(tab)),
-            style = MaterialTheme.typography.labelMedium,
-            color = ink,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
 @Composable
 private fun HomeHeader(route: HomeRoute, onBack: () -> Unit) {
-    val atHome = route.tab == HomeTab.HOME
-    Row(
-        Modifier
-            .widthIn(max = 880.dp)
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = if (atHome) 10.dp else 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(Modifier.widthIn(max = 880.dp).fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         if (route.page != null) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.passage_back)) }
             Spacer(Modifier.width(8.dp))
         }
-        if (atHome) {
-            BrandMark(36.dp)
-            Spacer(Modifier.width(12.dp))
-        }
         Column(Modifier.weight(1f)) {
-            if (!atHome) Text(
+            if (route.tab != HomeTab.HOME) Text(
                 // Inside a page the eyebrow names its group, not just "Settings".
                 route.page?.let { stringResource(it.group.label) } ?: stringResource(R.string.app_name),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
-            Text(
-                route.page?.let { settingsPageTitle(it) } ?: stringResource(if (atHome) R.string.app_name else tabLabel(route.tab)),
-                style = if (atHome) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { heading() },
-            )
+            Text(route.page?.let { settingsPageTitle(it) } ?: stringResource(if (route.tab == HomeTab.HOME) R.string.app_name else tabLabel(route.tab)),
+                style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
         }
         Spacer(Modifier.width(12.dp))
         LanguageToggle(accent = LocalAetherAccents.current.brand)

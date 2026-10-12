@@ -296,7 +296,7 @@ class ProfileStore(private val context: Context) {
             manualRange = prefs[Keys.range] ?: "",
             keepalive = prefs[Keys.keepalive] ?: 0,
             fragment = prefs[Keys.fragment] ?: false,
-            ech = prefs[Keys.ech] ?: false,
+            ech = prefs[Keys.ech] ?: true,
             mtu = prefs[Keys.mtu] ?: d.mtu,
             proxyMode = prefs[Keys.proxy] ?: false,
             splitMode = prefs[Keys.split]

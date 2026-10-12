@@ -104,8 +104,8 @@ class MasqueScanBudgetTest {
         for (protocol in Protocol.entries) {
             for (ech in listOf(false, true)) {
                 val env = ConnectionProfile(protocol = protocol, ech = ech).toEnv()
-                assertEquals("ip.gs", env["AETHER_ECH_DOMAIN"], "$protocol ech=$ech")
-                assertEquals("udp://8.8.8.8", env["AETHER_ECH_DNS"], "$protocol ech=$ech")
+                assertEquals("cloudflare-ech.com", env["AETHER_ECH_DOMAIN"], "$protocol ech=$ech")
+                assertEquals("https://1.1.1.1/dns-query", env["AETHER_ECH_DNS"], "$protocol ech=$ech")
             }
         }
     }

@@ -334,7 +334,10 @@ data class ConnectionProfile(
      * every protocol; see [sendsEch] for what it changes on each. The key is
      * the HTTPS record of [ECH_DOMAIN], asked of [ECH_DNS] (see [toEnv]).
      */
-    val ech: Boolean = false,
+    // ECH is enabled by default: WARP enrollment itself is the first
+    // Cloudflare request, so leaving this off exposes api.cloudflareclient.com
+    // before the user can enable the switch.
+    val ech: Boolean = true,
 
     // ---- App-side only (never reach the engine CLI) ----
 
@@ -1225,8 +1228,9 @@ data class ConnectionProfile(
          * same one, because Cloudflare publishes one set for every name it
          * fronts with ECH.
          */
-        const val ECH_DOMAIN = "ip.gs"
-        const val ECH_DNS = "udp://8.8.8.8"
+        const val ECH_DOMAIN = "cloudflare-ech.com"
+        // dns.rs races this first candidate with its built-in DoH fallbacks.
+        const val ECH_DNS = "https://1.1.1.1/dns-query"
 
         /** Hard caps so a pasted blob can't build a gigantic argv. */
         const val MAX_DNS_SERVERS = 8

@@ -22,9 +22,8 @@ import studio.cluvex.aether.ui.components.LockBadge
  * `page.name` into the saved-state bundle, so renaming an entry here would
  * silently drop a user back to the hub after process death.
  *
- * What changed is how the hub PRESENTS them: five intent-based collapsible
- * groups (see [SettingsGroup]), short panels in a sheet, dense editors as a
- * full page.
+ * What changed is how the hub PRESENTS them: four collapsible groups instead of
+ * five flat ones, short panels in a sheet, dense editors as a full page.
  */
 enum class SettingsPage {
     CONNECTION, CHAIN, BRIDGES, TRANSPORT,
@@ -62,16 +61,13 @@ enum class SettingsPage {
      * Technical terms people actually type, in either language. Deliberately
      * NOT string resources: "MTU" is "MTU" in Persian too, and a translator
      * localising "obfs4" would break search.
-     *
-     * "HTTP/2" points at CONNECTION: the MASQUE over HTTP/2 switch lives under
-     * the protocol picker now, not on the Transport page.
      */
     internal val tags: List<String>
         get() = when (this) {
-            CONNECTION -> listOf("MASQUE", "WireGuard", "endpoint", "scan", "IPv4", "IPv6", "peer", "HTTP/2")
+            CONNECTION -> listOf("MASQUE", "WireGuard", "endpoint", "scan", "IPv4", "IPv6", "peer")
             CHAIN -> listOf("Tor", "Psiphon", "chain", "region")
             BRIDGES -> listOf("obfs4", "Snowflake", "WebTunnel", "meek", "bridge")
-            TRANSPORT -> listOf("MTU", "DNS", "ECH", "fragment", "noize", "keepalive", "QUIC")
+            TRANSPORT -> listOf("MTU", "DNS", "ECH", "fragment", "noize", "keepalive", "QUIC", "HTTP/2")
             ROUTING -> listOf("split tunnel", "proxy", "apps", "bypass", "block", "direct")
             SHARING -> listOf("LAN", "hotspot", "SOCKS")
             SECURITY -> listOf("kill switch", "lockdown", "IPv6 leak", "reconnect")
@@ -89,22 +85,9 @@ enum class SettingsPage {
 internal enum class PagePresentation { PAGE, SHEET }
 
 /**
- * Five groups, ordered by how often people need them and named by what the
- * user is trying to do. A page must be in exactly one group (unit-tested).
- *
- * - [CORE_TUNNEL]: how you connect, plus the saved setups that switch between
- *   connection profiles.
- * - [TRAFFIC]: what goes through the tunnel and who else may use it.
- * - [SAFETY]: what keeps you protected: leak guards, the kill switch, and
- *   connecting automatically so the phone is never left unprotected.
- * - [APP]: the app itself, nothing that touches traffic.
- * - [ADVANCED]: pages whose own copy says "change only when a connection keeps
- *   failing", organization-only Zero Trust, and the destructive Reset, which
- *   is deliberately the very last row of the hub.
- *
- * No group holds more than four rows, so every expanded card fits on one
- * screen. [summaryPages] are the destinations whose live values stand in for
- * the whole group on its collapsed card.
+ * Four groups, named by what they do to your traffic. [summaryPages] are the
+ * two destinations whose live values stand in for the whole group on its
+ * collapsed card. A page must be in exactly one group (unit-tested).
  */
 internal enum class SettingsGroup(
     val label: Int,
@@ -114,28 +97,23 @@ internal enum class SettingsGroup(
 ) {
     CORE_TUNNEL(
         R.string.hub_group_tunnel, Icons.Rounded.Hub,
-        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.BRIDGES, SettingsPage.SETUPS),
+        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.BRIDGES, SettingsPage.TRANSPORT),
         listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN),
     ),
-    TRAFFIC(
-        R.string.hub_group_traffic, Icons.Rounded.Route,
-        listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
-        listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
-    ),
-    SAFETY(
-        R.string.hub_group_safety, Icons.Rounded.VerifiedUser,
-        listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
-        listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
+    ROUTING_SAFETY(
+        R.string.hub_group_routing_safety, Icons.Rounded.Shield,
+        listOf(SettingsPage.ROUTING, SettingsPage.SHARING, SettingsPage.SECURITY, SettingsPage.ORGANIZATION),
+        listOf(SettingsPage.SECURITY, SettingsPage.ROUTING),
     ),
     APP(
         R.string.hub_group_app, Icons.Rounded.Smartphone,
-        listOf(SettingsPage.APPEARANCE, SettingsPage.HISTORY, SettingsPage.ABOUT),
-        listOf(SettingsPage.APPEARANCE, SettingsPage.ABOUT),
+        listOf(SettingsPage.APPEARANCE, SettingsPage.AUTOMATION, SettingsPage.HISTORY, SettingsPage.SETUPS),
+        listOf(SettingsPage.APPEARANCE, SettingsPage.SETUPS),
     ),
     ADVANCED(
         R.string.hub_group_advanced, Icons.Rounded.Tune,
-        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING, SettingsPage.ORGANIZATION, SettingsPage.RESET),
-        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING),
+        listOf(SettingsPage.TUNING, SettingsPage.RESET, SettingsPage.ABOUT),
+        listOf(SettingsPage.TUNING, SettingsPage.ABOUT),
     ),
 }
 
