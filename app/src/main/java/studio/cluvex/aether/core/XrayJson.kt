@@ -11,6 +11,10 @@ import java.util.Locale
  * through the right port" is checked on the JVM, not on a phone. A config is a
  * few kilobytes, so a straightforward recursive-descent parser is plenty.
  *
+ * The reader also skips `//` and `/* */` comments outside strings, as Xray's
+ * own config loader does: configs copied out of panels and guides carry them,
+ * and refusing one over a comment would look like the app not working.
+ *
  * Values map to: object -> [LinkedHashMap] (key order kept), array -> [List],
  * string -> [String], integer -> [Long], other number -> [Double],
  * true/false -> [Boolean], null -> null.
@@ -139,10 +143,24 @@ internal object XrayJson {
 
         fun atEnd(): Boolean = pos >= text.length
 
+        /** Whitespace, and `//` (to the end of the line) and `/* */` comments. */
         fun skipWhitespace() {
             while (pos < text.length) {
                 val c = text[pos]
-                if (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\uFEFF') pos++ else return
+                val next = if (pos + 1 < text.length) text[pos + 1] else END
+                when {
+                    c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\uFEFF' -> pos++
+                    c == '/' && next == '/' -> {
+                        pos += 2
+                        while (pos < text.length && text[pos] != '\n') pos++
+                    }
+                    c == '/' && next == '*' -> {
+                        val end = text.indexOf("*/", pos + 2)
+                        if (end < 0) throw ParseException("unterminated comment at $pos")
+                        pos = end + 2
+                    }
+                    else -> return
+                }
             }
         }
 
