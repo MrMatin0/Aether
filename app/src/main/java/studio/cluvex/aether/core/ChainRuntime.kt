@@ -79,9 +79,10 @@ object ChainRuntime {
      * Aether's own SOCKS5 speaks UDP ASSOCIATE, so an Aether-entry chain needs
      * no front and the entry is the engine itself. So does Xray's SOCKS inbound,
      * and its generated config answers port-53 UDP itself (see [XrayConfig]),
-     * so an Xray entry is Xray's own port. Psiphon and Tor do not, so their
-     * traffic enters through [SocksFront] instead (see its KDoc for the DNS
-     * argument).
+     * so an Xray entry would be Xray's own port - though every Xray mode now
+     * puts Xray at the BOTTOM of the chain, never at the entry. Psiphon and Tor
+     * do not, so their traffic enters through [SocksFront] instead (see its
+     * KDoc for the DNS argument).
      *
      * SSTP has no local port at all: its TUN is pumped packet by packet by
      * [SstpCore.bridgeTun]. The engine's port is returned so the many readers of
@@ -98,11 +99,18 @@ object ChainRuntime {
     fun needsFront(mode: ChainMode): Boolean =
         mode.entryHop == Hop.PSIPHON || mode.entryHop == Hop.TOR
 
-    /** Every local port [mode] binds, so teardown can prove they were released. */
+    /**
+     * Every local port [mode] binds, so teardown can prove they were released.
+     * Xray's relay port is only bound by a plaintext VLESS / Trojan config, and
+     * waiting on a port nothing held returns at once.
+     */
     fun portsFor(mode: ChainMode): List<Int> = buildList {
         if (mode.usesAether) add(TunnelConfig.ENGINE_SOCKS_PORT)
         if (mode.usesPsiphon) add(TunnelConfig.PSIPHON_SOCKS_PORT)
-        if (mode.usesXray) add(TunnelConfig.XRAY_SOCKS_PORT)
+        if (mode.usesXray) {
+            add(TunnelConfig.XRAY_SOCKS_PORT)
+            add(TunnelConfig.XRAY_RELAY_PORT)
+        }
         if (mode.usesTor) {
             add(TunnelConfig.TOR_SOCKS_PORT)
             add(TunnelConfig.TOR_DNS_PORT)

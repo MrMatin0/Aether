@@ -44,9 +44,23 @@ object TunnelConfig {
      *
      * NOT 10808 / 10809: those are v2rayNG's (and most Xray clients') defaults,
      * i.e. exactly what a user of this feature already has installed. Its UDP
-     * ASSOCIATE works, so an Xray entry needs no [SocksFront].
+     * ASSOCIATE works, which is what lets the engine send WARP's UDP through it
+     * (`AETHER_UPSTREAM`).
      */
     const val XRAY_SOCKS_PORT = 1849
+
+    /**
+     * Xray's on-device relay ([XrayConfig]): a dokodemo-door inbound that
+     * forwards, unchanged, to the user's real server.
+     *
+     * Xray-core refuses VLESS (without VLESS Encryption) and Trojan without
+     * TLS / REALITY to a PUBLIC address, and accepts them to a private one. A
+     * plaintext share link is therefore pointed at this loopback port, and the
+     * relay's own direct outbound is what reaches the server - the bytes on
+     * the wire are exactly what the link asked for. Next to [XRAY_SOCKS_PORT]
+     * on purpose; only bound when the config needs it.
+     */
+    const val XRAY_RELAY_PORT = 1850
 
     /**
      * Psiphon's local SOCKS5 (`LocalSocksProxyPort`).
