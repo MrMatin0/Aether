@@ -49,7 +49,8 @@ import studio.cluvex.aether.vpn.session.VpnTunables
  * The heart of the app. On connect it:
  *   1. launches the cores the chosen chain needs - the bundled `aether` engine
  *      (SOCKS5 on 127.0.0.1:1819), Psiphon, Xray and/or Tor, each dialling
- *      through the one before it,
+ *      through the one before it. Xray, when the chain has it, connects FIRST
+ *      and the engine is launched on top of it (`AETHER_UPSTREAM`),
  *   2. waits until the chain ENTRY can actually carry a connection (a real
  *      SOCKS5 CONNECT through the engine, each overlay core's own readiness
  *      signal, a warmed front) - an open port alone is not "ready",
@@ -460,7 +461,8 @@ class AetherVpnService : VpnService() {
                 // NOT a rung failure. Every rung of a ladder varies the Aether
                 // hop, so retrying one cannot fix "Tor did not bootstrap" or
                 // "no Psiphon config" - it would only spend another full Tor
-                // bootstrap budget arriving at the same answer.
+                // bootstrap budget arriving at the same answer. The same goes
+                // for an Xray under the engine that never reached its server.
                 cleanupNatives()
                 Diagnostics.resetChecks()
                 throw IllegalStateException(chainFailureMessage(e.failure), e)
@@ -532,8 +534,32 @@ class AetherVpnService : VpnService() {
         }
 
         if (profile.chain.usesAether) {
+            // STAGE 1 - the hops UNDER the engine (Xray). The engine reads
+            // AETHER_UPSTREAM once, at launch, so whatever it dials out through
+            // has to be up and proven - a round trip through the user's own
+            // server - BEFORE it is spawned; an engine launched without it
+            // would dial WARP straight from the device, which is exactly the
+            // traffic these modes exist to hide. Throws a ChainException naming
+            // the core that failed, like the hops above the engine do.
+            val under = profile.chain.hopsBeforeEngine
+            val upstreamPort = if (under.isEmpty()) {
+                null
+            } else {
+                AetherController.setState(ConnectionState.Connecting)
+                notifications.update(getString(R.string.state_connecting))
+                DiagnosticsLog.i(
+                    TAG,
+                    "Bringing up ${under.joinToString(" \u2192 ") { it.label }} before the engine…",
+                )
+                val preEngineDeadline = minOf(
+                    sessionDeadline,
+                    SystemClock.elapsedRealtime() + VpnTunables.preEngineBudgetMs(profile.chain),
+                )
+                natives.startBeforeEngine(profile, preEngineDeadline)
+            }
+
             DiagnosticsLog.i(TAG, "Launching engine (libaether.so)…")
-            natives.startEngine(profile)
+            natives.startEngine(profile, upstreamPort)
 
             AetherController.setState(ConnectionState.Connecting)
             notifications.update(getString(R.string.state_connecting))
@@ -1001,15 +1027,33 @@ class AetherVpnService : VpnService() {
      * so no leak window opens.
      *
      * The whole chain restarts together even when only one hop died: Psiphon
-     * reads its upstream proxy once at startup, Xray its dialer proxy and tor
-     * `Socks5Proxy` likewise, so a hop that outlived its own upstream is
-     * pointing at a listener that no longer exists. Ports are fixed, so the
-     * forwarder finds the new entry exactly where it left the old one.
+     * reads its upstream proxy once at startup, tor `Socks5Proxy` and the
+     * engine `AETHER_UPSTREAM` likewise, so a hop that outlived its own
+     * upstream is pointing at a listener that no longer exists. Ports are
+     * fixed, so the forwarder finds the new entry exactly where it left the
+     * old one.
+     *
+     * Same two stages as the first connect: the hops under the engine (Xray)
+     * first, then the engine on top of them, then everything above it. A
+     * failure anywhere is a failed restart (false), never an exception out of
+     * the supervisor.
      */
     private suspend fun restartCores(profile: ConnectionProfile): Boolean {
         natives.stopCores()
         if (profile.chain.usesAether) {
-            natives.startEngine(profile)
+            val upstreamPort = if (profile.chain.hopsBeforeEngine.isEmpty()) {
+                null
+            } else {
+                val started = runCatching { natives.startBeforeEngine(profile) }
+                val error = started.exceptionOrNull()
+                if (error != null) {
+                    if (error is CancellationException) throw error
+                    DiagnosticsLog.w(TAG, "Restart of the hops under the engine failed: ${error.message}")
+                    return false
+                }
+                started.getOrNull()
+            }
+            natives.startEngine(profile, upstreamPort)
             val opened = PortProbe.awaitOpen(
                 VpnTunables.SOCKS_HOST,
                 VpnTunables.ENGINE_SOCKS_PORT,
