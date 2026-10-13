@@ -36,9 +36,9 @@ private const val TAG = "vpn"
 
 /**
  * Owns every native moving part of a session: the engine process, the chained
- * overlay cores (Psiphon, Tor, the SOCKS front and the Smart DNS front), the
- * SSTP packet tunnel, the TUN fd, the in-process hev-socks5-tunnel core, the
- * userspace filter bridge and the LAN share listeners.
+ * overlay cores (Psiphon, Xray, Tor, the SOCKS front and the Smart DNS front),
+ * the SSTP packet tunnel, the TUN fd, the in-process hev-socks5-tunnel core,
+ * the userspace filter bridge and the LAN share listeners.
  *
  * This is the whole reason the service used to be 1,000 lines: five pieces of
  * process-wide state, each with its own teardown order, all as loose `var`s on
@@ -59,8 +59,8 @@ private const val TAG = "vpn"
  *
  * Teardown ORDER is load-bearing and lives in exactly one place
  * ([stopForwarding]): the SSTP pump and session, sharing, then the bridge, then
- * hev, then the chain (fronts first, then Tor, then Psiphon), then the engine,
- * and the TUN last of all.
+ * hev, then the chain (fronts first, then Tor, then Psiphon, then Xray), then
+ * the engine, and the TUN last of all.
  */
 internal class NativeStack(private val service: VpnService) {
 
@@ -137,9 +137,14 @@ internal class NativeStack(private val service: VpnService) {
 
     // ---------------------------------------------------------------- engine
 
-    fun startEngine(profile: ConnectionProfile) {
+    /**
+     * Launches the engine. [upstreamPort] is what [startBeforeEngine] returned:
+     * the hop under the engine (Xray) that it must dial everything through, or
+     * null to dial WARP directly.
+     */
+    fun startEngine(profile: ConnectionProfile, upstreamPort: Int? = null) {
         engine = AetherProcess(service.applicationInfo.nativeLibraryDir, service.filesDir)
-            .also { it.start(profile) }
+            .also { it.start(profile, upstreamPort) }
     }
 
     /**
@@ -168,8 +173,17 @@ internal class NativeStack(private val service: VpnService) {
     fun missingCores(mode: ChainMode): List<Hop> = chain.missingCores(mode)
 
     /**
-     * Brings up the non-Aether hops and returns the chain ENTRY port. The
-     * engine, when the mode uses one, must already be listening.
+     * The stage BEFORE the engine: brings up the hops the engine dials out
+     * through (Xray) and returns the port to launch it with, or null when the
+     * profile's chain has nothing under the engine. See ChainStack.
+     */
+    suspend fun startBeforeEngine(profile: ConnectionProfile, deadline: Long? = null): Int? =
+        chain.startBeforeEngine(profile, deadline)
+
+    /**
+     * Brings up the hops above the engine and returns the chain ENTRY port.
+     * The engine, when the mode uses one, must already be listening - and so
+     * must everything under it ([startBeforeEngine]).
      *
      * [deadline] (elapsedRealtime) bounds the WHOLE chain - see ChainStack;
      * null means the chain's own budget from now.
