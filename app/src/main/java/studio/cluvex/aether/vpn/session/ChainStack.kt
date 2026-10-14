@@ -188,6 +188,19 @@ internal class ChainStack(
     @Volatile
     private var xrayWatch: Job? = null
 
+    /**
+     * The server summary of the running Xray when its background probe got NO
+     * answer from the user's server; null when it did, when the probe has not
+     * finished yet, or when no Xray is running.
+     *
+     * Read when a hop that dials THROUGH Xray (Psiphon, Tor) fails to come up:
+     * Xray is the internet-facing hop of every Xray mode, so a server that
+     * never answers makes every hop above it fail with its own timeout, and
+     * the log used to name only that hop. See [explainSilentXray].
+     */
+    @Volatile
+    private var xraySilent: String? = null
+
     private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val lock = Any()
@@ -343,6 +356,7 @@ internal class ChainStack(
     fun stop() = synchronized(lock) {
         runCatching { xrayWatch?.cancel() }
         xrayWatch = null
+        xraySilent = null
         runCatching { smartFront?.stop() }
         smartFront = null
         runCatching { front?.stop() }
@@ -463,6 +477,7 @@ internal class ChainStack(
         }
 
         ChainRuntime.update(Hop.PSIPHON, ChainRuntime.HopState.FAILED)
+        explainSilentXray(Hop.PSIPHON)
         throw ChainException(ChainFailure.PSIPHON_TIMEOUT)
     }
 
@@ -489,7 +504,8 @@ internal class ChainStack(
      * The round-trip check still runs, in the background and non-fatal
      * ([watchXrayHandshake]), so the diagnostics log still says whether the
      * user's server answered. A config that really is dead now surfaces as the
-     * next hop's own timeout instead of [ChainFailure.XRAY_TIMEOUT].
+     * next hop's own timeout instead of [ChainFailure.XRAY_TIMEOUT], and
+     * [explainSilentXray] adds the line that names Xray as the likely cause.
      */
     private suspend fun startXray(upstream: Int?, deadline: Long): Int {
         val core = XrayCore(context, filesDir)
@@ -507,7 +523,10 @@ internal class ChainStack(
             ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, why)
             throw ChainException(ChainFailure.XRAY_CONFIG)
         }
-        synchronized(lock) { xray = core }
+        synchronized(lock) {
+            xray = core
+            xraySilent = null
+        }
 
         val label = outbound.remark.ifBlank { outbound.summary }
         ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.STARTING, label)
@@ -555,8 +574,9 @@ internal class ChainStack(
      * NON-FATAL and diagnostics only: nothing waits on it, it never stops a
      * core and never fails the session. It only logs the outcome and, when no
      * answer came back, marks the Xray row as unverified so a dead config is
-     * still easy to spot. Cancelled by [stop]; a result for a core that has
-     * since been replaced is dropped.
+     * still easy to spot, and records it in [xraySilent] so a hop that later
+     * fails through Xray can say so. Cancelled by [stop]; a result for a core
+     * that has since been replaced is dropped.
      */
     private fun watchXrayHandshake(core: XrayCore, summary: String, label: String, upstream: Int?) {
         val job = watchScope.launch {
@@ -567,6 +587,7 @@ internal class ChainStack(
                 VpnTunables.XRAY_READY_WAIT_MS,
             ) { core.isAlive }
             if (xray !== core) return@launch
+            xraySilent = if (!answered && core.isAlive) summary else null
             if (answered) {
                 DiagnosticsLog.i(TAG, "Xray handshake with $summary confirmed (background check).")
             } else if (core.isAlive) {
@@ -584,6 +605,29 @@ internal class ChainStack(
             xrayWatch?.cancel()
             xrayWatch = job
         }
+    }
+
+    /**
+     * When [hop] failed to come up while the Xray underneath it never got an
+     * answer from the user's server, says so: that hop's timeout is only the
+     * symptom. Without this, an Xray -> Psiphon session against a dead or
+     * blocked server ended with "Psiphon did not establish a tunnel" and a
+     * run of `meek round trip failed: EOF` (Xray dropping each connection it
+     * could not forward), and nothing that pointed back at the Xray server.
+     *
+     * Log-only on purpose: the failure code stays the hop's own, so the
+     * service's mapping and its strings are untouched.
+     */
+    private fun explainSilentXray(hop: Hop) {
+        val silent = xraySilent ?: return
+        DiagnosticsLog.w(
+            TAG,
+            "${hop.label} never came up through Xray, and Xray got no answer from $silent either - " +
+                "the Xray server is the likely cause, not ${hop.label}. Check that the server is up and " +
+                "reachable from this network, its UUID / password and its TLS / REALITY settings " +
+                "(a plain, unencrypted-transport config such as VMess over raw TCP is easy for DPI to block).",
+        )
+        ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, "no answer from server")
     }
 
     /**
@@ -659,6 +703,7 @@ internal class ChainStack(
         }
 
         ChainRuntime.update(Hop.TOR, ChainRuntime.HopState.FAILED, "${core.bootstrapPercent}%")
+        explainSilentXray(Hop.TOR)
         throw ChainException(ChainFailure.TOR_TIMEOUT)
     }
 
