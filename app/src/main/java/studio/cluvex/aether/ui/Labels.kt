@@ -124,11 +124,11 @@ internal fun chainLabel(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all)
     ChainMode.SSTP -> stringResource(R.string.chain_sstp)
-    ChainMode.XRAY_OVER_AETHER -> stringResource(R.string.chain_xray_over_aether)
-    ChainMode.XRAY_OVER_PSIPHON -> stringResource(R.string.chain_xray_over_psiphon)
-    ChainMode.XRAY_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_xray_over_psiphon_over_aether)
+    ChainMode.AETHER_OVER_XRAY -> stringResource(R.string.chain_aether_over_xray)
+    ChainMode.PSIPHON_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_xray)
+    ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_aether_over_xray)
     ChainMode.TOR_OVER_XRAY -> stringResource(R.string.chain_tor_over_xray)
-    ChainMode.TOR_OVER_XRAY_OVER_AETHER -> stringResource(R.string.chain_tor_over_xray_over_aether)
+    ChainMode.TOR_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_tor_over_aether_over_xray)
 }
 
 /**
@@ -144,11 +144,11 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_PSIPHON -> stringResource(R.string.chain_tor_over_psiphon_desc)
     ChainMode.TOR_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_tor_over_all_desc)
     ChainMode.SSTP -> stringResource(R.string.chain_sstp_desc)
-    ChainMode.XRAY_OVER_AETHER -> stringResource(R.string.chain_xray_over_aether_desc)
-    ChainMode.XRAY_OVER_PSIPHON -> stringResource(R.string.chain_xray_over_psiphon_desc)
-    ChainMode.XRAY_OVER_PSIPHON_OVER_AETHER -> stringResource(R.string.chain_xray_over_psiphon_over_aether_desc)
+    ChainMode.AETHER_OVER_XRAY -> stringResource(R.string.chain_aether_over_xray_desc)
+    ChainMode.PSIPHON_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_xray_desc)
+    ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_aether_over_xray_desc)
     ChainMode.TOR_OVER_XRAY -> stringResource(R.string.chain_tor_over_xray_desc)
-    ChainMode.TOR_OVER_XRAY_OVER_AETHER -> stringResource(R.string.chain_tor_over_xray_over_aether_desc)
+    ChainMode.TOR_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_tor_over_aether_over_xray_desc)
 }
 
 @Composable

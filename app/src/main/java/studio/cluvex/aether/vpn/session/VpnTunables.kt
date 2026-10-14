@@ -4,6 +4,7 @@ import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.Hop
 
 /**
  * Every timeout, retry budget and bound the VPN session depends on, in one
@@ -171,11 +172,10 @@ internal object VpnTunables {
     const val XRAY_PORT_WAIT_MS = 15_000L
 
     /**
-     * How long the first real CONNECT through Xray gets, i.e. the user's server
-     * completing its handshake THROUGH the hop underneath. One server, no
-     * discovery: a minute is generous even through Psiphon, and a config that
-     * is wrong (bad UUID, REALITY key, SNI) never gets there however long it is
-     * given.
+     * How long the first real round trip through Xray gets, i.e. the user's
+     * server completing its handshake. One server, no discovery: a minute is
+     * generous, and a config that is wrong (bad UUID, REALITY key, SNI) never
+     * gets there however long it is given.
      */
     const val XRAY_READY_WAIT_MS = 60_000L
 
@@ -227,8 +227,24 @@ internal object VpnTunables {
     }
 
     /**
+     * Budget of the stage that runs BEFORE the engine: the hops the engine
+     * dials out through ([ChainMode.hopsBeforeEngine], i.e. Xray). Zero when
+     * the mode has none. Already counted inside [chainBudgetMs], so the session
+     * budget does not have to grow for it.
+     */
+    fun preEngineBudgetMs(mode: ChainMode): Long {
+        val under = mode.hopsBeforeEngine
+        if (under.isEmpty()) return 0L
+        var budget = CHAIN_SLACK_MS
+        if (Hop.XRAY in under) budget += XRAY_PORT_WAIT_MS + XRAY_READY_WAIT_MS
+        if (Hop.PSIPHON in under) budget += PSIPHON_PORT_WAIT_MS + PSIPHON_READY_WAIT_MS
+        if (Hop.TOR in under) budget += TOR_CHAIN_BUDGET_MS
+        return budget
+    }
+
+    /**
      * What a session with an Aether hop adds to its own ladder budget for the
-     * Psiphon / Xray / Tor hops on top of it; zero for an Aether-only chain.
+     * Psiphon / Xray / Tor hops around it; zero for an Aether-only chain.
      */
     fun overlayBudgetMs(mode: ChainMode): Long =
         if (mode.usesPsiphon || mode.usesTor || mode.usesXray) chainBudgetMs(mode) else 0L

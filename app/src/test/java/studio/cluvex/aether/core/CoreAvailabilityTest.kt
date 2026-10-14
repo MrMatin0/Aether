@@ -47,15 +47,15 @@ class CoreAvailabilityTest {
         )
         assertEquals(
             listOf(Hop.XRAY, Hop.TOR),
-            bare.missing(ChainMode.TOR_OVER_XRAY_OVER_AETHER),
+            bare.missing(ChainMode.TOR_OVER_AETHER_OVER_XRAY),
         )
     }
 
     @Test
     fun `a build without Xray names Xray and nothing else`() {
         val noXray = snapshot(psiphon = true, tor = true, xray = false)
-        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.XRAY_OVER_AETHER))
-        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.XRAY_OVER_PSIPHON_OVER_AETHER))
+        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.AETHER_OVER_XRAY))
+        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY))
         assertTrue(noXray.canRun(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER))
     }
 

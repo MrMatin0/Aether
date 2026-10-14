@@ -13,17 +13,24 @@ import java.util.Locale
  * is decided per session by [XrayConfig.build], never by the pasted text.
  */
 data class XrayOutbound(
-    /** `vless`, `vmess`, `trojan`, `shadowsocks`, ... */
+    /** `vless`, `vmess`, `trojan`, `shadowsocks`, `hysteria`, `wireguard`, `socks`, ... */
     val protocol: String,
     val address: String,
     val port: Int,
-    /** Transport: `tcp`, `ws`, `grpc`, `xhttp`, `httpupgrade`, `kcp`. */
+    /** Transport: `tcp`, `ws`, `grpc`, `xhttp`, `httpupgrade`, `kcp`, `hysteria`, `udp`. */
     val network: String,
     /** `none`, `tls` or `reality`. */
     val security: String,
     /** The link's `#name` (or a JSON outbound's tag); may be empty. */
     val remark: String,
     val outbound: Map<String, Any?>,
+    /**
+     * True for a VLESS (without VLESS Encryption) or Trojan outbound with no
+     * TLS / REALITY to a PUBLIC address. Xray-core refuses to dial those, so
+     * [XrayConfig.build] points the outbound at the on-device relay
+     * ([TunnelConfig.XRAY_RELAY_PORT]) and lets the relay reach [address].
+     */
+    val relayed: Boolean = false,
 ) {
     /**
      * "VLESS · reality · tcp · 203.0.113.10:443", for the Chain page and the
@@ -46,17 +53,21 @@ data class XrayOutbound(
             "socks" -> "SOCKS"
             "http" -> "HTTP"
             "wireguard" -> "WireGuard"
-            "hysteria" -> "Hysteria"
+            "hysteria" -> "Hysteria2"
             else -> protocol.uppercase(Locale.ROOT)
         }
     }
 }
 
 /**
- * Reads the user's Xray config: a share link (`vless://`, `vmess://`,
- * `trojan://`, `ss://`), a base64 subscription body holding such links (the
- * first one is used), or Xray JSON - a single outbound object, or a full config
- * whose first PROXY outbound is used.
+ * Reads the user's Xray config: share links (`vless://`, `vmess://`,
+ * `trojan://`, `ss://`, `hy2://`, `wireguard://`, `socks://`), a base64
+ * subscription body holding such links, or Xray JSON (comments allowed) - a
+ * single outbound object, an array of them, or a full config.
+ *
+ * THE FIRST ENTRY THIS APP CAN RUN is used: every line of a paste or
+ * subscription, and every proxy outbound of a JSON config, is tried in order,
+ * so one link this app cannot run does not hide the working one below it.
  *
  * Pure Kotlin, no Android, no network: everything is checked as text, and
  * anything that would only fail later inside Xray (a REALITY link without its
@@ -77,7 +88,9 @@ data class XrayOutbound(
  *  - The HTTP/2 (`http` / `h2` / `h3`) and QUIC transports are removed
  *    (migrated to XHTTP), so such configs are refused.
  *  - VLESS without VLESS Encryption, and Trojan, are refused WITHOUT TLS or
- *    REALITY unless the server is a private address. So are they here.
+ *    REALITY unless the server is a private address. Such an outbound is
+ *    marked [XrayOutbound.relayed] and run through the on-device relay (see
+ *    [XrayConfig]), whose address IS private.
  */
 object XrayLink {
 
@@ -96,14 +109,23 @@ object XrayLink {
     private fun parse(text: String, allowSubscription: Boolean): XrayOutbound? {
         val trimmed = text.trim().removePrefix("\uFEFF").trim()
         if (trimmed.isEmpty() || trimmed.length > MAX_LENGTH) return null
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) return fromJson(trimmed)
-        val line = trimmed.lineSequence().map { it.trim() }.firstOrNull { it.contains("://") }
-        if (line == null) {
+        if (trimmed.startsWith("{") || trimmed.startsWith("[") ||
+            trimmed.startsWith("//") || trimmed.startsWith("/*")
+        ) {
+            return fromJson(trimmed)
+        }
+        val links = trimmed.lineSequence().map { it.trim() }.filter { it.contains("://") }.toList()
+        if (links.isEmpty()) {
             // A subscription body is base64 of the links, one per line.
             if (!allowSubscription) return null
             val decoded = base64(trimmed) ?: return null
             return parse(decoded, allowSubscription = false)
         }
+        return links.firstNotNullOfOrNull(::link)
+    }
+
+    /** One share link, or null when it is not one this app can run. */
+    private fun link(line: String): XrayOutbound? {
         val scheme = line.substringBefore("://").lowercase(Locale.ROOT)
         return try {
             when (scheme) {
@@ -111,6 +133,9 @@ object XrayLink {
                 "vmess" -> vmess(line)
                 "trojan" -> trojan(line)
                 "ss" -> shadowsocks(line)
+                "hy2", "hysteria2" -> hysteria2(line)
+                "wireguard", "wg" -> wireguard(line)
+                "socks", "socks5" -> socks(line)
                 else -> null
             }
         } catch (_: RuntimeException) {
@@ -133,9 +158,9 @@ object XrayLink {
 
     /**
      * Loopback, RFC 1918, link-local and unique-local literals, and
-     * `localhost`. Deliberately NARROWER than Xray's own list: refusing a
-     * config Xray would have run costs a paste, accepting one Xray refuses
-     * costs a connect attempt that can only fail.
+     * `localhost`. Deliberately NARROWER than Xray's own list: relaying a
+     * config Xray would have run directly costs one loopback hop, dialling one
+     * Xray refuses costs a connect attempt that can only fail.
      */
     internal fun isPrivateAddress(address: String): Boolean {
         val host = address.trim().removePrefix("[").removeSuffix("]").trimEnd('.').lowercase(Locale.ROOT)
@@ -173,7 +198,7 @@ object XrayLink {
         val stream = Stream.of(parts.query, defaultSecurity = "none")
         if (!stream.isComplete) return null
         val encryption = parts.query["encryption"].orEmpty().trim().ifEmpty { "none" }
-        if (!transportSecured(stream.sec, encryption, parts.host)) return null
+        val relayed = !transportSecured(stream.sec, encryption, parts.host)
         val user = linkedMapOf<String, Any?>(
             "id" to id,
             "encryption" to encryption,
@@ -188,7 +213,9 @@ object XrayLink {
             ),
             "streamSettings" to stream.toMap(),
         )
-        return XrayOutbound("vless", parts.host, parts.port, stream.net, stream.sec, parts.fragment, outbound)
+        return XrayOutbound(
+            "vless", parts.host, parts.port, stream.net, stream.sec, parts.fragment, outbound, relayed,
+        )
     }
 
     private fun trojan(link: String): XrayOutbound? {
@@ -197,14 +224,16 @@ object XrayLink {
         if (password.isEmpty()) return null
         val stream = Stream.of(parts.query, defaultSecurity = "tls")
         if (!stream.isComplete) return null
-        if (!transportSecured(stream.sec, "none", parts.host)) return null
+        val relayed = !transportSecured(stream.sec, "none", parts.host)
         val server = linkedMapOf<String, Any?>("address" to parts.host, "port" to parts.port, "password" to password)
         val outbound = linkedMapOf<String, Any?>(
             "protocol" to "trojan",
             "settings" to linkedMapOf<String, Any?>("servers" to listOf(server)),
             "streamSettings" to stream.toMap(),
         )
-        return XrayOutbound("trojan", parts.host, parts.port, stream.net, stream.sec, parts.fragment, outbound)
+        return XrayOutbound(
+            "trojan", parts.host, parts.port, stream.net, stream.sec, parts.fragment, outbound, relayed,
+        )
     }
 
     /** `vmess://` + base64(JSON), the v2rayN spelling; falls back to the URI spelling. */
@@ -335,25 +364,130 @@ object XrayLink {
         return XrayOutbound("shadowsocks", host, port, "tcp", "none", remark, outbound)
     }
 
-    // ----------------------------------------------------------------- JSON
-
-    private fun fromJson(text: String): XrayOutbound? {
-        val candidate: Map<*, *> = when (val root = XrayJson.parseOrNull(text)) {
-            is List<*> -> root.firstNotNullOfOrNull { item -> (item as? Map<*, *>)?.let(::pickOutbound) }
-            is Map<*, *> -> pickOutbound(root)
-            else -> null
-        } ?: return null
-        return describe(candidate)
+    /**
+     * `hy2://auth@host:port/?sni=...&pinSHA256=...#name` (also `hysteria2://`),
+     * as Xray's Hysteria2 outbound: protocol `hysteria` version 2, transport
+     * `hysteria`, always TLS with ALPN h3.
+     *
+     * Refused: Salamander `obfs` (not carried by this outbound) and a port
+     * range (`mport` / `443,20000-30000` port hopping). `insecure=1` is NOT
+     * honoured - the pinned core has no allowInsecure - so a self-signed
+     * server needs `pinSHA256` (or `pcs`).
+     */
+    private fun hysteria2(link: String): XrayOutbound? {
+        val parts = LinkParts.of(link) ?: return null
+        val auth = parts.user
+        if (auth.isEmpty()) return null
+        val q = parts.query
+        val obfs = q["obfs"].orEmpty().trim()
+        if (obfs.isNotEmpty() && !obfs.equals("none", ignoreCase = true)) return null
+        val sni = q["sni"].orEmpty().trim().ifEmpty { q["peer"].orEmpty().trim() }
+        val pin = q["pinSHA256"].orEmpty().ifEmpty { q["pcs"].orEmpty() }
+            .replace(":", "").trim().lowercase(Locale.ROOT)
+        val tls = linkedMapOf<String, Any?>()
+        if (sni.isNotEmpty()) tls["serverName"] = sni
+        tls["alpn"] = listOf("h3")
+        if (pin.isNotEmpty()) tls["pinnedPeerCertSha256"] = pin
+        q["vcn"]?.trim()?.takeIf { it.isNotEmpty() }?.let { tls["verifyPeerCertByName"] = it }
+        q["ech"]?.trim()?.takeIf { it.isNotEmpty() }?.let { tls["echConfigList"] = it }
+        val outbound = linkedMapOf<String, Any?>(
+            "protocol" to "hysteria",
+            "settings" to linkedMapOf<String, Any?>(
+                "version" to 2,
+                "address" to parts.host,
+                "port" to parts.port,
+            ),
+            "streamSettings" to linkedMapOf<String, Any?>(
+                "network" to "hysteria",
+                "security" to "tls",
+                "tlsSettings" to tls,
+                "hysteriaSettings" to linkedMapOf<String, Any?>("version" to 2, "auth" to auth),
+            ),
+        )
+        return XrayOutbound("hysteria", parts.host, parts.port, "hysteria", "tls", parts.fragment, outbound)
     }
 
-    /** [obj] itself when it IS a proxy outbound, else the first proxy outbound of a full config. */
-    private fun pickOutbound(obj: Map<*, *>): Map<*, *>? {
+    /**
+     * `wireguard://<private key>@host:port?publickey=...&address=...&reserved=a,b,c&mtu=...#name`
+     * (also `wg://`), as Xray's WireGuard outbound. The private key may carry a
+     * raw '/' (see [LinkParts.of]); `address` is optional (Xray has a default).
+     */
+    private fun wireguard(link: String): XrayOutbound? {
+        val parts = LinkParts.of(link) ?: return null
+        val secret = parts.user.trim()
+        val q = parts.query.mapKeys { it.key.lowercase(Locale.ROOT) }
+        val publicKey = q["publickey"].orEmpty().trim().ifEmpty { q["peerpublickey"].orEmpty().trim() }
+        if (secret.isEmpty() || publicKey.isEmpty()) return null
+        val endpoint = if (':' in parts.host) "[${parts.host}]:${parts.port}" else "${parts.host}:${parts.port}"
+        val peer = linkedMapOf<String, Any?>("publicKey" to publicKey, "endpoint" to endpoint)
+        q["presharedkey"]?.trim()?.takeIf { it.isNotEmpty() }?.let { peer["preSharedKey"] = it }
+        val settings = linkedMapOf<String, Any?>("secretKey" to secret)
+        val addresses = (q["address"] ?: q["ip"]).orEmpty()
+            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        if (addresses.isNotEmpty()) settings["address"] = addresses
+        settings["peers"] = listOf(peer)
+        q["mtu"]?.trim()?.toIntOrNull()?.takeIf { it in 576..65_535 }?.let { settings["mtu"] = it }
+        val reserved = q["reserved"].orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            .map { byte -> byte.toIntOrNull()?.takeIf { it in 0..255 } ?: return null }
+        if (reserved.isNotEmpty()) {
+            if (reserved.size != 3) return null
+            settings["reserved"] = reserved
+        }
+        val outbound = linkedMapOf<String, Any?>("protocol" to "wireguard", "settings" to settings)
+        return XrayOutbound("wireguard", parts.host, parts.port, "udp", "none", parts.fragment, outbound)
+    }
+
+    /**
+     * `socks://base64(user:pass)@host:port#name` (v2rayN), `socks5://user:pass@host:port`,
+     * or `socks://host:port` with no credentials.
+     */
+    private fun socks(link: String): XrayOutbound? {
+        val rest = link.substringAfter("://")
+        val remark = pct(rest.substringAfter('#', ""))
+        val authority = rest.substringBefore('#').substringBefore('?').trimEnd('/')
+        val at = authority.lastIndexOf('@')
+        val (host, port) = hostPort(if (at >= 0) authority.substring(at + 1) else authority) ?: return null
+        val server = linkedMapOf<String, Any?>("address" to host, "port" to port)
+        if (at > 0) {
+            val info = authority.substring(0, at)
+            val plain = pct(info)
+            val credentials = if (':' in plain) plain else base64(info) ?: return null
+            if (':' !in credentials) return null
+            val user = credentials.substringBefore(':')
+            val pass = credentials.substringAfter(':', "")
+            if (user.isNotEmpty()) {
+                server["users"] = listOf(linkedMapOf<String, Any?>("user" to user, "pass" to pass))
+            }
+        }
+        val outbound = linkedMapOf<String, Any?>(
+            "protocol" to "socks",
+            "settings" to linkedMapOf<String, Any?>("servers" to listOf(server)),
+        )
+        return XrayOutbound("socks", host, port, "tcp", "none", remark, outbound)
+    }
+
+    // ----------------------------------------------------------------- JSON
+
+    /** The first proxy outbound in [text] that this app can run. */
+    private fun fromJson(text: String): XrayOutbound? {
+        val roots: List<Map<*, *>> = when (val root = XrayJson.parseOrNull(text)) {
+            is List<*> -> root.mapNotNull { it as? Map<*, *> }
+            is Map<*, *> -> listOf(root)
+            else -> return null
+        }
+        return roots.asSequence().flatMap(::proxyOutbounds).firstNotNullOfOrNull(::describe)
+    }
+
+    /** [obj] itself when it IS a proxy outbound, else every proxy outbound of a full config. */
+    private fun proxyOutbounds(obj: Map<*, *>): Sequence<Map<*, *>> {
         val protocol = obj["protocol"]
-        if (protocol is String) return obj.takeIf { protocol.lowercase(Locale.ROOT) in PROXY_PROTOCOLS }
-        val outbounds = obj["outbounds"] as? List<*> ?: return null
-        return outbounds
+        if (protocol is String) {
+            return if (protocol.lowercase(Locale.ROOT) in PROXY_PROTOCOLS) sequenceOf(obj) else emptySequence()
+        }
+        val outbounds = obj["outbounds"] as? List<*> ?: return emptySequence()
+        return outbounds.asSequence()
             .mapNotNull { it as? Map<*, *> }
-            .firstOrNull { ((it["protocol"] as? String)?.lowercase(Locale.ROOT)) in PROXY_PROTOCOLS }
+            .filter { ((it["protocol"] as? String)?.lowercase(Locale.ROOT)) in PROXY_PROTOCOLS }
     }
 
     private fun describe(source: Map<*, *>): XrayOutbound? {
@@ -386,16 +520,19 @@ object XrayLink {
         val network = (stream?.get("network") as? String)?.lowercase(Locale.ROOT) ?: "tcp"
         if (network in REMOVED_NETWORKS) return null
         val security = (stream?.get("security") as? String)?.lowercase(Locale.ROOT) ?: "none"
-        when (protocol) {
+        val relayed = when (protocol) {
             "vless" -> {
                 val user = (first?.get("users") as? List<*>)?.firstOrNull() as? Map<*, *>
                 val encryption = (user?.get("encryption") ?: settings?.get("encryption"))?.toString().orEmpty()
-                if (!transportSecured(security, encryption, address)) return null
+                !transportSecured(security, encryption, address)
             }
-            "trojan" -> if (!transportSecured(security, "none", address)) return null
+            "trojan" -> !transportSecured(security, "none", address)
+            else -> false
         }
+        // The relay needs somewhere to forward to.
+        if (relayed && (address.isEmpty() || port !in 1..65_535)) return null
         val remark = (source["tag"] as? String).orEmpty()
-        return XrayOutbound(protocol, address, port, network, security, remark, outbound)
+        return XrayOutbound(protocol, address, port, network, security, remark, outbound, relayed)
     }
 
     private fun portOf(value: Any?): Int = when (value) {
@@ -420,11 +557,19 @@ object XrayLink {
                 val fragment = pct(rest.substringAfter('#', ""))
                 val noFragment = rest.substringBefore('#')
                 val query = parseQuery(noFragment.substringAfter('?', ""))
-                val authority = noFragment.substringBefore('?').substringBefore('/')
-                val at = authority.lastIndexOf('@')
+                val beforeQuery = noFragment.substringBefore('?')
+                // `user@host:port[/path]`. A raw '/' in the user part (a
+                // WireGuard key, a Shadowsocks password) cuts the first try
+                // short, so the whole span before the query is tried next.
+                return split(beforeQuery.substringBefore('/'), query, fragment)
+                    ?: split(beforeQuery, query, fragment)
+            }
+
+            private fun split(span: String, query: Map<String, String>, fragment: String): LinkParts? {
+                val at = span.lastIndexOf('@')
                 if (at <= 0) return null
-                val (host, port) = hostPort(authority.substring(at + 1)) ?: return null
-                return LinkParts(pct(authority.substring(0, at)), host, port, query, fragment)
+                val (host, port) = hostPort(span.substring(at + 1).substringBefore('/')) ?: return null
+                return LinkParts(pct(span.substring(0, at)), host, port, query, fragment)
             }
         }
     }
@@ -651,24 +796,35 @@ object XrayLink {
 
 /**
  * The Xray config a session runs: ONE local SOCKS inbound, the user's outbound,
- * and the plumbing that chains it.
+ * and the plumbing around it.
  *
- * ### The chaining
+ * ### Where Xray sits
  *
- * With a hop underneath ([build]'s `upstreamPort`), the proxy outbound gets
- * `streamSettings.sockopt.dialerProxy = "chain-up"`, and `chain-up` is a SOCKS
- * outbound on that hop's local port. Xray then opens its connection to the
- * user's server - TCP, TLS / REALITY handshake and all - THROUGH that hop, so
- * the network only ever sees the hop's traffic (WARP, or Psiphon). With no hop
- * underneath (Tor over Xray), Xray dials the server itself.
+ * Xray is the INTERNET-FACING hop of every Xray mode (see
+ * studio.cluvex.aether.model.ChainMode): it dials the user's server itself,
+ * and Aether / Psiphon / Tor dial out through its inbound. So in practice
+ * [build] is called with no `upstreamPort`. The parameter is kept, and still
+ * pinned by a test: with one, whatever reaches the user's server gets
+ * `streamSettings.sockopt.dialerProxy = "chain-up"`, a SOCKS outbound on that
+ * hop's port.
+ *
+ * ### The relay ([XrayOutbound.relayed])
+ *
+ * Xray-core refuses to dial VLESS (without VLESS Encryption) or Trojan without
+ * TLS / REALITY to a PUBLIC address, and accepts it to a private one. Such an
+ * outbound is pointed at a `dokodemo-door` inbound on
+ * 127.0.0.1:[TunnelConfig.XRAY_RELAY_PORT], whose own `freedom` outbound
+ * forwards the bytes, unchanged, to the real server. What goes on the wire is
+ * exactly what the link asked for; only the check is satisfied. With a hop
+ * underneath, it is the relay's outbound that dials through it (the proxy then
+ * only ever dials loopback). Nothing is bound on that port otherwise.
  *
  * ### DNS
  *
  * The device's DNS reaches Xray as SOCKS5 UDP to port 53. A routing rule hands
  * exactly that to a `dns` outbound, and Xray's own resolver answers it over TCP
- * through the proxy outbound. That works whatever the outbound's protocol and
- * whatever is underneath (Psiphon carries no UDP), which is why an Xray entry
- * needs no [SocksFront].
+ * through the proxy outbound. That works whatever the outbound's protocol,
+ * which is why an Xray entry needs no [SocksFront].
  */
 object XrayConfig {
     const val INBOUND_TAG = "socks-in"
@@ -676,23 +832,36 @@ object XrayConfig {
     const val UPSTREAM_TAG = "chain-up"
     const val DNS_TAG = "dns-out"
 
+    /** The relay's inbound (dokodemo-door) and outbound (freedom). */
+    const val RELAY_TAG = "relay-in"
+    const val RELAY_OUT_TAG = "relay-out"
+
+    /** Loopback, i.e. a private address: what makes Xray accept a relayed outbound. */
+    private const val RELAY_HOST = "127.0.0.1"
+
     fun build(
         outbound: XrayOutbound,
         socksPort: Int,
         upstreamPort: Int?,
         upstreamHost: String = "127.0.0.1",
         dnsServers: List<String> = listOf("1.1.1.1", "8.8.8.8"),
+        relayPort: Int = TunnelConfig.XRAY_RELAY_PORT,
     ): String {
+        val relayed = outbound.relayed
         val proxy = XrayJson.copyObject(outbound.outbound)
         proxy["tag"] = PROXY_TAG
-        val stream = (proxy["streamSettings"] as? Map<*, *>)?.let(XrayJson::copyObject) ?: LinkedHashMap()
-        val sockopt = (stream["sockopt"] as? Map<*, *>)?.let(XrayJson::copyObject) ?: LinkedHashMap()
-        sockopt.remove("dialerProxy")
-        if (upstreamPort != null) sockopt["dialerProxy"] = UPSTREAM_TAG
-        if (sockopt.isNotEmpty()) stream["sockopt"] = sockopt else stream.remove("sockopt")
-        if (stream.isNotEmpty()) proxy["streamSettings"] = stream else proxy.remove("streamSettings")
+        if (relayed) pointAt(proxy, RELAY_HOST, relayPort)
+        // Whatever reaches the user's server is what dials through the hop
+        // underneath: the proxy itself, or for a relayed config the relay's
+        // outbound. Any dialerProxy in the paste is dropped either way.
+        setDialer(proxy, if (upstreamPort != null && !relayed) UPSTREAM_TAG else null)
 
         val outbounds = mutableListOf<Any?>(proxy)
+        if (relayed) {
+            val direct = linkedMapOf<String, Any?>("tag" to RELAY_OUT_TAG, "protocol" to "freedom")
+            setDialer(direct, if (upstreamPort != null) UPSTREAM_TAG else null)
+            outbounds += direct
+        }
         if (upstreamPort != null) {
             outbounds += linkedMapOf<String, Any?>(
                 "tag" to UPSTREAM_TAG,
@@ -704,37 +873,89 @@ object XrayConfig {
         }
         outbounds += linkedMapOf<String, Any?>("tag" to DNS_TAG, "protocol" to "dns")
 
-        val config = linkedMapOf<String, Any?>(
-            "log" to linkedMapOf<String, Any?>("loglevel" to "warning", "access" to "none"),
-            "dns" to linkedMapOf<String, Any?>("servers" to dnsServers.map { "tcp://$it:53" }),
-            "inbounds" to listOf(
-                linkedMapOf<String, Any?>(
-                    "tag" to INBOUND_TAG,
-                    "listen" to "127.0.0.1",
-                    "port" to socksPort,
-                    "protocol" to "socks",
-                    "settings" to linkedMapOf<String, Any?>("auth" to "noauth", "udp" to true, "ip" to "127.0.0.1"),
-                    "sniffing" to linkedMapOf<String, Any?>(
-                        "enabled" to true,
-                        "destOverride" to listOf("http", "tls", "quic"),
-                        "routeOnly" to true,
-                    ),
-                ),
-            ),
-            "outbounds" to outbounds,
-            "routing" to linkedMapOf<String, Any?>(
-                "domainStrategy" to "AsIs",
-                "rules" to listOf(
-                    linkedMapOf<String, Any?>(
-                        "type" to "field",
-                        "inboundTag" to listOf(INBOUND_TAG),
-                        "network" to "udp",
-                        "port" to "53",
-                        "outboundTag" to DNS_TAG,
-                    ),
+        val inbounds = mutableListOf<Any?>(
+            linkedMapOf<String, Any?>(
+                "tag" to INBOUND_TAG,
+                "listen" to "127.0.0.1",
+                "port" to socksPort,
+                "protocol" to "socks",
+                "settings" to linkedMapOf<String, Any?>("auth" to "noauth", "udp" to true, "ip" to "127.0.0.1"),
+                "sniffing" to linkedMapOf<String, Any?>(
+                    "enabled" to true,
+                    "destOverride" to listOf("http", "tls", "quic"),
+                    "routeOnly" to true,
                 ),
             ),
         )
+        val rules = mutableListOf<Any?>(
+            linkedMapOf<String, Any?>(
+                "type" to "field",
+                "inboundTag" to listOf(INBOUND_TAG),
+                "network" to "udp",
+                "port" to "53",
+                "outboundTag" to DNS_TAG,
+            ),
+        )
+        if (relayed) {
+            inbounds += linkedMapOf<String, Any?>(
+                "tag" to RELAY_TAG,
+                "listen" to RELAY_HOST,
+                "port" to relayPort,
+                "protocol" to "dokodemo-door",
+                "settings" to linkedMapOf<String, Any?>(
+                    "address" to outbound.address,
+                    "port" to outbound.port,
+                    // mKCP is the one plaintext VLESS / Trojan transport over UDP.
+                    "network" to if (outbound.network == "kcp") "udp" else "tcp",
+                ),
+            )
+            rules += linkedMapOf<String, Any?>(
+                "type" to "field",
+                "inboundTag" to listOf(RELAY_TAG),
+                "outboundTag" to RELAY_OUT_TAG,
+            )
+        }
+
+        val config = linkedMapOf<String, Any?>(
+            "log" to linkedMapOf<String, Any?>("loglevel" to "warning", "access" to "none"),
+            "dns" to linkedMapOf<String, Any?>("servers" to dnsServers.map { "tcp://$it:53" }),
+            "inbounds" to inbounds,
+            "outbounds" to outbounds,
+            "routing" to linkedMapOf<String, Any?>(
+                "domainStrategy" to "AsIs",
+                "rules" to rules,
+            ),
+        )
         return XrayJson.write(config)
+    }
+
+    /** Sets (or, with null, removes) `streamSettings.sockopt.dialerProxy` on [target]. */
+    private fun setDialer(target: MutableMap<String, Any?>, dialer: String?) {
+        val stream = (target["streamSettings"] as? Map<*, *>)?.let(XrayJson::copyObject) ?: LinkedHashMap()
+        val sockopt = (stream["sockopt"] as? Map<*, *>)?.let(XrayJson::copyObject) ?: LinkedHashMap()
+        sockopt.remove("dialerProxy")
+        if (dialer != null) sockopt["dialerProxy"] = dialer
+        if (sockopt.isNotEmpty()) stream["sockopt"] = sockopt else stream.remove("sockopt")
+        if (stream.isNotEmpty()) target["streamSettings"] = stream else target.remove("streamSettings")
+    }
+
+    /**
+     * Points the proxy outbound's (first) server at [host]:[port]: `vnext` /
+     * `servers`, or the flat `settings.address` form. Only the relayed server
+     * is kept: any other entry would be plaintext to a public address as well.
+     */
+    private fun pointAt(proxy: MutableMap<String, Any?>, host: String, port: Int) {
+        val settings = (proxy["settings"] as? Map<*, *>)?.let(XrayJson::copyObject) ?: LinkedHashMap()
+        val key = listOf("vnext", "servers").firstOrNull { settings[it] is List<*> }
+        val first = key?.let { (settings[it] as? List<*>)?.firstOrNull() as? Map<*, *> }?.let(XrayJson::copyObject)
+        if (key != null && first != null) {
+            first["address"] = host
+            first["port"] = port
+            settings[key] = listOf(first)
+        } else {
+            settings["address"] = host
+            settings["port"] = port
+        }
+        proxy["settings"] = settings
     }
 }

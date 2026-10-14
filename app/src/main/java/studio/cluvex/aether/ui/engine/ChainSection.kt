@@ -212,7 +212,7 @@ private val StackedModes: List<ChainMode> = ChainMode.entries.filter { it.isChai
 /**
  * One mode card, plus - for the mode that is the current selection - the
  * options of the cores it runs, opened right underneath it: Psiphon's for a
- * Psiphon mode, the Xray config for an Xray mode (both, for Xray over Psiphon).
+ * Psiphon mode, the Xray config for an Xray mode (both, for Psiphon over Xray).
  */
 @Composable
 private fun ColumnScope.ChainModeEntry(
@@ -239,9 +239,6 @@ private fun ColumnScope.ChainModeEntry(
     if (mode.usesXray) {
         DependentBlock(visible = mode == selected) {
             XrayOptions(
-                // Tor over Xray: Xray is the internet-facing hop and dials
-                // its server itself, so there is no hop to mention.
-                viaUpstream = mode.upstreamOf(Hop.XRAY) != null,
                 binaryBundled = cores.xrayBinary,
                 enabled = enabled,
             )
@@ -349,7 +346,6 @@ private val XrayFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
  */
 @Composable
 private fun XrayOptions(
-    viaUpstream: Boolean,
     binaryBundled: Boolean,
     enabled: Boolean,
 ) {
@@ -440,10 +436,8 @@ private fun XrayOptions(
                 icon = Icons.Rounded.Warning,
             )
         }
-        if (viaUpstream) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            Hint(stringResource(R.string.xray_chain_note))
-        }
+        Spacer(Modifier.height(EngineSpacing.Inline))
+        Hint(stringResource(R.string.xray_chain_note))
         Spacer(Modifier.height(EngineSpacing.Inline))
         Hint(stringResource(R.string.xray_config_stored))
     }

@@ -94,24 +94,35 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  * > dial through it.
  *
  * That ordering is not cosmetic. Psiphon reads `UpstreamProxyUrl` once at
- * startup, tor reads `Socks5Proxy` once at startup and Xray reads its
- * `dialerProxy` once at startup; starting any of them before the hop
+ * startup, tor reads `Socks5Proxy` once at startup and the engine reads
+ * `AETHER_UPSTREAM` once at launch; starting any of them before the hop
  * underneath it can actually carry a connection means the core burns its own
  * retry budget failing against a dead proxy, and reports the network as
  * blocked when the real problem was the start order.
  *
- * The hops are started in [ChainMode.hops] order (internet side first), so a
- * new mode only has to list its hops for this class to bring it up correctly.
+ * ### Two stages, because the engine is in the middle
+ *
+ * The hops are started in [ChainMode.hops] order (internet side first). When
+ * something sits UNDER the engine (Xray, see [ChainMode.hopsBeforeEngine]) the
+ * session runs in two stages:
+ *
+ *  1. [startBeforeEngine] - the hops under Aether, here; returns the port the
+ *     engine must be launched with as its `AETHER_UPSTREAM`;
+ *  2. the engine, launched by the service through [NativeStack];
+ *  3. [start] - every hop above the engine, and the entry.
+ *
+ * A mode with nothing under the engine skips stage 1, exactly as before.
  *
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
  * every core binds its listener before it can carry traffic (see
  * [PsiphonCore.awaitReady], [TorCore.awaitReady] and, for Xray, an answer that
  * came back through its inbound - which only happens once the user's server
- * completed its handshake through the hop underneath).
+ * completed its handshake).
  *
  * ONE DEADLINE (perf/fast-connect). [start] runs under a single deadline, and
  * every wait inside it - port, Psiphon readiness, Xray readiness, every Tor
- * rung - is min(its own budget, what is left).
+ * rung - is min(its own budget, what is left). [startBeforeEngine] gets its
+ * own, from the same session deadline.
  *
  * SSTP is NOT a hop of this class: it is a packet tunnel with no SOCKS5 entry,
  * and its session is run by the service through [NativeStack.startSstp].
@@ -136,6 +147,18 @@ internal class ChainStack(
     @Volatile
     private var smartFront: SmartDnsFront? = null
 
+    /**
+     * The mode whose hops under the engine are already up, and the port the
+     * engine dials out through. Set by [startBeforeEngine], consumed by
+     * [start], cleared by [stop].
+     */
+    @Volatile
+    private var beforeEngine: Pair<ChainMode, Int>? = null
+
+    /** The mode [start] brought up, so [awaitExit] knows which core is the entry. */
+    @Volatile
+    private var running: ChainMode? = null
+
     private val lock = Any()
 
     /** True while every core this chain started is still running. */
@@ -152,12 +175,47 @@ internal class ChainStack(
     fun missingCores(mode: ChainMode): List<Hop> = CoreAvailability.of(context).missing(mode)
 
     /**
-     * Brings up every non-Aether hop and returns the CHAIN ENTRY port: the
-     * local SOCKS5 the TUN forwarder (or a proxy-mode client) must be pointed
-     * at.
+     * STAGE 1: brings up every hop UNDER the Aether engine and returns the
+     * local SOCKS5 port the engine must be launched with (`AETHER_UPSTREAM`),
+     * or null when [profile]'s chain has nothing under the engine.
+     *
+     * Must run BEFORE the engine is launched: the engine reads its upstream
+     * once, and an engine launched without it dials WARP straight from the
+     * device - which is exactly the traffic this mode exists to hide.
+     *
+     * [deadline] is on the [SystemClock.elapsedRealtime] clock; null means
+     * "now + [VpnTunables.preEngineBudgetMs]" (the supervisor's restarts).
+     *
+     * @throws ChainException with the specific reason.
+     */
+    suspend fun startBeforeEngine(profile: ConnectionProfile, deadline: Long? = null): Int? {
+        val mode = profile.chain
+        val under = mode.hopsBeforeEngine
+        if (under.isEmpty()) return null
+        check(!mode.usesSstp) { "SSTP is a packet tunnel and has no SOCKS chain to start" }
+        val until = deadline ?: (SystemClock.elapsedRealtime() + VpnTunables.preEngineBudgetMs(mode))
+        ChainRuntime.begin(mode)
+
+        var upstream: Int? = null
+        for (hop in under) upstream = startHop(hop, profile, upstream, until)
+        val port = requireNotNull(upstream) { "a hop under the engine returned no port" }
+        synchronized(lock) { beforeEngine = mode to port }
+        DiagnosticsLog.i(
+            TAG,
+            "Ready before the engine: ${under.joinToString(" \u2192 ") { it.label }} - " +
+                "Aether dials out through ${TunnelConfig.SOCKS_HOST}:$port.",
+        )
+        return port
+    }
+
+    /**
+     * STAGE 3: brings up every hop ABOVE the engine (or every hop, when the
+     * mode has no engine) and returns the CHAIN ENTRY port: the local SOCKS5
+     * the TUN forwarder (or a proxy-mode client) must be pointed at.
      *
      * The Aether hop, when the mode uses one, must already be up and listening
-     * on [TunnelConfig.ENGINE_SOCKS_PORT] before this is called.
+     * on [TunnelConfig.ENGINE_SOCKS_PORT] before this is called - and so must
+     * every hop under it ([startBeforeEngine]).
      *
      * [deadline] is on the [SystemClock.elapsedRealtime] clock; null means
      * "now + [VpnTunables.chainBudgetMs]" (the supervisor's restarts).
@@ -168,23 +226,25 @@ internal class ChainStack(
     suspend fun start(profile: ConnectionProfile, deadline: Long? = null): Int {
         val mode = profile.chain
         check(!mode.usesSstp) { "SSTP is a packet tunnel and has no SOCKS chain to start" }
+        val under = mode.hopsBeforeEngine
+        val early = beforeEngine?.takeIf { it.first == mode }
+        check(under.isEmpty() || early != null) {
+            "${mode.name} needs ${under.joinToString { it.label }} up before the engine - call startBeforeEngine first"
+        }
         val until = deadline ?: (SystemClock.elapsedRealtime() + VpnTunables.chainBudgetMs(mode))
-        ChainRuntime.begin(mode)
+        // Stage 1 already published this mode's rows; beginning again would
+        // wipe the READY it reported for the hops under the engine.
+        if (early == null) ChainRuntime.begin(mode)
+        running = mode
 
         // Every hop dials through the one before it; null means "straight out".
         var upstream: Int? = null
         for (hop in mode.hops) {
-            upstream = when (hop) {
-                // Already up (started by the service); it only becomes the
-                // upstream of whatever comes next.
-                Hop.AETHER -> {
-                    ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
-                    TunnelConfig.ENGINE_SOCKS_PORT
-                }
-                Hop.PSIPHON -> startPsiphon(profile, upstream, until)
-                Hop.XRAY -> startXray(upstream, until)
-                Hop.TOR -> startTor(profile, upstream, until)
-                Hop.SSTP -> error("SSTP has no SOCKS entry")
+            upstream = if (hop in under) {
+                // Already up (stage 1); it only matters as the engine's upstream.
+                early?.second
+            } else {
+                startHop(hop, profile, upstream, until)
             }
         }
 
@@ -223,16 +283,22 @@ internal class ChainStack(
      * Parks until a core dies or [timeoutMs] elapses.
      *
      * Parks on the ENTRY core, because that is the one whose death makes the
-     * tunnel stop carrying traffic immediately. Tor is always the top hop when
-     * present, and Xray is always above Psiphon. A deeper hop dying is caught
+     * tunnel stop carrying traffic immediately. A deeper hop dying is caught
      * by [alive] on the next supervisor cycle instead.
      */
-    suspend fun awaitExit(timeoutMs: Long): Boolean = when {
-        tor != null -> tor?.awaitExit(timeoutMs) ?: true
-        xray != null -> xray?.awaitExit(timeoutMs) ?: true
-        psiphon != null -> psiphon?.awaitExit(timeoutMs) ?: true
-        else -> true
-    }
+    suspend fun awaitExit(timeoutMs: Long): Boolean = when (running?.entryHop) {
+        Hop.TOR -> tor?.awaitExit(timeoutMs)
+        Hop.PSIPHON -> psiphon?.awaitExit(timeoutMs)
+        Hop.XRAY -> xray?.awaitExit(timeoutMs)
+        // The engine is the entry (the service parks on it itself), or nothing
+        // is running: fall back to whichever overlay core is up.
+        else -> when {
+            tor != null -> tor?.awaitExit(timeoutMs)
+            psiphon != null -> psiphon?.awaitExit(timeoutMs)
+            xray != null -> xray?.awaitExit(timeoutMs)
+            else -> true
+        }
+    } ?: true
 
     /**
      * Stops everything, fronts first, then entry side to internet side.
@@ -240,7 +306,8 @@ internal class ChainStack(
      * Order is load-bearing: the fronts hold live sockets INTO the cores, so
      * closing them first means the cores see clean disconnects instead of a
      * process dying under them, and nothing is left holding a port the next
-     * connect has to bind.
+     * connect has to bind. Xray goes last: with Xray under the engine, every
+     * other core's connections run through it.
      */
     fun stop() = synchronized(lock) {
         runCatching { smartFront?.stop() }
@@ -249,13 +316,30 @@ internal class ChainStack(
         front = null
         runCatching { tor?.stop() }
         tor = null
-        runCatching { xray?.stop() }
-        xray = null
         runCatching { psiphon?.stop() }
         psiphon = null
+        runCatching { xray?.stop() }
+        xray = null
+        beforeEngine = null
+        running = null
     }
 
     // ------------------------------------------------------------------ hops
+
+    /** Starts one hop on top of [upstream] and returns the port the next hop dials. */
+    private suspend fun startHop(hop: Hop, profile: ConnectionProfile, upstream: Int?, deadline: Long): Int =
+        when (hop) {
+            // Already up (started by the service); it only becomes the
+            // upstream of whatever comes next.
+            Hop.AETHER -> {
+                ChainRuntime.update(Hop.AETHER, ChainRuntime.HopState.READY)
+                TunnelConfig.ENGINE_SOCKS_PORT
+            }
+            Hop.PSIPHON -> startPsiphon(profile, upstream, deadline)
+            Hop.XRAY -> startXray(upstream, deadline)
+            Hop.TOR -> startTor(profile, upstream, deadline)
+            Hop.SSTP -> error("SSTP has no SOCKS entry")
+        }
 
     /**
      * Brings Psiphon up, and does not let one unlucky country be the end of it.
@@ -350,22 +434,21 @@ internal class ChainStack(
     }
 
     /**
-     * Brings Xray up on top of [upstream] and proves the user's server answers.
+     * Brings Xray up and proves the user's server answers.
      *
-     * THE CHAINING: the user's config is read from the Keystore-sealed
-     * [XrayConfigStore] (never from the profile, which is exported), parsed by
-     * [XrayLink], and run with a `dialerProxy` pointing at [upstream]. Xray's
-     * whole connection to the server - TCP, TLS / REALITY handshake, the
-     * VLESS / VMess / Trojan / Shadowsocks session - is therefore carried by
-     * the hop underneath (WARP, Psiphon, or WARP + Psiphon), and the network
-     * only ever sees that hop. With no hop underneath (Tor over Xray) Xray
-     * dials the server itself, and tor rides on top of it.
+     * The user's config is read from the Keystore-sealed [XrayConfigStore]
+     * (never from the profile, which is exported), parsed by [XrayLink], and
+     * run by [XrayCore]. Xray is the internet-facing hop of every Xray mode, so
+     * [upstream] is null in practice and Xray dials the server itself; the
+     * parameter stays so a `dialerProxy` chain is still one argument away.
      *
      * READY means an ANSWER came back through Xray's inbound
      * ([Readiness.awaitRoundTrip]), which can only happen once the handshake
-     * with the user's server succeeded THROUGH the chain. Neither an open port
-     * nor a CONNECT reply proves that: Xray binds as soon as the config
-     * loaded, and acknowledges a CONNECT before its outbound has dialled.
+     * with the user's server succeeded. Neither an open port nor a CONNECT
+     * reply proves that: Xray binds as soon as the config loaded, and
+     * acknowledges a CONNECT before its outbound has dialled. That matters
+     * twice over now that Xray is UNDER the engine: Aether reads its upstream
+     * once, so it must not be launched on an Xray that cannot carry anything.
      */
     private suspend fun startXray(upstream: Int?, deadline: Long): Int {
         val core = XrayCore(context, filesDir)

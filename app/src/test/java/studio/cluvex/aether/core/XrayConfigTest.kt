@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 
 /**
  * The Xray hop is only as good as two pieces of text: what is read out of the
- * user's paste, and the config that chains it. Both are pinned here on the JVM.
+ * user's paste, and the config that wraps it. Both are pinned here on the JVM.
  */
 class XrayConfigTest {
 
@@ -34,6 +34,7 @@ class XrayConfigTest {
         assertEquals("reality", out.security)
         assertEquals("tcp", out.network)
         assertEquals("My Server", out.remark)
+        assertFalse(out.relayed)
         val stream = obj(out.outbound["streamSettings"])
         val settings = obj(stream["realitySettings"])
         assertEquals("www.example.com", settings["serverName"])
@@ -47,7 +48,8 @@ class XrayConfigTest {
     }
 
     @Test
-    fun theHandshakeIsDialledThroughTheHopUnderneath() {
+    fun theHandshakeIsDialledThroughAHopUnderneathWhenThereIsOne() {
+        // No current mode puts a hop under Xray, but the code path is kept.
         val out = assertNotNull(XrayLink.parse(reality))
         val config = obj(XrayJson.parse(XrayConfig.build(out, socksPort = 1849, upstreamPort = 1819)))
         val outbounds = list(config["outbounds"])
@@ -77,7 +79,7 @@ class XrayConfigTest {
     @Test
     fun theDevicesDnsIsAnsweredInsideXrayOverTcp() {
         val out = assertNotNull(XrayLink.parse(reality))
-        val config = obj(XrayJson.parse(XrayConfig.build(out, 1849, 1891)))
+        val config = obj(XrayJson.parse(XrayConfig.build(out, 1849, null)))
         val rule = obj(list(obj(config["routing"])["rules"])[0])
         assertEquals(XrayConfig.DNS_TAG, rule["outboundTag"])
         assertEquals("udp", rule["network"])
@@ -109,6 +111,7 @@ class XrayConfigTest {
     fun trojanDefaultsToTlsAndKeepsAnEncodedPassword() {
         val out = assertNotNull(XrayLink.parse("trojan://p%40ss+word@tr.example.com:443?sni=tr.example.com#t"))
         assertEquals("tls", out.security)
+        assertFalse(out.relayed)
         val server = obj(list(obj(out.outbound["settings"])["servers"])[0])
         assertEquals("p@ss+word", server["password"])
     }
@@ -139,9 +142,97 @@ class XrayConfigTest {
     }
 
     @Test
+    fun hysteria2LinksAreRead() {
+        val out = assertNotNull(
+            XrayLink.parse("hy2://p%40ss@hy.example.com:8443/?sni=real.example.com&pinSHA256=AB:CD#hy"),
+        )
+        assertEquals("hysteria", out.protocol)
+        assertEquals("hy.example.com", out.address)
+        assertEquals(8443, out.port)
+        assertEquals("hysteria", out.network)
+        assertEquals("tls", out.security)
+        assertEquals("hy", out.remark)
+        val stream = obj(out.outbound["streamSettings"])
+        assertEquals("p@ss", obj(stream["hysteriaSettings"])["auth"])
+        val tls = obj(stream["tlsSettings"])
+        assertEquals("real.example.com", tls["serverName"])
+        assertEquals(listOf("h3"), tls["alpn"])
+        assertEquals("abcd", tls["pinnedPeerCertSha256"])
+        assertFalse("insecure" in XrayConfig.build(out, 1849, null).lowercase())
+
+        assertNotNull(XrayLink.parse("hysteria2://pw@hy.example.com:443"))
+        // Salamander obfuscation and port hopping are not carried.
+        assertNull(XrayLink.parse("hy2://pw@hy.example.com:443?obfs=salamander&obfs-password=x"))
+        assertNull(XrayLink.parse("hy2://pw@hy.example.com:443,20000-30000"))
+    }
+
+    @Test
+    fun wireguardLinksAreRead() {
+        val link = "wireguard://cHJpdmF0ZQ%3D%3D@162.159.192.1:2408?publickey=cHVi%2Bkey%3D" +
+            "&address=172.16.0.2%2F32,2606:4700:110::2%2F128&reserved=1,2,3&mtu=1280#warp"
+        val out = assertNotNull(XrayLink.parse(link))
+        assertEquals("wireguard", out.protocol)
+        assertEquals("162.159.192.1", out.address)
+        assertEquals(2408, out.port)
+        assertEquals("warp", out.remark)
+        val settings = obj(out.outbound["settings"])
+        assertEquals("cHJpdmF0ZQ==", settings["secretKey"])
+        assertEquals(listOf("172.16.0.2/32", "2606:4700:110::2/128"), settings["address"])
+        assertEquals(listOf(1, 2, 3), settings["reserved"])
+        assertEquals<Any?>(1280, settings["mtu"])
+        val peer = obj(list(settings["peers"])[0])
+        assertEquals("cHVi+key=", peer["publicKey"])
+        assertEquals("162.159.192.1:2408", peer["endpoint"])
+
+        // A raw '/' in the key does not break the link.
+        val raw = assertNotNull(XrayLink.parse("wg://ab/cd+ef=@[2606:4700::1]:51820?publickey=x"))
+        assertEquals("ab/cd+ef=", obj(raw.outbound["settings"])["secretKey"])
+        assertEquals("[2606:4700::1]:51820", obj(list(obj(raw.outbound["settings"])["peers"])[0])["endpoint"])
+
+        assertNull(XrayLink.parse("wireguard://key@1.2.3.4:51820"), "no peer public key")
+        assertNull(XrayLink.parse("wireguard://key@1.2.3.4:51820?publickey=x&reserved=1,2"))
+    }
+
+    @Test
+    fun socksLinksAreRead() {
+        val b64 = assertNotNull(XrayLink.parse("socks://dXNlcjpwYXNz@s.example.com:1080#s"))
+        assertEquals("socks", b64.protocol)
+        assertEquals("s", b64.remark)
+        val server = obj(list(obj(b64.outbound["settings"])["servers"])[0])
+        val user = obj(list(server["users"])[0])
+        assertEquals("user", user["user"])
+        assertEquals("pass", user["pass"])
+
+        val plain = assertNotNull(XrayLink.parse("socks5://u:p%40@198.51.100.1:1080"))
+        val plainUser = obj(list(obj(list(obj(plain.outbound["settings"])["servers"])[0])["users"])[0])
+        assertEquals("p@", plainUser["pass"])
+
+        val open = assertNotNull(XrayLink.parse("socks://s.example.com:1080/"))
+        assertNull(obj(list(obj(open.outbound["settings"])["servers"])[0])["users"])
+    }
+
+    @Test
     fun aSubscriptionBodyUsesItsFirstLink() {
         val body = Base64.getEncoder().encodeToString("$reality\ntrojan://pw@other.example.com:443".toByteArray())
         assertEquals("203.0.113.10", XrayLink.parse(body)?.address)
+    }
+
+    @Test
+    fun theFirstEntryThatCanRunIsUsedNotMerelyTheFirstLine() {
+        val unusable = "vless://id@host.example:443?security=reality&sni=a.example"
+        assertEquals("203.0.113.10", XrayLink.parse("$unusable\n$reality")?.address)
+        val body = Base64.getEncoder()
+            .encodeToString("https://example.com\n$unusable\n$reality".toByteArray())
+        assertEquals("203.0.113.10", XrayLink.parse(body)?.address)
+
+        val json = """
+            {"outbounds":[
+              {"protocol":"vless","settings":{"vnext":[{"address":"old.example.com","port":443,
+                "users":[{"id":"x","encryption":"none"}]}]},"streamSettings":{"network":"h2","security":"tls"}},
+              {"protocol":"trojan","settings":{"servers":[{"address":"new.example.com","port":443,"password":"pw"}]},
+                "streamSettings":{"network":"tcp","security":"tls"}}]}
+        """.trimIndent()
+        assertEquals("new.example.com", XrayLink.parse(json)?.address)
     }
 
     @Test
@@ -158,11 +249,32 @@ class XrayConfigTest {
         assertEquals("ws", out.network)
         assertEquals("mine", out.remark)
         assertNull(out.outbound["tag"])
+        val direct = obj(list(obj(XrayJson.parse(XrayConfig.build(out, 1849, null)))["outbounds"])[0])
+        val directSockopt = obj(obj(direct["streamSettings"])["sockopt"])
+        assertNull(directSockopt["dialerProxy"], "the paste never decides the chaining")
+        assertEquals(true, directSockopt["tcpFastOpen"], "the user's own socket options survive")
         val config = obj(XrayJson.parse(XrayConfig.build(out, 1849, 1891)))
         val proxy = obj(list(config["outbounds"])[0])
         val sockopt = obj(obj(proxy["streamSettings"])["sockopt"])
-        assertEquals(XrayConfig.UPSTREAM_TAG, sockopt["dialerProxy"], "the paste never decides the chaining")
-        assertEquals(true, sockopt["tcpFastOpen"], "the user's own socket options survive")
+        assertEquals(XrayConfig.UPSTREAM_TAG, sockopt["dialerProxy"])
+    }
+
+    @Test
+    fun jsonWithCommentsIsRead() {
+        val json = """
+            // my server
+            {
+              /* the outbound */
+              "protocol": "vless", // inline
+              "settings": {"vnext": [{"address": "c.example.com", "port": 443,
+                "users": [{"id": "x", "encryption": "none"}]}]},
+              "streamSettings": {"network": "ws", "security": "tls", "wsSettings": {"path": "/a//b"}}
+            }
+        """.trimIndent()
+        val out = assertNotNull(XrayLink.parse(json))
+        assertEquals("c.example.com", out.address)
+        assertEquals("/a//b", obj(obj(out.outbound["streamSettings"])["wsSettings"])["path"], "'//' inside a string is not a comment")
+        assertNull(XrayJson.parseOrNull("{\"a\":1 /* never closed"))
     }
 
     // ------------------------------------------- what Xray v26.9.30 refuses
@@ -176,7 +288,7 @@ class XrayConfigTest {
         assertNull(tls["allowInsecure"], "allowInsecure is a removed feature: Xray refuses the whole config")
         assertEquals(pin, tls["pinnedPeerCertSha256"])
         assertEquals("origin.example.com", tls["verifyPeerCertByName"])
-        assertFalse("allowInsecure" in XrayConfig.build(out, 1849, 1819))
+        assertFalse("allowInsecure" in XrayConfig.build(out, 1849, null))
 
         val vmessJson = "{\"add\":\"vm.example.com\",\"port\":443,\"id\":\"b831381d-6324-4d53-ad4f-8cda48b30811\"," +
             "\"net\":\"ws\",\"tls\":\"tls\",\"allowInsecure\":\"1\"}"
@@ -192,7 +304,7 @@ class XrayConfigTest {
                "tlsSettings":{"serverName":"t.example.com","allowInsecure":true,"fingerprint":"chrome"}}}
         """.trimIndent()
         val out = assertNotNull(XrayLink.parse(json))
-        val text = XrayConfig.build(out, 1849, 1819)
+        val text = XrayConfig.build(out, 1849, null)
         assertFalse("allowInsecure" in text)
         val tls = obj(obj(obj(list(obj(XrayJson.parse(text))["outbounds"])[0])["streamSettings"])["tlsSettings"])
         assertEquals("chrome", tls["fingerprint"], "the rest of the TLS settings survive")
@@ -224,23 +336,68 @@ class XrayConfigTest {
     }
 
     @Test
-    fun plaintextVlessAndTrojanOnlyReachPrivateServers() {
-        assertNull(XrayLink.parse("vless://id@203.0.113.5:80?security=none&type=ws"))
-        assertNull(XrayLink.parse("vless://id@v.example.com:80"))
-        assertNull(XrayLink.parse("trojan://pw@203.0.113.5:80?security=none"))
-        assertNull(
-            XrayLink.parse(
-                "{\"protocol\":\"vless\",\"settings\":{\"address\":\"v.example.com\",\"port\":80,\"id\":\"x\"," +
-                    "\"encryption\":\"none\"},\"streamSettings\":{\"network\":\"ws\"}}",
-            ),
-        )
-        assertNotNull(XrayLink.parse("vless://id@10.0.0.2:80?security=none&type=ws"))
-        assertNotNull(XrayLink.parse("vless://id@[fd00::2]:80"))
-        assertNotNull(XrayLink.parse("trojan://pw@192.168.1.4:80?security=none"))
-        // VLESS Encryption is its own transport security.
-        assertNotNull(XrayLink.parse("vless://id@203.0.113.5:80?encryption=mlkem768x25519plus.native.0rtt.abc"))
-        // VMess and Shadowsocks are not covered by the rule.
-        assertNotNull(XrayLink.parse("vmess://id@203.0.113.5:80?type=ws"))
+    fun plaintextVlessAndTrojanToAPublicServerRideTheRelay() {
+        listOf(
+            "vless://id@203.0.113.5:80?security=none&type=ws",
+            "vless://id@v.example.com:80",
+            "trojan://pw@203.0.113.5:80?security=none",
+            "{\"protocol\":\"vless\",\"settings\":{\"address\":\"v.example.com\",\"port\":80,\"id\":\"x\"," +
+                "\"encryption\":\"none\"},\"streamSettings\":{\"network\":\"ws\"}}",
+        ).forEach { assertTrue(assertNotNull(XrayLink.parse(it), it).relayed, it) }
+        listOf(
+            "vless://id@10.0.0.2:80?security=none&type=ws",
+            "vless://id@[fd00::2]:80",
+            "trojan://pw@192.168.1.4:80?security=none",
+            // VLESS Encryption is its own transport security.
+            "vless://id@203.0.113.5:80?encryption=mlkem768x25519plus.native.0rtt.abc",
+            // VMess and Shadowsocks are not covered by the rule.
+            "vmess://id@203.0.113.5:80?type=ws",
+        ).forEach { assertFalse(assertNotNull(XrayLink.parse(it), it).relayed, it) }
+    }
+
+    @Test
+    fun theRelayForwardsUnchangedToTheRealServer() {
+        val out = assertNotNull(XrayLink.parse("vless://id@203.0.113.5:8080?security=none&type=ws&path=%2Fws"))
+        val config = obj(XrayJson.parse(XrayConfig.build(out, socksPort = 1849, upstreamPort = null, relayPort = 1850)))
+        val outbounds = list(config["outbounds"]).map { obj(it) }
+        val proxy = outbounds.single { it["tag"] == XrayConfig.PROXY_TAG }
+        val vnext = list(obj(proxy["settings"])["vnext"])
+        assertEquals(1, vnext.size)
+        assertEquals("127.0.0.1", obj(vnext[0])["address"], "Xray only dials a plaintext VLESS to a private address")
+        assertEquals(1850L, obj(vnext[0])["port"])
+        assertEquals("/ws", obj(obj(proxy["streamSettings"])["wsSettings"])["path"], "the bytes on the wire are what the link asked for")
+
+        val relay = list(config["inbounds"]).map { obj(it) }.single { it["tag"] == XrayConfig.RELAY_TAG }
+        assertEquals("dokodemo-door", relay["protocol"])
+        assertEquals("127.0.0.1", relay["listen"])
+        assertEquals(1850L, relay["port"])
+        val target = obj(relay["settings"])
+        assertEquals("203.0.113.5", target["address"])
+        assertEquals(8080L, target["port"])
+        assertEquals("tcp", target["network"])
+
+        assertEquals("freedom", outbounds.single { it["tag"] == XrayConfig.RELAY_OUT_TAG }["protocol"])
+        val rule = list(obj(config["routing"])["rules"]).map { obj(it) }
+            .single { it["outboundTag"] == XrayConfig.RELAY_OUT_TAG }
+        assertEquals(listOf(XrayConfig.RELAY_TAG), rule["inboundTag"])
+    }
+
+    @Test
+    fun aConfigThatNeedsNoRelayBindsNoRelay() {
+        val text = XrayConfig.build(assertNotNull(XrayLink.parse(reality)), 1849, null)
+        assertFalse(XrayConfig.RELAY_TAG in text)
+        assertFalse("dokodemo-door" in text)
+        assertFalse("1850" in text)
+    }
+
+    @Test
+    fun withAHopUnderneathTheRelayIsWhatDialsThroughIt() {
+        val out = assertNotNull(XrayLink.parse("trojan://pw@203.0.113.5:80?security=none"))
+        val outbounds = list(obj(XrayJson.parse(XrayConfig.build(out, 1849, 1819)))["outbounds"]).map { obj(it) }
+        val proxy = outbounds.single { it["tag"] == XrayConfig.PROXY_TAG }
+        assertNull((proxy["streamSettings"] as? Map<*, *>)?.get("sockopt"), "the proxy only dials loopback")
+        val direct = outbounds.single { it["tag"] == XrayConfig.RELAY_OUT_TAG }
+        assertEquals(XrayConfig.UPSTREAM_TAG, obj(obj(direct["streamSettings"])["sockopt"])["dialerProxy"])
     }
 
     @Test
@@ -273,12 +430,13 @@ class XrayConfigTest {
             "{\"outbounds\":[",
             "[1,2",
             "{",
+            "// only a comment",
         ).forEach { assertNull(XrayLink.parse(it), "'$it' must not parse") }
     }
 
     @Test
     fun truncatedJsonIsAParseErrorNotACrash() {
-        listOf("{", "[", "{\"a\":1", "[1,", "{\"a\"").forEach { text ->
+        listOf("{", "[", "{\"a\":1", "[1,", "{\"a\"", "{/*", "/").forEach { text ->
             assertNull(XrayJson.parseOrNull(text), "'$text' must be refused")
         }
     }

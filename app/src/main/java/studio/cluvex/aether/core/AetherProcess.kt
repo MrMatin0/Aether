@@ -44,7 +44,14 @@ class AetherProcess(
      */
     private val lifecycleLock = Any()
 
-    fun start(profile: ConnectionProfile) = synchronized(lifecycleLock) {
+    /**
+     * @param upstreamPort local SOCKS5 port of the hop UNDER the engine (Xray),
+     *   which the engine must dial everything - TCP and UDP - through, or null
+     *   to dial WARP directly. Exported as `AETHER_UPSTREAM`
+     *   (native/aether/aether/src/upstream.rs), which the engine reads once at
+     *   launch.
+     */
+    fun start(profile: ConnectionProfile, upstreamPort: Int? = null) = synchronized(lifecycleLock) {
         // Reentrancy guard: spawning over a live engine would orphan it — the
         // old process keeps running (holding port 1819) but is invisible to
         // isAlive()/stop(). Checked under the lock so two concurrent connects
@@ -65,6 +72,14 @@ class AetherProcess(
         builder.environment().apply {
             putAll(profile.toEnv())
             putAll(experiments)
+            // Set explicitly in BOTH directions: an AETHER_UPSTREAM inherited
+            // from the app's own environment must never send a session that
+            // has nothing under the engine through some other proxy.
+            if (upstreamPort != null) {
+                put(UPSTREAM_ENV, "socks5://${TunnelConfig.SOCKS_HOST}:$upstreamPort")
+            } else {
+                remove(UPSTREAM_ENV)
+            }
             put("HOME", workingDir.absolutePath)
             put("TMPDIR", workingDir.absolutePath)
         }
@@ -73,6 +88,12 @@ class AetherProcess(
         process = proc
 
         DiagnosticsLog.i("engine", "WireGuard experiments: hop=${experiments["AETHER_WG_PORT_HOP"]}, padding=${experiments["AETHER_WG_DATA_PADDING"]}")
+        if (upstreamPort != null) {
+            DiagnosticsLog.i(
+                "engine",
+                "Dialling out through the hop underneath: $UPSTREAM_ENV=socks5://${TunnelConfig.SOCKS_HOST}:$upstreamPort",
+            )
+        }
         DiagnosticsLog.i("engine", "Spawned ${bin.name} ${profile.toArgs().joinToString(" ")}")
         // Drain stdout/stderr so a full pipe never blocks the engine, mirroring
         // every line into both logcat and the in-app diagnostics panel.
@@ -159,5 +180,8 @@ class AetherProcess(
         const val GRACEFUL_EXIT_MS = 250L
         /** How long a SIGKILL gets to be reaped before we give up waiting. */
         const val FORCE_EXIT_MS = 1_000L
+
+        /** Read by the engine once at launch (native/aether/aether/src/upstream.rs). */
+        const val UPSTREAM_ENV = "AETHER_UPSTREAM"
     }
 }

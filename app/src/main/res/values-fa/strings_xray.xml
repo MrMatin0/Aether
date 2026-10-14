@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="chain_xray_over_aether">Xray روی Aether</string>
-    <string name="chain_xray_over_aether_desc">سرور Xray شما، با کل هندشیک از داخل WARP.</string>
-    <string name="chain_xray_over_psiphon">Xray روی Psiphon</string>
-    <string name="chain_xray_over_psiphon_desc">سرور Xray شما، از داخل Psiphon.</string>
-    <string name="chain_xray_over_psiphon_over_aether">Xray روی Psiphon روی Aether</string>
-    <string name="chain_xray_over_psiphon_over_aether_desc">اول WARP، بعد Psiphon، و سرور Xray شما روی آن.</string>
+    <string name="chain_aether_over_xray">Aether روی Xray</string>
+    <string name="chain_aether_over_xray_desc">اول سرور Xray شما وصل می‌شود و WARP از داخل آن زده می‌شود.</string>
+    <string name="chain_psiphon_over_xray">Psiphon روی Xray</string>
+    <string name="chain_psiphon_over_xray_desc">Psiphon از داخل سرور Xray شما به سرورهایش وصل می‌شود.</string>
+    <string name="chain_psiphon_over_aether_over_xray">Psiphon روی Aether روی Xray</string>
+    <string name="chain_psiphon_over_aether_over_xray_desc">اول سرور Xray شما، بعد WARP، و Psiphon روی آن.</string>
     <string name="chain_tor_over_xray">Tor روی Xray</string>
     <string name="chain_tor_over_xray_desc">Tor روی سرور Xray شما سوار می‌شود.</string>
-    <string name="chain_tor_over_xray_over_aether">Tor روی Xray روی Aether</string>
-    <string name="chain_tor_over_xray_over_aether_desc">اول WARP، بعد سرور Xray شما، بعد Tor.</string>
+    <string name="chain_tor_over_aether_over_xray">Tor روی Aether روی Xray</string>
+    <string name="chain_tor_over_aether_over_xray_desc">اول سرور Xray شما، بعد WARP، بعد Tor.</string>
     <string name="xray_config_label">کانفیگ Xray</string>
-    <string name="xray_config_hint">vless://، vmess://، trojan://، ss:// یا JSON</string>
-    <string name="xray_config_help">لینک، متن سابسکریپشن یا outbound ایکس‌ری را بچسبانید. فقط اولین پروکسی استفاده می‌شود.</string>
+    <string name="xray_config_hint">vless://، vmess://، trojan://، ss://، hy2://، wireguard://، socks:// یا JSON</string>
+    <string name="xray_config_help">لینک، متن سابسکریپشن یا JSON ایکس‌ری (کامنت‌دار هم قبول است) را بچسبانید. اولین موردی که قابل اجرا باشد استفاده می‌شود.</string>
     <string name="xray_config_ok">آماده: %1$s</string>
     <string name="xray_config_invalid">این کانفیگ قابل اجرا نیست.</string>
     <string name="xray_config_empty">هنوز کانفیگ Xray ذخیره نشده.</string>
     <string name="xray_config_not_saved">کانفیگ روی این دستگاه ذخیره نشد. دوباره بچسبانید.</string>
-    <string name="xray_chain_note">هندشیک Xray با سرور شما از داخل هاپ زیرین زده می‌شود.</string>
+    <string name="xray_chain_note">اول Xray وصل می‌شود و بقیه هسته‌ها از داخل سرور شما زده می‌شوند.</string>
     <string name="xray_missing">این نسخه هسته Xray را ندارد.</string>
     <string name="xray_config_stored">رمزنگاری‌شده روی همین دستگاه ذخیره می‌شود و هرگز اکسپورت نمی‌شود.</string>
     <string name="err_xray_config">کانفیگ قابل استفاده‌ای برای Xray نیست. یک لینک سالم در صفحه زنجیره بچسبانید.</string>
-    <string name="err_xray_timeout">سرور Xray از داخل زنجیره جواب نداد. سرور، UUID/پسورد و تنظیمات TLS/REALITY را چک کنید.</string>
+    <string name="err_xray_timeout">سرور Xray جواب نداد. سرور، UUID/پسورد و تنظیمات TLS/REALITY را چک کنید.</string>
 </resources>
