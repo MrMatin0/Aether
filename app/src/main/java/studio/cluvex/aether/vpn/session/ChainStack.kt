@@ -2,8 +2,12 @@ package studio.cluvex.aether.vpn.session
 
 import android.content.Context
 import android.os.SystemClock
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import studio.cluvex.aether.core.ChainRuntime
 import studio.cluvex.aether.core.CoreAvailability
@@ -76,7 +80,14 @@ internal enum class ChainFailure {
      */
     XRAY_CONFIG,
 
-    /** Xray started, but no connection got through the user's server in time. */
+    /**
+     * Xray is running but never bound its local inbound in time.
+     *
+     * It no longer means "no round trip through the user's server": the hop
+     * above Xray is started without waiting for one (see
+     * [ChainStack.startXray]), so a server that never answers now surfaces as
+     * that hop's own timeout instead.
+     */
     XRAY_TIMEOUT,
 }
 
@@ -100,6 +111,17 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  * retry budget failing against a dead proxy, and reports the network as
  * blocked when the real problem was the start order.
  *
+ * ### The one exception: Xray
+ *
+ * Xray is "ready enough" for the next hop as soon as its config was accepted
+ * and its local inbound is bound. The hop above it is started RIGHT AWAY and
+ * does its own handshake through Xray while Xray's handshake with the user's
+ * server is still settling. Waiting for a round trip first (the old rule)
+ * killed configs that never answer the readiness probe but do carry the
+ * next hop's traffic; started in parallel, some of them come alive. The
+ * round-trip check still runs, in the background and non-fatal, so the logs
+ * still say whether the user's server answered.
+ *
  * ### Two stages, because the engine is in the middle
  *
  * The hops are started in [ChainMode.hops] order (internet side first). When
@@ -115,14 +137,13 @@ internal class ChainException(val failure: ChainFailure) : Exception(failure.nam
  *
  * "Proven ready" is deliberately each core's OWN signal, never the open port:
  * every core binds its listener before it can carry traffic (see
- * [PsiphonCore.awaitReady], [TorCore.awaitReady] and, for Xray, an answer that
- * came back through its inbound - which only happens once the user's server
- * completed its handshake).
+ * [PsiphonCore.awaitReady] and [TorCore.awaitReady]). Xray is the exception
+ * described above: its open inbound is all the next hop waits for.
  *
  * ONE DEADLINE (perf/fast-connect). [start] runs under a single deadline, and
- * every wait inside it - port, Psiphon readiness, Xray readiness, every Tor
- * rung - is min(its own budget, what is left). [startBeforeEngine] gets its
- * own, from the same session deadline.
+ * every wait inside it - port, Psiphon readiness, every Tor rung - is
+ * min(its own budget, what is left). [startBeforeEngine] gets its own, from
+ * the same session deadline.
  *
  * SSTP is NOT a hop of this class: it is a packet tunnel with no SOCKS5 entry,
  * and its session is run by the service through [NativeStack.startSstp].
@@ -158,6 +179,16 @@ internal class ChainStack(
     /** The mode [start] brought up, so [awaitExit] knows which core is the entry. */
     @Volatile
     private var running: ChainMode? = null
+
+    /**
+     * Background, NON-FATAL check of Xray's handshake with the user's server
+     * (see [startXray]). Diagnostics only: nothing waits on it, and [stop]
+     * cancels it.
+     */
+    @Volatile
+    private var xrayWatch: Job? = null
+
+    private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val lock = Any()
 
@@ -310,6 +341,8 @@ internal class ChainStack(
      * other core's connections run through it.
      */
     fun stop() = synchronized(lock) {
+        runCatching { xrayWatch?.cancel() }
+        xrayWatch = null
         runCatching { smartFront?.stop() }
         smartFront = null
         runCatching { front?.stop() }
@@ -434,7 +467,7 @@ internal class ChainStack(
     }
 
     /**
-     * Brings Xray up and proves the user's server answers.
+     * Brings Xray up and hands its port to the next hop RIGHT AWAY.
      *
      * The user's config is read from the Keystore-sealed [XrayConfigStore]
      * (never from the profile, which is exported), parsed by [XrayLink], and
@@ -442,13 +475,21 @@ internal class ChainStack(
      * [upstream] is null in practice and Xray dials the server itself; the
      * parameter stays so a `dialerProxy` chain is still one argument away.
      *
-     * READY means an ANSWER came back through Xray's inbound
-     * ([Readiness.awaitRoundTrip]), which can only happen once the handshake
-     * with the user's server succeeded. Neither an open port nor a CONNECT
-     * reply proves that: Xray binds as soon as the config loaded, and
-     * acknowledges a CONNECT before its outbound has dialled. That matters
-     * twice over now that Xray is UNDER the engine: Aether reads its upstream
-     * once, so it must not be launched on an Xray that cannot carry anything.
+     * XRAY-FIRST, NOT XRAY-GATED. Xray counts as up once the config was
+     * accepted and its local inbound is bound. This used to wait for an ANSWER
+     * through the inbound ([Readiness.awaitRoundTrip]) and fail the session
+     * with [ChainFailure.XRAY_TIMEOUT] when none came back inside
+     * [VpnTunables.XRAY_READY_WAIT_MS]. In practice some configs never answer
+     * that probe (a DNS-over-TCP query to a public resolver) yet do carry the
+     * next hop's own handshake - WARP's MASQUE / WireGuard, Psiphon, Tor - so
+     * they were killed before they were given a chance. Now the next hop is
+     * started immediately and handshakes THROUGH Xray while Xray's own
+     * handshake with the user's server is still settling.
+     *
+     * The round-trip check still runs, in the background and non-fatal
+     * ([watchXrayHandshake]), so the diagnostics log still says whether the
+     * user's server answered. A config that really is dead now surfaces as the
+     * next hop's own timeout instead of [ChainFailure.XRAY_TIMEOUT].
      */
     private suspend fun startXray(upstream: Int?, deadline: Long): Int {
         val core = XrayCore(context, filesDir)
@@ -494,27 +535,55 @@ internal class ChainStack(
             throw ChainException(if (reason != null || !core.isAlive) ChainFailure.XRAY_CONFIG else ChainFailure.XRAY_TIMEOUT)
         }
 
-        val budget = minOf(VpnTunables.XRAY_READY_WAIT_MS, remainingMs(deadline))
-        if (budget > 0 &&
-            Readiness.awaitRoundTrip(
+        // Config accepted, inbound bound: Xray is up. Hand it to the next hop
+        // now and let both handshakes run at the same time.
+        ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.READY, label)
+        DiagnosticsLog.i(
+            TAG,
+            "Xray is up on ${TunnelConfig.SOCKS_HOST}:${TunnelConfig.XRAY_SOCKS_PORT} (${outbound.summary}" +
+                (if (upstream != null) " via 127.0.0.1:$upstream" else "") +
+                ") - starting the next hop now, without waiting for a round trip.",
+        )
+        watchXrayHandshake(core, outbound.summary, label, upstream)
+        return TunnelConfig.XRAY_SOCKS_PORT
+    }
+
+    /**
+     * Checks, in the background, whether an answer comes back through Xray's
+     * inbound - i.e. whether the handshake with the user's server succeeded.
+     *
+     * NON-FATAL and diagnostics only: nothing waits on it, it never stops a
+     * core and never fails the session. It only logs the outcome and, when no
+     * answer came back, marks the Xray row as unverified so a dead config is
+     * still easy to spot. Cancelled by [stop]; a result for a core that has
+     * since been replaced is dropped.
+     */
+    private fun watchXrayHandshake(core: XrayCore, summary: String, label: String, upstream: Int?) {
+        val job = watchScope.launch {
+            val answered = Readiness.awaitRoundTrip(
                 TunnelConfig.SOCKS_HOST,
                 TunnelConfig.XRAY_SOCKS_PORT,
                 TunnelConfig.DNS_SERVERS.first(),
-                budget,
+                VpnTunables.XRAY_READY_WAIT_MS,
             ) { core.isAlive }
-        ) {
-            ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.READY, label)
-            return TunnelConfig.XRAY_SOCKS_PORT
+            if (xray !== core) return@launch
+            if (answered) {
+                DiagnosticsLog.i(TAG, "Xray handshake with $summary confirmed (background check).")
+            } else if (core.isAlive) {
+                DiagnosticsLog.w(
+                    TAG,
+                    "Xray is running but its readiness probe got no answer through $summary" +
+                        (if (upstream != null) " via 127.0.0.1:$upstream" else "") +
+                        " - the chain was NOT stopped; the hop above keeps trying through it. " +
+                        "If nothing connects, check the server, its UUID / password and its TLS / REALITY settings.",
+                )
+                ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.READY, "$label (unverified)")
+            }
         }
-
-        DiagnosticsLog.w(
-            TAG,
-            "Xray is running but nothing got through ${outbound.summary}" +
-                (if (upstream != null) " via 127.0.0.1:$upstream" else "") +
-                " - check the server, its UUID / password and its TLS / REALITY settings.",
-        )
-        ChainRuntime.update(Hop.XRAY, ChainRuntime.HopState.FAILED, "no handshake")
-        throw ChainException(ChainFailure.XRAY_TIMEOUT)
+        synchronized(lock) {
+            xrayWatch?.cancel()
+            xrayWatch = job
+        }
     }
 
     /**
