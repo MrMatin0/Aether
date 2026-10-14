@@ -2,8 +2,6 @@ package studio.cluvex.aether.ui.engine
 
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -11,12 +9,11 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.FieldLabel
-import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.SwitchRow
 import studio.cluvex.aether.ui.teamAuthLabel
 
 /**
- * Cloudflare Zero Trust enrolment. Expert depth only.
+ * Cloudflare Zero Trust enrolment, as one compact card.
  *
  * Only the credentials the CHOSEN method needs are shown, and the two that are
  * secrets (service-token secret, enrolment JWT) are masked: an organization
@@ -37,13 +34,8 @@ internal fun ZeroTrustSection(
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
 ) {
-    EngineSection(
-        title = stringResource(R.string.section_zerotrust),
-        subtitle = stringResource(R.string.section_zerotrust_note),
-        icon = Icons.Rounded.VpnKey,
-        modifier = modifier,
-    ) {
-        FieldLabel(stringResource(R.string.team_auth_label))
+    EngineGroup(modifier = modifier) {
+        FieldLabel(stringResource(R.string.team_auth_label), info = stringResource(R.string.team_auth_desc))
         DropdownSelector(
             options = TeamAuth.entries,
             selected = teamAuth,
@@ -51,16 +43,15 @@ internal fun ZeroTrustSection(
             label = { teamAuthLabel(it) },
             enabled = enabled,
         )
-        Hint(stringResource(R.string.team_auth_desc))
 
         DependentBlock(visible = teamAuth != TeamAuth.OFF) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
+            Spacer(Modifier.height(EngineSpacing.Field))
             ProfileTextField(
                 value = team,
                 onValueChange = { value -> edit { copy(team = value) } },
                 label = stringResource(R.string.team_label),
                 placeholder = stringResource(R.string.team_hint),
-                helpText = stringResource(R.string.team_help),
+                info = stringResource(R.string.team_help),
                 enabled = enabled,
             )
 
@@ -78,7 +69,7 @@ internal fun ZeroTrustSection(
                         value = accessClientSecret,
                         onValueChange = { value -> edit { copy(accessClientSecret = value) } },
                         label = stringResource(R.string.access_secret_label),
-                        helpText = stringResource(R.string.access_secret_help),
+                        info = stringResource(R.string.access_secret_help),
                         masked = true,
                         enabled = enabled,
                     )
@@ -100,7 +91,7 @@ internal fun ZeroTrustSection(
                         value = accessToken,
                         onValueChange = { value -> edit { copy(accessToken = value) } },
                         label = stringResource(R.string.access_token_label),
-                        helpText = stringResource(R.string.access_secret_help),
+                        info = stringResource(R.string.access_secret_help),
                         masked = true,
                         enabled = enabled,
                     )
@@ -113,7 +104,7 @@ internal fun ZeroTrustSection(
             EngineDivider()
             SwitchRow(
                 title = stringResource(R.string.gateway_title),
-                description = stringResource(R.string.gateway_desc),
+                info = stringResource(R.string.gateway_desc),
                 checked = gateway,
                 enabled = enabled,
                 onChange = { value -> edit { copy(gateway = value) } },

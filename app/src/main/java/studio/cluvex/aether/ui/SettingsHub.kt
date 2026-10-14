@@ -5,8 +5,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,7 +14,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,6 +32,7 @@ import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.ui.components.*
 import studio.cluvex.aether.ui.theme.AetherDur
+import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 // ------------------------------------------------------------------ entry --
@@ -41,13 +41,12 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  * The settings hub.
  *
  * Top to bottom: lock badge (only while the tunnel is up), search, then five
- * intent-based groups whose collapsed headers already carry the live values.
- * The centered reading column stays usable on tablets and in landscape.
+ * intent-based groups as FLAT, always-visible cards with a quiet section label
+ * above each (iOS Settings / Mullvad / ProtonVPN). Every destination is visible
+ * at a glance; nothing needs a tap to be found. Each row carries its live value
+ * inline at the end, so the page only needs opening to change something.
  *
- * The connection status strip, quick controls and recommended presets that
- * used to sit above the groups are gone: the connection state already lives on
- * the home screen, and every quick toggle / preset duplicated a row that is one
- * tap away inside its group (Security, Sharing, Saved setups).
+ * The centered reading column stays usable on tablets and in landscape.
  *
  * Writes go through [onProfileChange] exactly as before: profile-locked
  * changes are refused while the tunnel is up (same rule as EngineDestination).
@@ -81,20 +80,6 @@ fun SettingsHub(
     SettingsHubLayout(locked, null, profile, null, onOpen, modifier, scrollState)
 }
 
-/** Preserve expanded sections saved before Routing & safety became two groups. */
-internal fun restoreSettingsGroups(names: List<String>): Set<SettingsGroup> =
-    names.flatMap { name ->
-        when (name) {
-            "ROUTING_SAFETY" -> listOf(SettingsGroup.TRAFFIC, SettingsGroup.SAFETY)
-            else -> SettingsGroup.entries.filter { it.name == name }
-        }
-    }.toSet()
-
-private val GroupSetSaver = listSaver<Set<SettingsGroup>, String>(
-    save = { set -> set.map { it.name } },
-    restore = ::restoreSettingsGroups,
-)
-
 // ----------------------------------------------------------------- layout --
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -116,7 +101,6 @@ private fun SettingsHubLayout(
     val byPage = remember(entries) { entries.associateBy { it.page } }
 
     var query by rememberSaveable { mutableStateOf("") }
-    var expanded by rememberSaveable(stateSaver = GroupSetSaver) { mutableStateOf(setOf(SettingsGroup.CORE_TUNNEL)) }
     var sheet by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
 
     val canSheet = state != null && onProfileChange != null
@@ -131,7 +115,7 @@ private fun SettingsHubLayout(
             .wrapContentWidth(Alignment.CenterHorizontally)
             .widthIn(max = 720.dp)
             .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(4.dp))
         // No connection status here: Home already shows it. The lock is the
@@ -139,7 +123,7 @@ private fun SettingsHubLayout(
         // some settings cannot be edited while connected.
         if (locked) {
             LockBadge()
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
         }
         HubSearchField(query, onQueryChange = { query = it })
 
@@ -157,47 +141,10 @@ private fun SettingsHubLayout(
                     onClear = { query = "" },
                 )
             } else {
-                Column {
-                    Spacer(Modifier.height(28.dp))
-                    SettingsGroup.entries.forEach { group ->
-                        key(group) {
-                            val isOpen = group in expanded
-                            SectionCard(
-                                title = stringResource(group.label),
-                                summary = group.summaryPages.mapNotNull { byPage[it]?.state }.joinToString(HUB_DOT).ifEmpty { null },
-                                icon = group.icon,
-                                expanded = isOpen,
-                                onToggle = { expanded = if (isOpen) expanded - group else expanded + group },
-                            ) {
-                                group.pages.forEachIndexed { index, page ->
-                                    key(page) {
-                                        byPage[page]?.let { entry ->
-                                            if (index > 0) {
-                                                HorizontalDivider(
-                                                    Modifier.padding(horizontal = 12.dp),
-                                                    color = MaterialTheme.colorScheme.outlineVariant,
-                                                )
-                                            }
-                                            HubRow(
-                                                icon = settingsPageIcon(page),
-                                                title = entry.title,
-                                                value = entry.state,
-                                                note = entry.note,
-                                                locked = locked && page.editsProfile,
-                                                destructive = page == SettingsPage.RESET,
-                                                onClick = { openPage(page) },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(12.dp))
-                        }
-                    }
-                }
+                HubGroups(byPage = byPage, locked = locked, onOpen = openPage)
             }
         }
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(32.dp))
     }
 
     // ------------------------------------------------------------- sheet --
@@ -227,8 +174,41 @@ private fun SettingsHubLayout(
                 profile = profile,
                 onProfileChange = onProfileChange,
                 settingsEnabled = !locked,
-                showSubtitle = false,
             )
+        }
+    }
+}
+
+/** Every group, always open: label + flat card of compact rows. */
+@Composable
+private fun HubGroups(
+    byPage: Map<SettingsPage, SettingsEntry>,
+    locked: Boolean,
+    onOpen: (SettingsPage) -> Unit,
+) {
+    Column {
+        SettingsGroup.entries.forEach { group ->
+            key(group) {
+                val rows = group.pages.mapNotNull { byPage[it] }
+                if (rows.isNotEmpty()) {
+                    Spacer(Modifier.height(20.dp))
+                    HubGroupCard(label = stringResource(group.label)) {
+                        rows.forEachIndexed { index, entry ->
+                            key(entry.page) {
+                                if (index > 0) HubRowDivider()
+                                HubRow(
+                                    icon = settingsPageIcon(entry.page),
+                                    title = entry.title,
+                                    value = entry.state,
+                                    locked = locked && entry.page.editsProfile,
+                                    destructive = entry.page == SettingsPage.RESET,
+                                    onClick = { onOpen(entry.page) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -244,7 +224,7 @@ private fun SearchResults(
     onClear: () -> Unit,
 ) {
     Column {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
         if (hits.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Rounded.SearchOff, null, Modifier.size(32.dp), MaterialTheme.colorScheme.onSurfaceVariant)
@@ -259,36 +239,22 @@ private fun SearchResults(
             }
             return@Column
         }
-        HubSectionLabel(pluralStringResource(R.plurals.hub_search_count, hits.size, hits.size))
-        Spacer(Modifier.height(10.dp))
-        Surface(
-            shape = HubShapes.Card,
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        ) {
-            Column(Modifier.padding(8.dp)) {
-                hits.forEachIndexed { index, hit ->
-                    key(hit.entry.page) {
-                        if (index > 0) {
-                            HorizontalDivider(
-                                Modifier.padding(horizontal = 12.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                            )
-                        }
-                        val page = hit.entry.page
-                        HubRow(
-                            icon = settingsPageIcon(page),
-                            title = hit.entry.title,
-                            value = hit.entry.state,
-                            note = hit.entry.note,
-                            eyebrow = stringResource(page.group.label),
-                            highlights = hit.titleRanges,
-                            tags = hit.matchedTags,
-                            locked = locked && page.editsProfile,
-                            destructive = page == SettingsPage.RESET,
-                            onClick = { onOpen(page) },
-                        )
-                    }
+        HubGroupCard(label = pluralStringResource(R.plurals.hub_search_count, hits.size, hits.size)) {
+            hits.forEachIndexed { index, hit ->
+                key(hit.entry.page) {
+                    if (index > 0) HubRowDivider()
+                    val page = hit.entry.page
+                    HubRow(
+                        icon = settingsPageIcon(page),
+                        title = hit.entry.title,
+                        value = hit.entry.state,
+                        eyebrow = stringResource(page.group.label),
+                        highlights = hit.titleRanges,
+                        tags = hit.matchedTags,
+                        locked = locked && page.editsProfile,
+                        destructive = page == SettingsPage.RESET,
+                        onClick = { onOpen(page) },
+                    )
                 }
             }
         }
@@ -297,30 +263,29 @@ private fun SearchResults(
 
 // ------------------------------------------------------------------ sheet --
 
+/** Title only: the body below is the explanation, so no subtitle paragraph. */
 @Composable
 private fun SheetHeader(page: SettingsPage, locked: Boolean, onExpand: () -> Unit) {
+    val a = LocalAetherAccents.current
     Row(
-        Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.Top,
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(settingsPageIcon(page), null, Modifier.padding(top = 4.dp).size(22.dp), MaterialTheme.colorScheme.primary)
+        Box(
+            Modifier.size(36.dp).background(a.brandWash, HubShapes.Badge),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(settingsPageIcon(page), null, Modifier.size(20.dp), a.brand)
+        }
         Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                settingsPageTitle(page),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.semantics { heading() },
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                settingsPageSubtitle(page),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (locked) {
-                Spacer(Modifier.height(10.dp))
-                LockBadge()
-            }
+        Text(
+            settingsPageTitle(page),
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.weight(1f).semantics { heading() },
+        )
+        if (locked) {
+            Spacer(Modifier.width(8.dp))
+            LockBadge(compact = true)
         }
         IconButton(onClick = onExpand) {
             Icon(Icons.Rounded.OpenInFull, stringResource(R.string.hub_open_full))

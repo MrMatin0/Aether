@@ -95,6 +95,23 @@ class UiRedesignTest {
         assertTrue(SettingsPage.CONNECTION.showsLockNotice)
     }
 
+    /** Moving Anti-DPI to the top of the hub must not change how it opens or what it locks. */
+    @Test fun promotedTransportKeepsItsPageAndLock() {
+        assertEquals(SettingsGroup.CORE_TUNNEL, SettingsPage.TRANSPORT.group)
+        assertEquals(SettingsPage.CONNECTION, SettingsGroup.CORE_TUNNEL.pages[0])
+        assertEquals(SettingsPage.TRANSPORT, SettingsGroup.CORE_TUNNEL.pages[1])
+        assertEquals(PagePresentation.PAGE, SettingsPage.TRANSPORT.presentation)
+        assertTrue(SettingsPage.TRANSPORT.editsProfile)
+        assertTrue(SettingsPage.TRANSPORT.showsLockNotice)
+    }
+
+    /** Tor bridges were left alone: same group, same full page, same lock. */
+    @Test fun bridgesDestinationIsUnchanged() {
+        assertEquals(SettingsGroup.CORE_TUNNEL, SettingsPage.BRIDGES.group)
+        assertEquals(PagePresentation.PAGE, SettingsPage.BRIDGES.presentation)
+        assertTrue(SettingsPage.BRIDGES.editsProfile)
+    }
+
     @Test fun blankQueryMatchesEveryDestination() {
         assertTrue(matchesSettingsQuery("", listOf("Routing")))
         assertTrue(matchesSettingsQuery("   ", listOf("Routing")))

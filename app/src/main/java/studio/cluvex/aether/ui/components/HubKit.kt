@@ -16,14 +16,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -33,6 +32,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
@@ -43,11 +43,17 @@ import studio.cluvex.aether.ui.theme.*
  * blur: RenderEffect blur is API 31+ only, costs a full offscreen pass per
  * frame while scrolling, and a frosted panel over a flat background is just a
  * grey panel. Tone does the job glass was supposed to do.
+ *
+ * The hub is flat now: every group is an always-visible card under a quiet
+ * section label (iOS Settings / Mullvad / ProtonVPN), so nothing needs a tap
+ * to be found. The collapsible SectionCard is gone.
  */
 
 internal object HubShapes {
-    val Card = RoundedCornerShape(24.dp)
+    val Card = RoundedCornerShape(20.dp)
     val ListRow = RoundedCornerShape(16.dp)
+    /** Squircle-ish tonal badge behind every row icon. */
+    val Badge = RoundedCornerShape(11.dp)
 }
 
 /** Every hub animation goes through here: exponential ease-out, zero under reduced motion. */
@@ -200,99 +206,56 @@ fun HubSectionLabel(text: String, modifier: Modifier = Modifier, trailing: (@Com
 }
 
 /**
- * A collapsible group. Collapsed, the header carries the group's live values,
- * so most users read their config without opening anything. Rows inside are
- * plain rows on the same surface: never a card inside a card.
+ * One always-visible group: a quiet label above a flat card of rows. Rows sit
+ * directly on the card surface, separated by inset hairlines: never a card
+ * inside a card.
  */
 @Composable
-fun SectionCard(
-    title: String,
-    summary: String?,
-    icon: ImageVector,
-    expanded: Boolean,
-    onToggle: () -> Unit,
+fun HubGroupCard(
+    label: String?,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val a = LocalAetherAccents.current
     val scheme = MaterialTheme.colorScheme
-    val rotation by animateFloatAsState(if (expanded) 180f else 0f, hubTween(AetherDur.Base, AetherEaseOutExpo), label = "chevron")
-    val container by animateColorAsState(
-        if (expanded) scheme.surfaceContainer else scheme.surfaceContainerLow,
-        hubTween(AetherDur.Base),
-        label = "section-bg",
-    )
-    val toggleLabel = stringResource(if (expanded) R.string.hub_collapse else R.string.hub_expand)
-    Surface(
-        modifier.fillMaxWidth(),
-        shape = HubShapes.Card,
-        color = container,
-        border = BorderStroke(1.dp, scheme.outlineVariant),
-    ) {
-        Column {
-            Row(
-                Modifier.fillMaxWidth()
-                    .clickable(role = Role.Button, onClickLabel = toggleLabel, onClick = onToggle)
-                    .semantics { heading() }
-                    .padding(horizontal = 18.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(40.dp).background(a.brandWash, CircleShape), contentAlignment = Alignment.Center) {
-                    Icon(icon, null, Modifier.size(20.dp), a.brand)
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium)
-                    AnimatedVisibility(
-                        visible = !expanded && summary != null,
-                        enter = fadeIn(hubTween()) + expandVertically(hubTween(AetherDur.Base, AetherEaseOutExpo)),
-                        exit = fadeOut(hubTween(AetherDur.Snap)) + shrinkVertically(hubTween()),
-                    ) {
-                        Text(
-                            summary.orEmpty(),
-                            style = AetherMetaLabel,
-                            color = scheme.primary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                Icon(
-                    Icons.Rounded.ExpandMore,
-                    null,
-                    Modifier.graphicsLayer { rotationZ = rotation },
-                    scheme.onSurfaceVariant,
-                )
-            }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically(hubTween(AetherDur.Base, AetherEaseOutExpo), expandFrom = Alignment.Top) +
-                    fadeIn(hubTween(AetherDur.Base)),
-                exit = shrinkVertically(hubTween(AetherDur.Quick)) + fadeOut(hubTween(AetherDur.Snap)),
-            ) {
-                Column(Modifier.padding(start = 6.dp, end = 6.dp, bottom = 6.dp)) {
-                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = scheme.outlineVariant)
-                    content()
-                }
-            }
+    Column(modifier.fillMaxWidth()) {
+        if (label != null) {
+            HubSectionLabel(label, Modifier.padding(start = 12.dp, bottom = 8.dp))
+        }
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = HubShapes.Card,
+            color = scheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, scheme.outlineVariant),
+        ) {
+            Column(Modifier.padding(vertical = 4.dp), content = content)
         }
     }
 }
 
+/** Hairline between two rows, inset past the icon badge like a native list. */
+@Composable
+fun HubRowDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(
+        modifier.padding(start = 66.dp, end = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+    )
+}
+
+/** The live value never takes more than this share of the row, so titles stay readable. */
+private const val HUB_VALUE_SHARE = 0.36f
+
 /**
- * One destination. The second line is the LIVE value when there is one, so
- * the page only needs opening to change something, not to find out what it
- * says. Titles wrap at larger font scales instead of hiding the destination.
- * No chevron: the whole row is the target.
+ * One destination: tonal squircle badge, title, and the LIVE value inline at
+ * the end next to a subtle chevron. No note, no subtitle: the title says what
+ * it is and the value says what it is set to. 52dp minimum.
+ *
+ * [eyebrow], [highlights] and [tags] are only used by search results.
  */
 @Composable
 fun HubRow(
     icon: ImageVector,
     title: String,
     value: String?,
-    note: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     locked: Boolean = false,
@@ -301,41 +264,72 @@ fun HubRow(
     highlights: List<IntRange> = emptyList(),
     tags: List<String> = emptyList(),
 ) {
+    val a = LocalAetherAccents.current
     val scheme = MaterialTheme.colorScheme
     val ink = if (destructive) scheme.error else scheme.onSurface
-    Row(
-        modifier.fillMaxWidth()
-            .clip(HubShapes.ListRow)
-            .clickable(role = Role.Button, onClickLabel = title, onClick = onClick)
-            .heightIn(min = 64.dp)
-            .padding(horizontal = 12.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Icon(icon, null, Modifier.padding(top = 2.dp).size(20.dp), if (destructive) scheme.error else scheme.onSurfaceVariant)
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            if (eyebrow != null) {
-                Text(eyebrow, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-                Spacer(Modifier.height(4.dp))
+    val badgeTint = if (destructive) scheme.error else a.brand
+    val badgeFill = if (destructive) scheme.errorContainer.copy(alpha = 0.55f) else a.brandWash
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val valueMax = maxWidth * HUB_VALUE_SHARE
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable(role = Role.Button, onClickLabel = title, onClick = onClick)
+                .heightIn(min = 52.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(36.dp).background(badgeFill, HubShapes.Badge), contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(20.dp), badgeTint)
             }
-            HighlightedText(title, highlights, MaterialTheme.typography.titleMedium, ink)
-            Spacer(Modifier.height(4.dp))
-            if (value != null) {
-                Text(value, style = AetherMetaLabel, color = scheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            } else {
-                // Destructive actions must keep their explanation visible at any font scale.
-                Text(note, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
-            }
-            if (tags.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    tags.forEach { TagChip(it) }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                if (eyebrow != null) {
+                    Text(
+                        eyebrow,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                }
+                HighlightedText(
+                    title,
+                    highlights,
+                    MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    ink,
+                    maxLines = 2,
+                )
+                if (tags.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tags.forEach { TagChip(it) }
+                    }
                 }
             }
-        }
-        if (locked) {
-            Spacer(Modifier.width(12.dp))
-            LockBadge(Modifier.padding(top = 4.dp), compact = true)
+            if (value != null) {
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    value,
+                    modifier = Modifier.widthIn(max = valueMax),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = scheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                )
+            }
+            if (locked) {
+                Spacer(Modifier.width(8.dp))
+                LockBadge(compact = true)
+            }
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                null,
+                Modifier.size(20.dp),
+                scheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
         }
     }
 }

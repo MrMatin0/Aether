@@ -5,12 +5,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import studio.cluvex.aether.R
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.ui.components.AppPickerDialog
-import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.engine.*
 
 private enum class AppPicker { SPLIT, BLOCKED }
@@ -18,6 +14,10 @@ private enum class AppPicker { SPLIT, BLOCKED }
 /**
  * Renders ONE engine category, because each of them is now its own
  * destination.
+ *
+ * Cards on one page are 16dp apart ([EngineSpacing.Group]) and the old
+ * "change only if a connection keeps failing" footer is gone: the hub already
+ * files expert pages under Advanced.
  *
  * Smart DNS is not here any more: it lives on the connection tab
  * (SmartDnsHome.kt), next to the other choices people make between attempts.
@@ -70,28 +70,26 @@ internal fun EngineDestination(
                     enabled = enabled, edit = edit,
                 )
                 if (profile.chain.usesSstp) {
-                    Spacer(Modifier.height(32.dp))
+                    Spacer(Modifier.height(EngineSpacing.Group))
                     SstpDestination(config = profile.sstpConfig, enabled = enabled, edit = edit)
                 }
             }
+            // Untouched on purpose: Tor bridges keep their own implementation.
             SettingsPage.BRIDGES -> BridgeSection(
                 bridgeMode = profile.torBridgeMode, transport = profile.torBridgeTransport,
                 bridgeLines = profile.torBridgeLines, chain = profile.chain,
                 enabled = enabled, edit = edit, fetchEdit = fetchEdit,
             )
-            SettingsPage.TRANSPORT -> {
-                TransportSection(
-                    noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,
-                    fragment = profile.fragment, fragmentSize = profile.fragmentSize,
-                    fragmentDelay = profile.fragmentDelay, ech = profile.ech,
-                    quicV2Opener = profile.quicV2Opener,
-                    socketMark = profile.socketMark,
-                    protocol = profile.protocol, masqueHttp2 = profile.masqueHttp2,
-                    spoofMode = profile.spoofMode, spoofSni = profile.spoofSni,
-                    enabled = enabled, edit = edit,
-                )
-                Hint(stringResource(R.string.settings_expert_note))
-            }
+            SettingsPage.TRANSPORT -> TransportSection(
+                noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,
+                fragment = profile.fragment, fragmentSize = profile.fragmentSize,
+                fragmentDelay = profile.fragmentDelay, ech = profile.ech,
+                quicV2Opener = profile.quicV2Opener,
+                socketMark = profile.socketMark,
+                protocol = profile.protocol, masqueHttp2 = profile.masqueHttp2,
+                spoofMode = profile.spoofMode, spoofSni = profile.spoofSni,
+                enabled = enabled, edit = edit,
+            )
             SettingsPage.ROUTING -> {
                 RoutingSection(
                     proxyMode = profile.proxyMode, splitMode = profile.splitMode,
@@ -100,7 +98,7 @@ internal fun EngineDestination(
                     onPickSplitApps = { picker = AppPicker.SPLIT },
                     onPickBlockedApps = { picker = AppPicker.BLOCKED },
                 )
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(EngineSpacing.Group))
                 RoutesSection(
                     routeBlock = profile.routeBlock, routeDirect = profile.routeDirect,
                     enabled = enabled, edit = edit,
@@ -111,7 +109,7 @@ internal fun EngineDestination(
                     quickReconnect = profile.quickReconnect, killSwitch = profile.killSwitch,
                     strictKillSwitch = profile.strictKillSwitch, enabled = enabled, edit = edit,
                 )
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(EngineSpacing.Group))
                 ResilienceSection(
                     ipv6LeakProtection = profile.ipv6LeakProtection, smartReconnect = profile.smartReconnect,
                     reconnectRetryLimit = profile.reconnectRetryLimit, enabled = enabled, edit = edit,
@@ -130,14 +128,13 @@ internal fun EngineDestination(
                     noProfileRetry = profile.noProfileRetry, coreLogLevel = profile.coreLogLevel,
                     enabled = enabled, edit = edit,
                 )
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(EngineSpacing.Group))
                 CoreResourceSection(
                     maxClients = profile.maxClients, halfCloseSecs = profile.halfCloseSecs,
                     tcpKeepaliveSecs = profile.tcpKeepaliveSecs,
                     tcpConnectSecs = profile.tcpConnectSecs,
                     enabled = enabled, edit = edit,
                 )
-                Hint(stringResource(R.string.settings_expert_note))
             }
             SettingsPage.RESET -> ResetSection(enabled = enabled, edit = edit)
             SettingsPage.SHARING, SettingsPage.APPEARANCE, SettingsPage.AUTOMATION,

@@ -14,20 +14,26 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.ui.components.ActionPill
 
-/** Inline confirmation keeps accidental taps from wiping a working configuration. */
+/**
+ * Inline confirmation keeps accidental taps from wiping a working configuration.
+ * The one-line consequence stays visible: destructive actions always say what
+ * they do, at any font scale.
+ */
 @Composable
 internal fun ResetSection(enabled: Boolean, edit: ProfileEdit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     var confirming by remember(enabled) { mutableStateOf(false) }
     val error = MaterialTheme.colorScheme.error
-    EngineSection(title = stringResource(R.string.section_reset),
-        subtitle = stringResource(R.string.section_reset_note), icon = Icons.Rounded.RestartAlt,
-        tint = error, tone = error, headerGap = EngineSpacing.Divider, modifier = modifier) {
+    EngineGroup(modifier = modifier, tone = error) {
+        Text(
+            stringResource(if (confirming && enabled) R.string.ux_reset_confirm else R.string.section_reset_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(EngineSpacing.Field))
         if (confirming && enabled) {
-            Text(stringResource(R.string.ux_reset_confirm), style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            ActionPill(label = stringResource(R.string.reset_settings), tint = error,
+            ActionPill(label = stringResource(R.string.reset_settings), tint = error, filled = true,
                 modifier = Modifier.fillMaxWidth(), enabled = enabled, onClick = {
                     if (enabled) {
                         focus.clearFocus(force = true)
