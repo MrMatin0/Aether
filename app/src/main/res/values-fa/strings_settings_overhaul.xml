@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- گروه‌های فهرست تنظیمات -->
+    <string name="hub_group_core">اتصال و ضد-DPI</string>
+    <string name="hub_group_routing_sharing">مسیریابی و اشتراک</string>
+    <string name="hub_group_security_stability">امنیت و پایداری</string>
+
+    <!-- دکمهٔ (?) کنار تنظیمات فنی -->
+    <string name="settings_info">توضیح بیشتر</string>
+
+    <!-- کارت‌های داخل صفحه‌ها -->
+    <string name="settings_group_anti_dpi">ضد-DPI و مبهم\u200cسازی</string>
+    <string name="settings_group_protocol_quic">پروتکل و QUIC</string>
+    <string name="settings_group_packet">بسته و شبکه</string>
+    <string name="settings_group_apps">برنامه\u200cها و پراکسی</string>
+    <string name="settings_group_drop">هنگام قطع تونل</string>
+    <string name="settings_group_resilience">نشت و اتصال دوباره</string>
+    <string name="settings_group_engine">هسته</string>
+    <string name="settings_group_timers">زمان\u200cسنج\u200cها و تلاش دوباره</string>
+</resources>

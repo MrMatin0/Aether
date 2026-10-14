@@ -2,8 +2,6 @@ package studio.cluvex.aether.ui.engine
 
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -20,7 +18,6 @@ private val RetryLimits = listOf(3, 5, 10, 15, 20)
 
 /**
  * Leak protection and what the app does about a session that keeps failing.
- * Expert depth only.
  *
  * The retry limit only exists while smart reconnect is on, and it is nested
  * under it for the same reason strict lockdown is nested under the kill switch:
@@ -35,16 +32,14 @@ internal fun ResilienceSection(
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
 ) {
-    EngineSection(
-        title = stringResource(R.string.section_security),
-        subtitle = stringResource(R.string.section_security_note),
-        icon = Icons.Rounded.Refresh,
-        headerGap = EngineSpacing.SwitchHeader,
+    EngineGroup(
         modifier = modifier,
+        label = stringResource(R.string.settings_group_resilience),
+        contentPadding = EngineSpacing.DensePadding,
     ) {
         SwitchRow(
             title = stringResource(R.string.ipv6_leak_title),
-            description = stringResource(R.string.ipv6_leak_desc),
+            info = stringResource(R.string.ipv6_leak_desc),
             checked = ipv6LeakProtection,
             enabled = enabled,
             onChange = { value -> edit { copy(ipv6LeakProtection = value) } },
@@ -52,13 +47,13 @@ internal fun ResilienceSection(
         EngineDivider()
         SwitchRow(
             title = stringResource(R.string.smart_reconnect_title),
-            description = stringResource(R.string.smart_reconnect_desc),
+            info = stringResource(R.string.smart_reconnect_desc),
             checked = smartReconnect,
             enabled = enabled,
             onChange = { value -> edit { copy(smartReconnect = value) } },
         )
         DependentBlock(visible = smartReconnect) {
-            Spacer(Modifier.height(EngineSpacing.Header))
+            Spacer(Modifier.height(EngineSpacing.Inline))
             FieldLabel(stringResource(R.string.reconnect_limit_label))
             DropdownSelector(
                 options = RetryLimits,
@@ -67,6 +62,7 @@ internal fun ResilienceSection(
                 label = { "$it" },
                 enabled = enabled,
             )
+            Spacer(Modifier.height(EngineSpacing.Field))
         }
     }
 }

@@ -5,8 +5,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -22,9 +20,9 @@ import studio.cluvex.aether.ui.components.LockBadge
  * `page.name` into the saved-state bundle, so renaming an entry here would
  * silently drop a user back to the hub after process death.
  *
- * What changed is how the hub PRESENTS them: five intent-based collapsible
- * groups (see [SettingsGroup]), short panels in a sheet, dense editors as a
- * full page.
+ * What changed is how the hub PRESENTS them: five intent-based groups shown as
+ * flat, always-visible cards (see [SettingsGroup]), short panels in a sheet,
+ * dense editors as a full page.
  */
 enum class SettingsPage {
     CONNECTION, CHAIN, BRIDGES, TRANSPORT,
@@ -71,7 +69,7 @@ enum class SettingsPage {
             CONNECTION -> listOf("MASQUE", "WireGuard", "endpoint", "scan", "IPv4", "IPv6", "peer", "HTTP/2")
             CHAIN -> listOf("Tor", "Psiphon", "chain", "region")
             BRIDGES -> listOf("obfs4", "Snowflake", "WebTunnel", "meek", "bridge")
-            TRANSPORT -> listOf("MTU", "DNS", "ECH", "fragment", "noize", "keepalive", "QUIC")
+            TRANSPORT -> listOf("DPI", "MTU", "DNS", "ECH", "SNI", "spoof", "fragment", "noize", "keepalive", "QUIC")
             ROUTING -> listOf("split tunnel", "proxy", "apps", "bypass", "block", "direct")
             SHARING -> listOf("LAN", "hotspot", "SOCKS")
             SECURITY -> listOf("kill switch", "lockdown", "IPv6 leak", "reconnect")
@@ -92,19 +90,20 @@ internal enum class PagePresentation { PAGE, SHEET }
  * Five groups, ordered by how often people need them and named by what the
  * user is trying to do. A page must be in exactly one group (unit-tested).
  *
- * - [CORE_TUNNEL]: how you connect, plus the saved setups that switch between
- *   connection profiles.
+ * - [CORE_TUNNEL]: how you connect AND how you get past DPI. Transport &
+ *   Anti-DPI sits right under Connection: on filtered networks it is the
+ *   second thing people reach for, not an expert afterthought. Then chains,
+ *   Tor bridges and the saved setups that switch between profiles.
  * - [TRAFFIC]: what goes through the tunnel and who else may use it.
  * - [SAFETY]: what keeps you protected: leak guards, the kill switch, and
  *   connecting automatically so the phone is never left unprotected.
  * - [APP]: the app itself, nothing that touches traffic.
- * - [ADVANCED]: pages whose own copy says "change only when a connection keeps
- *   failing", organization-only Zero Trust, and the destructive Reset, which
- *   is deliberately the very last row of the hub.
+ * - [ADVANCED]: engine tuning, organization-only Zero Trust, and the
+ *   destructive Reset, which is deliberately the very last row of the hub.
  *
- * No group holds more than four rows, so every expanded card fits on one
- * screen. [summaryPages] are the destinations whose live values stand in for
- * the whole group on its collapsed card.
+ * Groups are always-visible flat cards, so no group holds more than five rows.
+ * [summaryPages] are the destinations whose live values best describe the
+ * group (used for previews and accessibility summaries).
  */
 internal enum class SettingsGroup(
     val label: Int,
@@ -113,17 +112,20 @@ internal enum class SettingsGroup(
     val summaryPages: List<SettingsPage>,
 ) {
     CORE_TUNNEL(
-        R.string.hub_group_tunnel, Icons.Rounded.Hub,
-        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN, SettingsPage.BRIDGES, SettingsPage.SETUPS),
-        listOf(SettingsPage.CONNECTION, SettingsPage.CHAIN),
+        R.string.hub_group_core, Icons.Rounded.Hub,
+        listOf(
+            SettingsPage.CONNECTION, SettingsPage.TRANSPORT, SettingsPage.CHAIN,
+            SettingsPage.BRIDGES, SettingsPage.SETUPS,
+        ),
+        listOf(SettingsPage.CONNECTION, SettingsPage.TRANSPORT),
     ),
     TRAFFIC(
-        R.string.hub_group_traffic, Icons.Rounded.Route,
+        R.string.hub_group_routing_sharing, Icons.Rounded.Route,
         listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
         listOf(SettingsPage.ROUTING, SettingsPage.SHARING),
     ),
     SAFETY(
-        R.string.hub_group_safety, Icons.Rounded.VerifiedUser,
+        R.string.hub_group_security_stability, Icons.Rounded.VerifiedUser,
         listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
         listOf(SettingsPage.SECURITY, SettingsPage.AUTOMATION),
     ),
@@ -134,8 +136,8 @@ internal enum class SettingsGroup(
     ),
     ADVANCED(
         R.string.hub_group_advanced, Icons.Rounded.Tune,
-        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING, SettingsPage.ORGANIZATION, SettingsPage.RESET),
-        listOf(SettingsPage.TRANSPORT, SettingsPage.TUNING),
+        listOf(SettingsPage.TUNING, SettingsPage.ORGANIZATION, SettingsPage.RESET),
+        listOf(SettingsPage.TUNING, SettingsPage.ORGANIZATION),
     ),
 }
 
@@ -163,6 +165,11 @@ internal fun settingsPageTitle(page: SettingsPage): String = stringResource(
     },
 )
 
+/**
+ * One-line purpose of each page. No longer rendered on the hub or above page
+ * bodies (the top bar already names the page); kept as search haystack via
+ * [SettingsEntry.note].
+ */
 @Composable
 internal fun settingsPageSubtitle(page: SettingsPage): String = stringResource(
     when (page) {
@@ -221,8 +228,9 @@ internal fun matchesSettingsQuery(query: String, fields: List<String>): Boolean 
 
 /**
  * One destination's body. Used both as a full page (from [HomeScreen]) and
- * inside the hub's sheet, which already shows the title and subtitle, hence
- * [showSubtitle]. The old full-width lock banner is now a single badge.
+ * inside the hub's sheet. No subtitle paragraph any more: the top bar (or the
+ * sheet header) already names the page, and the controls speak for
+ * themselves. The lock is a single badge.
  */
 @Composable
 fun SettingsPageBody(
@@ -232,22 +240,13 @@ fun SettingsPageBody(
     onProfileChange: (ConnectionProfile) -> Unit,
     settingsEnabled: Boolean,
     modifier: Modifier = Modifier,
-    showSubtitle: Boolean = true,
 ) {
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
-        if (showSubtitle) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                settingsPageSubtitle(page),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         if (!settingsEnabled && page.showsLockNotice) {
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(8.dp))
             LockBadge()
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(12.dp))
         when (page) {
             SettingsPage.APPEARANCE -> AppearancePanel()
             SettingsPage.AUTOMATION -> AutomationPanel()
@@ -257,6 +256,6 @@ fun SettingsPageBody(
             SettingsPage.ABOUT -> AboutPanel()
             else -> EngineDestination(page, profile, onProfileChange, settingsEnabled)
         }
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(32.dp))
     }
 }

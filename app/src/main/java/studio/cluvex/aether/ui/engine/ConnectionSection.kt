@@ -1,9 +1,9 @@
 package studio.cluvex.aether.ui.engine
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -12,8 +12,6 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
-import studio.cluvex.aether.ui.components.FieldLabel
-import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.ScanModeSelector
 import studio.cluvex.aether.ui.components.SegmentedSelector
 import studio.cluvex.aether.ui.components.SwitchRow
@@ -22,23 +20,17 @@ import studio.cluvex.aether.ui.ipLabel
 import studio.cluvex.aether.ui.protocolLabel
 
 /**
- * The controls that decide whether you connect AT ALL.
- *
- * First card on the page, in both depths, and the only one a user who cannot get
- * online should ever have to touch. Protocol first because it is the one setting
- * that can make the difference between a tunnel and no tunnel; scan mode second
- * because it decides how long the connecting screen lasts.
+ * The controls that decide whether you connect AT ALL, as four compact cards:
+ * Protocol, Scan mode, Endpoint, IP version. Explanations are behind (?).
  *
  * MASQUE-in-MASQUE is one of the protocols here, next to MASQUE and WARP×2,
- * rather than a switch on another page: it is a choice of transport, and a
- * switch that only worked while MASQUE happened to be selected was a setting
- * that could be on and silently doing nothing. Its two optional endpoints sit
- * directly under the picker and only exist while it is selected.
+ * rather than a switch on another page: it is a choice of transport. Its two
+ * optional endpoints sit directly under the picker and only exist while it is
+ * selected.
  *
  * "MASQUE over HTTP/2" follows the same rule: it only applies to the MASQUE
  * transports, so it lives under the picker and only appears while MASQUE or
- * MASQUE-in-MASQUE is selected, instead of sitting on the Transport page where
- * it could be switched on with WireGuard and do nothing.
+ * MASQUE-in-MASQUE is selected.
  */
 @Composable
 internal fun ConnectionSection(
@@ -55,101 +47,109 @@ internal fun ConnectionSection(
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
 ) {
-    EngineSection(
-        title = stringResource(R.string.section_connection),
-        subtitle = stringResource(R.string.section_connection_note),
-        icon = Icons.Rounded.Shield,
-        modifier = modifier,
-    ) {
-        FieldLabel(stringResource(R.string.protocol))
-        SegmentedSelector(
-            options = Protocol.entries,
-            selected = protocol,
-            onSelect = { value -> edit { copy(protocol = value) } },
-            label = { protocolLabel(it) },
-            enabled = enabled,
-        )
-        DependentBlock(visible = protocol == Protocol.MIM) {
-            Hint(stringResource(R.string.mim_desc))
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            ProfileTextField(
-                value = mimOuterPeer,
-                onValueChange = { value -> edit { copy(mimOuterPeer = value) } },
-                label = stringResource(R.string.mim_outer_label),
-                placeholder = stringResource(R.string.mim_peer_hint),
-                helpText = stringResource(R.string.mim_outer_help),
+    Column(modifier.fillMaxWidth()) {
+        // ---------------------------------------------------- protocol --
+        EngineGroup(
+            label = stringResource(R.string.protocol),
+            info = if (protocol == Protocol.MIM) stringResource(R.string.mim_desc) else null,
+        ) {
+            SegmentedSelector(
+                options = Protocol.entries,
+                selected = protocol,
+                onSelect = { value -> edit { copy(protocol = value) } },
+                label = { protocolLabel(it) },
                 enabled = enabled,
             )
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            ProfileTextField(
-                value = mimInnerPeer,
-                onValueChange = { value -> edit { copy(mimInnerPeer = value) } },
-                label = stringResource(R.string.mim_inner_label),
-                placeholder = stringResource(R.string.mim_peer_hint),
-                helpText = stringResource(R.string.mim_inner_help),
-                enabled = enabled,
-            )
-        }
-        DependentBlock(visible = protocol.isMasque) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            SwitchRow(
-                title = stringResource(R.string.masque_http2),
-                description = stringResource(R.string.masque_http2_desc),
-                checked = masqueHttp2,
-                enabled = enabled,
-                onChange = { value -> edit { copy(masqueHttp2 = value) } },
-            )
+            DependentBlock(visible = protocol == Protocol.MIM) {
+                Spacer(Modifier.height(EngineSpacing.Field))
+                ProfileTextField(
+                    value = mimOuterPeer,
+                    onValueChange = { value -> edit { copy(mimOuterPeer = value) } },
+                    label = stringResource(R.string.mim_outer_label),
+                    placeholder = stringResource(R.string.mim_peer_hint),
+                    info = stringResource(R.string.mim_outer_help),
+                    enabled = enabled,
+                )
+                Spacer(Modifier.height(EngineSpacing.Inline))
+                ProfileTextField(
+                    value = mimInnerPeer,
+                    onValueChange = { value -> edit { copy(mimInnerPeer = value) } },
+                    label = stringResource(R.string.mim_inner_label),
+                    placeholder = stringResource(R.string.mim_peer_hint),
+                    info = stringResource(R.string.mim_inner_help),
+                    enabled = enabled,
+                )
+            }
+            DependentBlock(visible = protocol.isMasque) {
+                Spacer(Modifier.height(EngineSpacing.Inline))
+                EngineDivider()
+                SwitchRow(
+                    title = stringResource(R.string.masque_http2),
+                    info = stringResource(R.string.masque_http2_desc),
+                    checked = masqueHttp2,
+                    enabled = enabled,
+                    onChange = { value -> edit { copy(masqueHttp2 = value) } },
+                )
+            }
         }
 
-        Spacer(Modifier.height(EngineSpacing.Field))
-        FieldLabel(stringResource(R.string.scan_mode))
-        ScanModeSelector(
-            selected = scanMode,
-            onSelect = { value -> edit { copy(scanMode = value) } },
-            enabled = enabled,
-        )
-        Hint(stringResource(R.string.scan_mode_hint))
-
-        Spacer(Modifier.height(EngineSpacing.Field))
-        FieldLabel(stringResource(R.string.endpoint_mode))
-        SegmentedSelector(
-            options = EndpointMode.entries,
-            selected = endpointMode,
-            onSelect = { value -> edit { copy(endpointMode = value) } },
-            label = { endpointLabel(it) },
-            enabled = enabled,
-        )
-        DependentBlock(visible = endpointMode == EndpointMode.MANUAL_PEER) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            ProfileTextField(
-                value = manualPeer,
-                onValueChange = { value -> edit { copy(manualPeer = value) } },
-                label = stringResource(R.string.manual_peer_label),
-                placeholder = stringResource(R.string.manual_peer_hint),
-                enabled = enabled,
-            )
-        }
-        DependentBlock(visible = endpointMode == EndpointMode.MANUAL_RANGE) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            ProfileTextField(
-                value = manualRange,
-                onValueChange = { value -> edit { copy(manualRange = value) } },
-                label = stringResource(R.string.manual_range_label),
-                placeholder = stringResource(R.string.manual_range_hint),
-                helpText = stringResource(R.string.manual_range_help),
-                singleLine = false,
+        // --------------------------------------------------- scan mode --
+        Spacer(Modifier.height(EngineSpacing.Group))
+        EngineGroup(
+            label = stringResource(R.string.scan_mode),
+            info = stringResource(R.string.scan_mode_hint),
+        ) {
+            ScanModeSelector(
+                selected = scanMode,
+                onSelect = { value -> edit { copy(scanMode = value) } },
                 enabled = enabled,
             )
         }
 
-        Spacer(Modifier.height(EngineSpacing.Field))
-        FieldLabel(stringResource(R.string.ip_version))
-        SegmentedSelector(
-            options = IpVersion.entries,
-            selected = ipVersion,
-            onSelect = { value -> edit { copy(ipVersion = value) } },
-            label = { ipLabel(it) },
-            enabled = enabled,
-        )
+        // ---------------------------------------------------- endpoint --
+        Spacer(Modifier.height(EngineSpacing.Group))
+        EngineGroup(label = stringResource(R.string.endpoint_mode)) {
+            SegmentedSelector(
+                options = EndpointMode.entries,
+                selected = endpointMode,
+                onSelect = { value -> edit { copy(endpointMode = value) } },
+                label = { endpointLabel(it) },
+                enabled = enabled,
+            )
+            DependentBlock(visible = endpointMode == EndpointMode.MANUAL_PEER) {
+                Spacer(Modifier.height(EngineSpacing.Field))
+                ProfileTextField(
+                    value = manualPeer,
+                    onValueChange = { value -> edit { copy(manualPeer = value) } },
+                    label = stringResource(R.string.manual_peer_label),
+                    placeholder = stringResource(R.string.manual_peer_hint),
+                    enabled = enabled,
+                )
+            }
+            DependentBlock(visible = endpointMode == EndpointMode.MANUAL_RANGE) {
+                Spacer(Modifier.height(EngineSpacing.Field))
+                ProfileTextField(
+                    value = manualRange,
+                    onValueChange = { value -> edit { copy(manualRange = value) } },
+                    label = stringResource(R.string.manual_range_label),
+                    placeholder = stringResource(R.string.manual_range_hint),
+                    info = stringResource(R.string.manual_range_help),
+                    singleLine = false,
+                    enabled = enabled,
+                )
+            }
+        }
+
+        // -------------------------------------------------- IP version --
+        Spacer(Modifier.height(EngineSpacing.Group))
+        EngineGroup(label = stringResource(R.string.ip_version)) {
+            SegmentedSelector(
+                options = IpVersion.entries,
+                selected = ipVersion,
+                onSelect = { value -> edit { copy(ipVersion = value) } },
+                label = { ipLabel(it) },
+                enabled = enabled,
+            )
+        }
     }
 }

@@ -2,17 +2,14 @@ package studio.cluvex.aether.ui.engine
 
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Public
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import studio.cluvex.aether.R
-import studio.cluvex.aether.ui.components.Hint
 
 /**
  * Per-destination rules: what never leaves the device, and what skips the
- * tunnel. Expert depth only.
+ * tunnel. The format help is behind the (?) on the card label.
  *
  * Both lists are multi-line and both are sanitised by
  * [studio.cluvex.aether.model.ConnectionProfile.sanitizedRules] before they can
@@ -27,11 +24,10 @@ internal fun RoutesSection(
     edit: ProfileEdit,
     modifier: Modifier = Modifier,
 ) {
-    EngineSection(
-        title = stringResource(R.string.section_routes),
-        subtitle = stringResource(R.string.section_routes_note),
-        icon = Icons.Rounded.Public,
+    EngineGroup(
         modifier = modifier,
+        label = stringResource(R.string.section_routes),
+        info = stringResource(R.string.routes_help),
     ) {
         ProfileTextField(
             value = routeBlock,
@@ -50,6 +46,5 @@ internal fun RoutesSection(
             singleLine = false,
             enabled = enabled,
         )
-        Hint(stringResource(R.string.routes_help))
     }
 }

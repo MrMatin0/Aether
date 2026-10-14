@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy for the flat settings overhaul: the new hub group names, the sub-card
+     labels inside destination pages, and the (?) info button that replaced the
+     always-on explanations. Its own file so the older string files stay a
+     stable diff (same convention as strings_settings.xml). -->
+<resources>
+    <!-- Hub groups -->
+    <string name="hub_group_core">Connection &amp; anti-DPI</string>
+    <string name="hub_group_routing_sharing">Routing &amp; sharing</string>
+    <string name="hub_group_security_stability">Security &amp; stability</string>
+
+    <!-- (?) button next to technical settings -->
+    <string name="settings_info">More info</string>
+
+    <!-- Sub-cards inside destination pages -->
+    <string name="settings_group_anti_dpi">Anti-DPI &amp; obfuscation</string>
+    <string name="settings_group_protocol_quic">Protocol &amp; QUIC</string>
+    <string name="settings_group_packet">Packet &amp; network</string>
+    <string name="settings_group_apps">Apps &amp; proxy</string>
+    <string name="settings_group_drop">When the tunnel drops</string>
+    <string name="settings_group_resilience">Leaks &amp; reconnect</string>
+    <string name="settings_group_engine">Engine</string>
+    <string name="settings_group_timers">Timers &amp; retries</string>
+</resources>
