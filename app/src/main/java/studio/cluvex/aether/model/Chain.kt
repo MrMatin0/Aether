@@ -32,8 +32,9 @@ enum class Hop(val label: String) {
      *
      * Xray is always the INTERNET-FACING hop: it dials the user's server
      * itself, and every other core of the chain dials out through Xray's local
-     * SOCKS5. Appended last on purpose, like every enum here whose names may be
-     * persisted.
+     * SOCKS5. In [ChainMode.XRAY] it is the only hop, and its SOCKS5 is the
+     * chain entry. Appended last on purpose, like every enum here whose names
+     * may be persisted.
      */
     XRAY("Xray"),
 }
@@ -69,15 +70,18 @@ enum class Hop(val label: String) {
  * entry, because putting anything after Tor would hand a single fixed proxy
  * every stream that left the Tor network and defeat the point of using it.
  *
- * ### Xray connects FIRST, and is never alone
+ * ### Xray connects FIRST, or runs alone
  *
- * Xray is offered ONLY stacked, and always UNDERNEATH: the user's own server is
- * what the network sees, and WARP, Psiphon or Tor ride inside it. Every core
- * above Xray is started as soon as Xray accepted its config and bound its
- * local inbound, WITHOUT waiting for a round trip through the user's server:
- * the hop above does its own handshake through Xray while Xray's handshake is
- * still settling (see ChainStack.startXray). A bare "Xray" mode would be a
- * plain v2ray client, which is not what this app adds.
+ * Stacked, Xray is always UNDERNEATH: the user's own server is what the
+ * network sees, and WARP, Psiphon or Tor ride inside it. Every core above Xray
+ * is started as soon as Xray accepted its config and bound its local inbound,
+ * WITHOUT waiting for a round trip through the user's server: the hop above
+ * does its own handshake through Xray while Xray's handshake is still settling
+ * (see ChainStack.startXray).
+ *
+ * [XRAY] runs it alone, as a plain client of the user's own server. Its SOCKS
+ * inbound speaks UDP ASSOCIATE and answers port-53 UDP itself (see
+ * core/XrayConfig.kt), so it is the chain entry with no front and no engine.
  *
  * The modes that used to put Xray ON TOP (`XRAY_OVER_AETHER`, ...) are gone;
  * their names are still read by [fromStored] and land on the matching
@@ -121,7 +125,7 @@ enum class ChainMode(val hops: List<Hop>) {
 
     // ------------------------------------------------------------- Xray
     // Appended after SSTP for the same reason SSTP was appended: names are
-    // persisted. Every one of them is stacked, with Xray at the bottom.
+    // persisted. Every stacked one has Xray at the bottom.
 
     /**
      * WARP, dialled through the user's Xray server: the engine runs with
@@ -141,6 +145,13 @@ enum class ChainMode(val hops: List<Hop>) {
 
     /** Tor through WARP, itself dialled through the user's Xray server. */
     TOR_OVER_AETHER_OVER_XRAY(listOf(Hop.XRAY, Hop.AETHER, Hop.TOR)),
+
+    /**
+     * Xray alone: the user's own server and nothing on top of it. Xray's SOCKS
+     * inbound is the chain entry. Appended LAST, like SSTP, because names are
+     * persisted; the picker lists it with the other single-core modes.
+     */
+    XRAY(listOf(Hop.XRAY)),
     ;
 
     val usesAether: Boolean get() = Hop.AETHER in hops
@@ -211,6 +222,7 @@ enum class ChainMode(val hops: List<Hop>) {
                 "PSIPHON_TOR", "TOR_PSIPHON" -> TOR_OVER_PSIPHON
                 "AETHER_PSIPHON_TOR", "ALL" -> TOR_OVER_PSIPHON_OVER_AETHER
                 "SSTP_ONLY", "VPNGATE", "VPN_GATE", "MS_SSTP" -> SSTP
+                "XRAY_ONLY", "PURE_XRAY", "XRAY_ALONE", "V2RAY" -> XRAY
                 // Earlier builds' Xray-on-top names, and their hand-written spellings.
                 "XRAY_OVER_AETHER", "AETHER_XRAY", "XRAY_AETHER" -> AETHER_OVER_XRAY
                 "XRAY_OVER_PSIPHON", "PSIPHON_XRAY", "XRAY_PSIPHON" -> PSIPHON_OVER_XRAY
