@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chain_xray">Xray only</string>
+    <string name="chain_xray_desc">Your own Xray server, with nothing stacked on top. The fastest choice when your server already gets through.</string>
     <string name="chain_aether_over_xray">Aether over Xray</string>
     <string name="chain_aether_over_xray_desc">Your Xray server connects first, and WARP is dialled through it.</string>
     <string name="chain_psiphon_over_xray">Psiphon over Xray</string>
@@ -18,8 +20,9 @@
     <string name="xray_config_empty">No Xray config saved yet.</string>
     <string name="xray_config_not_saved">The config could not be saved on this device. Paste it again.</string>
     <string name="xray_chain_note">Xray connects first: everything above it is dialled through your server.</string>
+    <string name="xray_alone_note">Xray runs alone: your traffic goes straight through your server, with no other core.</string>
     <string name="xray_missing">This build does not include the Xray core.</string>
-    <string name="xray_config_stored">Stored encrypted on this device and never exported.</string>
+    <string name="xray_config_stored">Saved on this device without encryption, and never exported.</string>
     <string name="err_xray_config">Xray has no usable config. Paste a working link on the Chain page.</string>
     <string name="err_xray_timeout">Your Xray server did not answer. Check the server, UUID / password and TLS / REALITY settings.</string>
 </resources>

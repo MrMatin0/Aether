@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -203,7 +204,7 @@ private data class PsiphonUi(
     val cdnSni: String,
 )
 
-/** Every core alone: Aether, Psiphon, Tor, SSTP. Xray is never offered alone. */
+/** Every core alone: Aether, Psiphon, Tor, SSTP and Xray, in declaration order. */
 private val SingleCoreModes: List<ChainMode> = ChainMode.entries.filterNot { it.isChained }
 
 /** Every stacking, Xray's included, in declaration order. */
@@ -240,6 +241,7 @@ private fun ColumnScope.ChainModeEntry(
         DependentBlock(visible = mode == selected) {
             XrayOptions(
                 binaryBundled = cores.xrayBinary,
+                alone = !mode.isChained,
                 enabled = enabled,
             )
         }
@@ -303,43 +305,42 @@ private fun PsiphonOptions(
     }
 }
 
-/** How long the Xray field waits after the last change before sealing it. */
+/** How long the Xray field waits after the last change before saving it. */
 private const val XRAY_SAVE_DEBOUNCE_MS = 400L
 
 /**
  * Outlives the Chain page, so a paste made right before leaving it is still
- * sealed (see [XrayOptions]). SupervisorJob: one failed write must not cancel
+ * saved (see [XrayOptions]). SupervisorJob: one failed write must not cancel
  * the next one.
  */
 private val XrayFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
 /**
  * The Xray hop's one input: the user's own server config, shown under the
- * selected Xray mode.
+ * selected Xray mode - stacked, or [alone] in [ChainMode.XRAY].
  *
  * ### Why this is not a profile field
  *
  * A share link IS a credential (see [XrayConfigStore]). The profile is
- * exported, travels in the service Intent and sits in DataStore in plaintext,
- * so the config is read from and written to the Keystore-sealed store here,
- * off the main thread, and never goes through [ProfileEdit]. The session reads
- * the same store when the Xray hop starts
- * (studio.cluvex.aether.vpn.session.ChainStack).
+ * exported, travels in the service Intent and sits in DataStore, so the config
+ * is read from and written to its own on-device store here, off the main
+ * thread, and never goes through [ProfileEdit]. The session reads the same
+ * store when the Xray hop starts (studio.cluvex.aether.vpn.session.ChainStack).
  *
  * ### Saving
  *
- * Debounced: a paste is one change, typing is many, and every save is a
- * Keystore operation. Whatever is still pending when the block leaves the
- * screen is flushed on [XrayFlushScope], so backing out right after a paste
- * does not lose it. A write the Keystore refused is said so, instead of
- * looking saved and failing at the next connect.
+ * Debounced: a paste is one change, typing is many. Whatever is still pending
+ * when the block leaves the screen is flushed on [XrayFlushScope], so backing
+ * out right after a paste does not lose it. A write that failed is said so,
+ * instead of looking saved and failing at the next connect.
  *
- * ### Masked
+ * ### Plain text
  *
- * Like the Zero Trust secrets: a password keyboard (no suggestions learned
- * from a UUID) and dots on screen (nothing readable over a shoulder or in a
- * screenshot). What the paste was read as is shown underneath instead,
- * without the secret ([XrayOutbound.summary]).
+ * The field is NOT masked any more: a normal keyboard, the config readable on
+ * screen, and several lines so a JSON or subscription paste can be checked
+ * before connecting. It is bounded in height and scrolls inside itself, so a
+ * long paste does not push the rest of the page away. What the paste was read
+ * as is still shown underneath ([XrayOutbound.summary]).
  *
  * Locked like every other field while a session is up or on its way: the
  * running Xray already read its config, so an edit could only look applied.
@@ -347,36 +348,37 @@ private val XrayFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 @Composable
 private fun XrayOptions(
     binaryBundled: Boolean,
+    alone: Boolean,
     enabled: Boolean,
 ) {
     val accents = LocalAetherAccents.current
     val context = LocalContext.current
     val store = remember(context) { XrayConfigStore(context.applicationContext) }
     // remember, NOT rememberSaveable: the saved-state bundle is no place for a
-    // credential, and the sealed store is the copy that survives anyway.
+    // credential, and the on-device store is the copy that survives anyway.
     var text by remember(store) { mutableStateOf("") }
     var loaded by remember(store) { mutableStateOf(false) }
-    var sealed by remember(store) { mutableStateOf("") }
+    var saved by remember(store) { mutableStateOf("") }
     var saveFailed by remember(store) { mutableStateOf(false) }
 
     LaunchedEffect(store) {
         val stored = withContext(Dispatchers.IO) { runCatching { store.read() }.getOrDefault("") }
         text = stored
-        sealed = stored.trim()
+        saved = stored.trim()
         loaded = true
     }
     LaunchedEffect(store, text, loaded) {
-        if (!loaded || text.trim() == sealed) return@LaunchedEffect
+        if (!loaded || text.trim() == saved) return@LaunchedEffect
         delay(XRAY_SAVE_DEBOUNCE_MS)
         val pending = text
         val ok = withContext(Dispatchers.IO) { runCatching { store.write(pending) }.getOrDefault(false) }
-        if (ok) sealed = pending.trim()
+        if (ok) saved = pending.trim()
         saveFailed = !ok
     }
     DisposableEffect(store) {
         onDispose {
             val pending = text
-            if (loaded && pending.trim() != sealed) {
+            if (loaded && pending.trim() != saved) {
                 XrayFlushScope.launch { runCatching { store.write(pending) } }
             }
         }
@@ -403,9 +405,10 @@ private fun XrayOptions(
             label = stringResource(R.string.xray_config_label),
             placeholder = stringResource(R.string.xray_config_hint),
             helpText = stringResource(R.string.xray_config_help),
-            singleLine = true,
-            masked = true,
+            singleLine = false,
+            masked = false,
             enabled = enabled && loaded,
+            modifier = Modifier.heightIn(max = XRAY_FIELD_MAX_HEIGHT),
         )
 
         if (loaded) {
@@ -437,11 +440,14 @@ private fun XrayOptions(
             )
         }
         Spacer(Modifier.height(EngineSpacing.Inline))
-        Hint(stringResource(R.string.xray_chain_note))
+        Hint(stringResource(if (alone) R.string.xray_alone_note else R.string.xray_chain_note))
         Spacer(Modifier.height(EngineSpacing.Inline))
         Hint(stringResource(R.string.xray_config_stored))
     }
 }
+
+/** Tallest the Xray field grows before it scrolls inside itself. */
+private val XRAY_FIELD_MAX_HEIGHT = 240.dp
 
 /**
  * What the paste was read as: its own name (when it has one) and the
@@ -630,7 +636,8 @@ private fun ChainModeCard(
  * in order not to reach for the three-core chain first, and the ordering is a
  * property of the modes (Tor is always the slowest thing in any chain that has
  * it) rather than of the network. Xray adds one proxy hop to the user's own
- * server and no bootstrap, so it does not move a mode out of its tier.
+ * server and no bootstrap, so it does not move a mode out of its tier - and
+ * Xray alone is fast.
  */
 @Composable
 private fun CostBadge(mode: ChainMode) {

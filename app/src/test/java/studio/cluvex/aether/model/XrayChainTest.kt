@@ -9,18 +9,24 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Xray is a hop of the chain, never a mode of its own, and it always connects
- * FIRST: these pin where it sits, what dials through it, which hops have to be
- * up before the engine, and where the device's traffic enters.
+ * Xray always connects FIRST: stacked, it sits under every other core, and in
+ * [ChainMode.XRAY] it runs alone. These pin where it sits, what dials through
+ * it, which hops have to be up before the engine, and where the device's
+ * traffic enters.
  */
 class XrayChainTest {
 
     private val xrayModes = ChainMode.entries.filter { it.usesXray }
 
     @Test
-    fun thereIsNoXrayOnItsOwn() {
-        assertEquals(5, xrayModes.size)
-        xrayModes.forEach { assertTrue(it.isChained, "${it.name} runs Xray alone") }
+    fun xrayRunsAloneInExactlyOneMode() {
+        assertEquals(6, xrayModes.size)
+        assertEquals(listOf(ChainMode.XRAY), xrayModes.filterNot { it.isChained })
+        assertEquals(listOf(Hop.XRAY), ChainMode.XRAY.hops)
+        assertEquals(Hop.XRAY, ChainMode.XRAY.entryHop)
+        assertFalse(ChainMode.XRAY.usesAether)
+        assertFalse(ChainMode.XRAY.usesPsiphon || ChainMode.XRAY.usesTor || ChainMode.XRAY.usesSstp)
+        assertEquals("Xray \u2192 internet", ChainMode.XRAY.pathLabel())
     }
 
     @Test
@@ -55,6 +61,7 @@ class XrayChainTest {
         // No engine at all: the chain starts in hop order, nothing goes first.
         assertTrue(ChainMode.PSIPHON_OVER_XRAY.hopsBeforeEngine.isEmpty())
         assertTrue(ChainMode.TOR_OVER_XRAY.hopsBeforeEngine.isEmpty())
+        assertTrue(ChainMode.XRAY.hopsBeforeEngine.isEmpty())
         ChainMode.entries.filterNot { it.usesXray }.forEach { mode ->
             assertTrue(mode.hopsBeforeEngine.isEmpty(), "${mode.name} has nothing under the engine")
         }
@@ -71,6 +78,13 @@ class XrayChainTest {
     }
 
     @Test
+    fun xrayAloneIsItsOwnEntryWithNoFront() {
+        // Xray's inbound speaks UDP ASSOCIATE and answers port-53 UDP itself.
+        assertEquals(TunnelConfig.XRAY_SOCKS_PORT, ChainRuntime.entryPortFor(ChainMode.XRAY))
+        assertFalse(ChainRuntime.needsFront(ChainMode.XRAY))
+    }
+
+    @Test
     fun teardownWaitsForXraysPortsOnlyWhenXrayRuns() {
         val ports = ChainRuntime.portsFor(ChainMode.TOR_OVER_AETHER_OVER_XRAY)
         assertTrue(TunnelConfig.XRAY_SOCKS_PORT in ports)
@@ -79,6 +93,11 @@ class XrayChainTest {
         assertTrue(TunnelConfig.XRAY_SOCKS_PORT in ChainRuntime.portsFor(ChainMode.AETHER_OVER_XRAY))
         assertFalse(TunnelConfig.XRAY_SOCKS_PORT in ChainRuntime.portsFor(ChainMode.TOR_OVER_PSIPHON))
         assertFalse(TunnelConfig.XRAY_RELAY_PORT in ChainRuntime.portsFor(ChainMode.AETHER))
+
+        val alone = ChainRuntime.portsFor(ChainMode.XRAY)
+        assertEquals(listOf(TunnelConfig.XRAY_SOCKS_PORT, TunnelConfig.XRAY_RELAY_PORT), alone)
+        assertFalse(TunnelConfig.ENGINE_SOCKS_PORT in alone)
+        assertFalse(TunnelConfig.FRONT_SOCKS_PORT in alone)
     }
 
     @Test
@@ -114,6 +133,15 @@ class XrayChainTest {
         assertEquals(ChainMode.TOR_OVER_AETHER_OVER_XRAY, ChainMode.fromStored("aether+xray+tor"))
         assertEquals(ChainMode.TOR_OVER_AETHER_OVER_XRAY, ChainMode.fromStored("xray+aether+tor"))
         assertEquals(ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY, ChainMode.fromStored("xray-aether-psiphon"))
+    }
+
+    @Test
+    fun handWrittenXrayAloneNamesAreUnderstood() {
+        assertEquals(ChainMode.XRAY, ChainMode.fromStored("xray"))
+        assertEquals(ChainMode.XRAY, ChainMode.fromStored("xray-only"))
+        assertEquals(ChainMode.XRAY, ChainMode.fromStored("XRAY_ONLY"))
+        assertEquals(ChainMode.XRAY, ChainMode.fromStored("pure-xray"))
+        assertEquals(ChainMode.XRAY, ChainMode.fromStored("v2ray"))
     }
 
     @Test

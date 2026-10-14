@@ -2,18 +2,24 @@
 
 The user's own Xray server (VLESS / VMess / Trojan / Shadowsocks / Hysteria2 /
 WireGuard / SOCKS over TCP, WS, gRPC, XHTTP, HTTPUpgrade, mKCP, Hysteria or
-UDP, with TLS or REALITY) as a hop of the chain. Xray **connects first** and is
-**never offered alone**: the user's server is what the network sees, and WARP,
-Psiphon or Tor ride inside it. A bare Xray mode would be a plain v2ray client,
-which is not what this app adds.
+UDP, with TLS or REALITY), either **alone** (`XRAY`) or as a hop of the chain.
+Stacked, Xray **connects first**: the user's server is what the network sees,
+and WARP, Psiphon or Tor ride inside it.
 
 | Mode | Path (device first) |
 |---|---|
+| `XRAY` | Xray -> internet |
 | `AETHER_OVER_XRAY` | Aether -> Xray -> internet |
 | `PSIPHON_OVER_XRAY` | Psiphon -> Xray -> internet |
 | `PSIPHON_OVER_AETHER_OVER_XRAY` | Psiphon -> Aether -> Xray -> internet |
 | `TOR_OVER_XRAY` | Tor -> Xray -> internet |
 | `TOR_OVER_AETHER_OVER_XRAY` | Tor -> Aether -> Xray -> internet |
+
+`XRAY` is listed with the other single-core modes on the Chain page and in the
+quick route picker. Its SOCKS inbound (`127.0.0.1:1849`) is the chain entry:
+it speaks UDP ASSOCIATE and answers port-53 UDP itself (see below), so it needs
+no `SocksFront` and no engine. `ChainMode.fromStored` also reads `XRAY_ONLY`,
+`PURE_XRAY`, `XRAY_ALONE` and `V2RAY` as `XRAY`.
 
 The earlier Xray-on-top mode names (`XRAY_OVER_AETHER`, `XRAY_OVER_PSIPHON`,
 `XRAY_OVER_PSIPHON_OVER_AETHER`, `TOR_OVER_XRAY_OVER_AETHER`) are still read by
@@ -37,11 +43,13 @@ Share-link extras that are carried: `pcs` / `pinSHA256`
 (`pinnedPeerCertSha256`), `vcn` (`verifyPeerCertByName`), `ech`
 (`echConfigList`), `pqv` (REALITY `mldsa65Verify`), and XHTTP's `extra`.
 
-The config is a credential. It is stored only in the Keystore-sealed
-`SecretStore` (`data/XrayConfigStore.kt`), never in the profile, so it is
-never exported, never in the service Intent and never in DataStore. The field
-is masked and uses a password keyboard; what was understood is shown as
-`XrayOutbound.summary`, which carries no UUID, password or key.
+The config is stored **unencrypted**, in its own app-private SharedPreferences
+file (`aether_xray`, `data/XrayConfigStore.kt`). It used to be sealed with the
+Keystore key of `SecretStore`; a value sealed by an earlier build is read once,
+moved over and the sealed copy removed. It is still never in the profile, so it
+is never exported, never in the service Intent and never in DataStore. The
+field is plain text (no masking, no password keyboard) and multi-line, bounded
+in height; what was understood is shown as `XrayOutbound.summary`.
 
 ## What Xray-core v26.9.30 refuses
 
@@ -70,7 +78,10 @@ Trojan config to a public server needs it - the on-device relay on
 `proxySettings` / tag in the paste is dropped: the paste never decides the
 chaining.
 
-Because Xray sits UNDER the Aether engine (`ChainMode.hopsBeforeEngine`), the
+`XRAY` alone has no engine and nothing on top: `ChainStack.start` brings Xray
+up and publishes its inbound as the entry, after the usual bounded DNS warm-up.
+
+When Xray sits UNDER the Aether engine (`ChainMode.hopsBeforeEngine`), the
 session runs in two stages (`ChainStack.startBeforeEngine` and
 `ChainStack.start`): Xray comes up first, the engine is launched with
 `AETHER_UPSTREAM=socks5://127.0.0.1:1849` so both its TCP and its UDP (WARP's
@@ -88,7 +99,8 @@ traffic, and they only come alive this way.
 Xray's SOCKS inbound speaks UDP ASSOCIATE, which is what lets the Aether engine
 send WARP's UDP through it (`AETHER_UPSTREAM`), and a routing rule sends
 inbound UDP to port 53 to a `dns` outbound, answered by Xray's own resolver
-over TCP (`tcp://1.1.1.1:53`, `tcp://8.8.8.8:53`) through the proxy.
+over TCP (`tcp://1.1.1.1:53`, `tcp://8.8.8.8:53`) through the proxy. That is
+also what lets `XRAY` alone be the entry without a front.
 
 ## Readiness
 
@@ -106,7 +118,8 @@ Failures map to `ChainFailure.XRAY_MISSING` (no or unstartable binary),
 `XRAY_TIMEOUT` (running, but the inbound never bound), each with its own
 message. A server that is reachable-but-wrong (bad UUID, REALITY key, SNI) now
 shows up as the next hop's own timeout (engine, `PSIPHON_TIMEOUT`,
-`TOR_TIMEOUT`), with the background check's warning in the log.
+`TOR_TIMEOUT`), with the background check's warning in the log; with `XRAY`
+alone it shows up as an `unverified` Xray row and the watchdog's failed probes.
 
 ## Building the core
 
@@ -147,9 +160,10 @@ source at the pinned tag. See `THIRD_PARTY_NOTICES.md`.
 
 ## Not yet verified
 
-Nothing here has been run on a device yet. Before a release: each of the five
-modes with a VLESS-REALITY, a VMess-WS-TLS and a Trojan server; a config that
-fails the round-trip probe but carries WARP / Psiphon / Tor (must now connect);
-a wrong UUID (must end in the next hop's timeout with an `unverified` Xray row,
-not a false "connected"); no config (`XRAY_CONFIG`); a build without
-`libxray.so` (cards disabled).
+Nothing here has been run on a device yet. Before a release: `XRAY` alone and
+each of the five stacked modes with a VLESS-REALITY, a VMess-WS-TLS and a
+Trojan server; a config that fails the round-trip probe but carries WARP /
+Psiphon / Tor (must now connect); a wrong UUID (must end in the next hop's
+timeout with an `unverified` Xray row, not a false "connected"); no config
+(`XRAY_CONFIG`); a build without `libxray.so` (cards disabled); an upgrade
+from a build that sealed the config (must still find it, and connect).

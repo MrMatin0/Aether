@@ -56,7 +56,15 @@ class CoreAvailabilityTest {
         val noXray = snapshot(psiphon = true, tor = true, xray = false)
         assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.AETHER_OVER_XRAY))
         assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY))
+        assertEquals(listOf(Hop.XRAY), noXray.missing(ChainMode.XRAY))
         assertTrue(noXray.canRun(ChainMode.TOR_OVER_PSIPHON_OVER_AETHER))
+    }
+
+    @Test
+    fun `Xray alone needs only the Xray core`() {
+        val xrayOnly = snapshot(psiphon = false, tor = false, xray = true)
+        assertTrue(xrayOnly.canRun(ChainMode.XRAY))
+        assertEquals(emptyList(), xrayOnly.missing(ChainMode.XRAY))
     }
 
     @Test

@@ -129,6 +129,7 @@ internal fun chainLabel(mode: ChainMode): String = when (mode) {
     ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_aether_over_xray)
     ChainMode.TOR_OVER_XRAY -> stringResource(R.string.chain_tor_over_xray)
     ChainMode.TOR_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_tor_over_aether_over_xray)
+    ChainMode.XRAY -> stringResource(R.string.chain_xray)
 }
 
 /**
@@ -149,6 +150,7 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.PSIPHON_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_psiphon_over_aether_over_xray_desc)
     ChainMode.TOR_OVER_XRAY -> stringResource(R.string.chain_tor_over_xray_desc)
     ChainMode.TOR_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_tor_over_aether_over_xray_desc)
+    ChainMode.XRAY -> stringResource(R.string.chain_xray_desc)
 }
 
 @Composable
