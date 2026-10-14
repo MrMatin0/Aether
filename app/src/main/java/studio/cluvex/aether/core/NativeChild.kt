@@ -118,7 +118,16 @@ class NativeChild(
                 }
             } catch (_: Exception) {
             } finally {
-                DiagnosticsLog.w(tag, "$tag output stream closed.")
+                // [stop] clears the handle BEFORE it destroys the process, so a
+                // handle that still points at this process means nobody asked it
+                // to go: that is the case worth a warning. A requested stop is
+                // the normal end of every session and is logged as info, so it
+                // no longer reads like a crash at the bottom of every log.
+                if (process === proc) {
+                    DiagnosticsLog.w(tag, "$tag exited on its own (output stream closed).")
+                } else {
+                    DiagnosticsLog.i(tag, "$tag output stream closed (stopped).")
+                }
             }
         }, "aether-$tag-log").apply { isDaemon = true }.start()
     }

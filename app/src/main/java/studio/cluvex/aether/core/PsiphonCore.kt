@@ -479,7 +479,19 @@ class PsiphonCore(
                     DiagnosticsLog.i(TAG, "Psiphon: $message")
                 }
             }
-            "Alert", "Error", "Warning" ->
+            // Alerts the core raises on every Android session or behind every
+            // upstream proxy (see PsiphonNotices) are logged as info with the
+            // reason, so the warnings left are the ones that explain a failure.
+            "Alert", "Warning" -> {
+                val message = data?.optString("message").orEmpty()
+                val harmless = PsiphonNotices.harmless(message)
+                if (harmless != null) {
+                    DiagnosticsLog.i(TAG, "Psiphon (harmless: $harmless): $message")
+                } else {
+                    DiagnosticsLog.w(TAG, "Psiphon: $message")
+                }
+            }
+            "Error" ->
                 DiagnosticsLog.w(TAG, "Psiphon: ${data?.optString("message").orEmpty()}")
         }
     }
