@@ -27,7 +27,7 @@ Aether+ brings endpoint discovery, encrypted tunneling, and configurable routing
 
 - **Multiple transports:** Smart Auto selection, MASQUE over HTTP/3 or HTTP/2, WireGuard, and nested WireGuard (`gool`) through the Aether engine.
 - **Adaptive endpoint discovery:** Turbo, Precise, and Ultra scanning, plus a manually selected endpoint or custom IP ranges.
-- **Four connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains, plus **your own Xray server** (VLESS, VMess, Trojan, Shadowsocks) stacked on top of Aether and/or Psiphon or under Tor, when the required binaries and assets are included.
+- **Four connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains, plus **your own Xray server** (VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard, SOCKS) connecting first underneath Aether, Psiphon, and/or Tor, when the required binaries and assets are included.
 - **Device-wide or selective access:** Android `VpnService`, proxy-only mode, per-app split tunneling, and routing controls.
 - **Connection controls:** DNS and MTU settings, Smart DNS (one server, with the flag of the country it answers from), reconnection options, optional kill switch, IPv6 leak-protection setting, and advanced transport tuning.
 - **Everyday usability:** English and Persian UI, RTL support, bundled Vazirmatn typography, live traffic information, session history, diagnostics, Quick Settings tile, and home-screen widget.
@@ -83,17 +83,17 @@ The supported combinations are:
 - Tor over Aether
 - Tor over Psiphon
 - Tor over Psiphon over Aether
-- Xray over Aether
-- Xray over Psiphon
-- Xray over Psiphon over Aether
+- Aether over Xray
+- Psiphon over Xray
+- Psiphon over Aether over Xray
 - Tor over Xray
-- Tor over Xray over Aether
+- Tor over Aether over Xray
 
 Here, **X over Y** means X establishes its upstream connections through Y's local SOCKS5 proxy. For example, Tor over Aether carries Tor's relay connections through Aether; it does not put a fixed Aether proxy after the Tor exit. See [chaining internals](docs/CHAINING.md) for the exact wiring.
 
 Psiphon includes a built-in client configuration; ordinary users do **not** need to obtain or paste a configuration. The APK still needs the Psiphon executable and bootstrap server list. Tor requires its executable, and exit-country selection additionally requires its GeoIP assets.
 
-**Xray is your own server, and it is never offered alone.** Paste a share link (`vless://`, `vmess://`, `trojan://`, `ss://`), a subscription body, or an Xray JSON outbound under the selected Xray mode on the Chain page. Its whole handshake to your server is dialled through the hop underneath it, so the network sees WARP or Psiphon rather than your server's address. The config is a credential: it is stored encrypted with the Android Keystore on the device, and it is never part of the profile, an export, or a backup. See [the Xray hop](docs/XRAY.md).
+**Xray is your own server, connects first, and is never offered alone.** Paste a share link (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `wireguard://`, `socks://`), a subscription body, or Xray JSON (comments are fine) under the selected Xray mode on the Chain page; the first entry Aether+ can run is used. Xray connects to your server first, and Aether, Psiphon, or Tor dial out through it (`AETHER_UPSTREAM`, `UpstreamProxyUrl`, `Socks5Proxy`), so the network sees only your Xray server. The config is a credential: it is stored encrypted with the Android Keystore on the device, and it is never part of the profile, an export, or a backup. See [the Xray hop](docs/XRAY.md).
 
 **Important limitations:**
 
@@ -101,7 +101,7 @@ Psiphon includes a built-in client configuration; ordinary users do **not** need
 - Tor can take several minutes to bootstrap. More layers add latency and are not automatically safer or more reliable.
 - Bundled Tor integration does not include pluggable transports such as obfs4 or Snowflake.
 - Country selection depends on reachable exits. Psiphon can retry with automatic selection if the requested country fails; Tor's strict country setting can prevent connection entirely.
-- The bundled Xray-core (v26.9.30) no longer accepts `allowInsecure` (use the link's `pcs` certificate pin instead), the HTTP/2 and QUIC transports, or VLESS / Trojan without TLS or REALITY to a public server. The Chain page says so when a pasted config cannot run.
+- The bundled Xray-core (v26.9.30) no longer accepts `allowInsecure` (use the link's `pcs` / `pinSHA256` certificate pin instead) or the HTTP/2 and QUIC transports. Plaintext VLESS / Trojan links to a public server are forwarded through an on-device `dokodemo-door` loopback relay (`127.0.0.1:1850`) so Xray accepts them unchanged. The Chain page says so when a pasted config cannot run.
 - Development APKs can omit overlay cores or assets. The app reports unavailable modes; tagged-release CI requires the chain binaries and Psiphon bootstrap list.
 
 ## Privacy and security
@@ -218,7 +218,7 @@ docs/         Technical documentation and review history
 .github/      Build and core-sync workflows, release metadata
 ```
 
-In device-wide mode, Android supplies a TUN interface. The in-process hev tunnel and JNI bridge forward traffic into the selected local SOCKS5 entry. Aether, Psiphon, Xray, and Tor run as supervised child processes; `SocksFront` handles the DNS adaptation needed for Psiphon/Tor entries, while an Xray entry answers DNS through its own resolver.
+In device-wide mode, Android supplies a TUN interface. The in-process hev tunnel and JNI bridge forward traffic into the selected local SOCKS5 entry. Aether, Psiphon, Xray, and Tor run as supervised child processes; `SocksFront` handles the DNS adaptation needed for Psiphon/Tor entries, while Xray answers DNS through its own resolver.
 
 The executables are packaged under `.so` filenames so Android extracts them into an executable native-library directory. Preserve `useLegacyPackaging = true` unless this launch mechanism is redesigned.
 
