@@ -72,11 +72,16 @@ chaining.
 
 Because Xray sits UNDER the Aether engine (`ChainMode.hopsBeforeEngine`), the
 session runs in two stages (`ChainStack.startBeforeEngine` and
-`ChainStack.start`): Xray comes up and proves a round trip through the user's
-server first, the engine is launched with `AETHER_UPSTREAM=socks5://127.0.0.1:1849`
-so both its TCP and its UDP (WARP's MASQUE / WireGuard) dial through Xray, and
-then any hops above the engine (Psiphon via `UpstreamProxyUrl`, Tor via
-`Socks5Proxy`) start on top of it.
+`ChainStack.start`): Xray comes up first, the engine is launched with
+`AETHER_UPSTREAM=socks5://127.0.0.1:1849` so both its TCP and its UDP (WARP's
+MASQUE / WireGuard) dial through Xray, and then any hops above the engine
+(Psiphon via `UpstreamProxyUrl`, Tor via `Socks5Proxy`) start on top of it.
+
+**Xray does not gate the next hop.** As soon as Xray accepted the config and
+its inbound is bound, the hop above it is started and does its own handshake
+through Xray, in parallel with Xray's handshake with the user's server. Some
+configs never answer the readiness probe below but do carry the next hop's
+traffic, and they only come alive this way.
 
 ## DNS and UDP
 
@@ -87,16 +92,21 @@ over TCP (`tcp://1.1.1.1:53`, `tcp://8.8.8.8:53`) through the proxy.
 
 ## Readiness
 
-Xray's SOCKS inbound acknowledges a CONNECT before its outbound has reached
-anything, so a CONNECT probe proves nothing. The hop is READY only when a
-DNS-over-TCP query through the inbound gets an answer back
-(`Readiness.awaitRoundTrip`), i.e. when the handshake with the user's server
-succeeded. Budgets: `XRAY_PORT_WAIT_MS` (15 s) for the inbound to bind,
-`XRAY_READY_WAIT_MS` (60 s) for the first answer.
+Xray counts as up once the config was accepted and its inbound is bound
+(`XRAY_PORT_WAIT_MS`, 15 s). Nothing waits for more than that.
+
+The round-trip check (a DNS-over-TCP query through the inbound that has to get
+an answer back, `Readiness.awaitRoundTrip`) still runs, but **in the background
+and non-fatal** (`ChainStack.watchXrayHandshake`, budget `XRAY_READY_WAIT_MS`,
+60 s). It only logs whether the user's server answered and, when it did not,
+marks the Xray row as `unverified`. It never stops a core or fails the session.
 
 Failures map to `ChainFailure.XRAY_MISSING` (no or unstartable binary),
 `XRAY_CONFIG` (no / unreadable config, or Xray refused it) and
-`XRAY_TIMEOUT` (running, but nothing came back), each with its own message.
+`XRAY_TIMEOUT` (running, but the inbound never bound), each with its own
+message. A server that is reachable-but-wrong (bad UUID, REALITY key, SNI) now
+shows up as the next hop's own timeout (engine, `PSIPHON_TIMEOUT`,
+`TOR_TIMEOUT`), with the background check's warning in the log.
 
 ## Building the core
 
@@ -138,6 +148,8 @@ source at the pinned tag. See `THIRD_PARTY_NOTICES.md`.
 ## Not yet verified
 
 Nothing here has been run on a device yet. Before a release: each of the five
-modes with a VLESS-REALITY, a VMess-WS-TLS and a Trojan server; a wrong UUID
-(must end in `XRAY_TIMEOUT`, not a false "connected"); no config
-(`XRAY_CONFIG`); a build without `libxray.so` (cards disabled).
+modes with a VLESS-REALITY, a VMess-WS-TLS and a Trojan server; a config that
+fails the round-trip probe but carries WARP / Psiphon / Tor (must now connect);
+a wrong UUID (must end in the next hop's timeout with an `unverified` Xray row,
+not a false "connected"); no config (`XRAY_CONFIG`); a build without
+`libxray.so` (cards disabled).

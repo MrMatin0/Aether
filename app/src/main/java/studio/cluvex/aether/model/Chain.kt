@@ -73,9 +73,11 @@ enum class Hop(val label: String) {
  *
  * Xray is offered ONLY stacked, and always UNDERNEATH: the user's own server is
  * what the network sees, and WARP, Psiphon or Tor ride inside it. Every core
- * above Xray is started only after Xray proved a round trip through the
- * user's server (see ChainStack). A bare "Xray" mode would be a plain v2ray
- * client, which is not what this app adds.
+ * above Xray is started as soon as Xray accepted its config and bound its
+ * local inbound, WITHOUT waiting for a round trip through the user's server:
+ * the hop above does its own handshake through Xray while Xray's handshake is
+ * still settling (see ChainStack.startXray). A bare "Xray" mode would be a
+ * plain v2ray client, which is not what this app adds.
  *
  * The modes that used to put Xray ON TOP (`XRAY_OVER_AETHER`, ...) are gone;
  * their names are still read by [fromStored] and land on the matching
