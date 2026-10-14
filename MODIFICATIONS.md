@@ -79,16 +79,18 @@ high-level shape of the divergence, by area:
 - **Chained transport modes.** Aether can now stack its own engine with
   Psiphon and with Tor. See `docs/CHAINING.md`, `docs/CHAIN_CORES.md` and
   `docs/TOR_BRIDGES.md`.
-- **The Xray hop** (2026-10-11 → 2026-10-12,
-  `feat/xray-chain-smartdns-single`). XTLS/Xray-core runs the user's own
-  server config (VLESS / VMess / Trojan / Shadowsocks share links, a
-  subscription body, or Xray JSON) as a supervised child process, offered only
-  stacked: `XRAY_OVER_AETHER`, `XRAY_OVER_PSIPHON`,
-  `XRAY_OVER_PSIPHON_OVER_AETHER`, `TOR_OVER_XRAY` and
-  `TOR_OVER_XRAY_OVER_AETHER`. Its handshake is dialled through the hop
-  underneath with `sockopt.dialerProxy`; readiness is an answer that came
-  back through it; the config is sealed in the Keystore and never exported.
-  `ChainStack` now starts hops in `ChainMode.hops` order. See `docs/XRAY.md`.
+- **The Xray hop** (2026-10-11 → 2026-10-13,
+  `feat/xray-chain-smartdns-single`, `feat/xray-first-and-config-fixes`).
+  XTLS/Xray-core runs the user's own server config (VLESS / VMess / Trojan /
+  Shadowsocks / Hysteria2 / WireGuard / SOCKS share links, a subscription body,
+  or Xray JSON with comments) as a supervised child process, offered only
+  stacked with Xray connecting FIRST: `AETHER_OVER_XRAY`, `PSIPHON_OVER_XRAY`,
+  `PSIPHON_OVER_AETHER_OVER_XRAY`, `TOR_OVER_XRAY` and
+  `TOR_OVER_AETHER_OVER_XRAY`. The Aether engine dials out through Xray via
+  `AETHER_UPSTREAM`; readiness is an answer that came back through Xray's
+  inbound before upper hops start; plaintext VLESS / Trojan links to public
+  servers ride an on-device `dokodemo-door` relay (`127.0.0.1:1850`); the
+  config is sealed in the Keystore and never exported. See `docs/XRAY.md`.
 - **Overlay core build tooling.** `scripts/build-overlay-cores.sh`,
   `scripts/build-xray-core.sh`, `scripts/build-pt-transports.sh`,
   `scripts/fetch-tor-bridges.sh` and `scripts/fetch-psiphon-serverlist.sh`.

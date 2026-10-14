@@ -1,32 +1,41 @@
 # Xray hop
 
-The user's own Xray server (VLESS / VMess / Trojan / Shadowsocks over TCP, WS,
-gRPC, XHTTP, HTTPUpgrade or mKCP, with TLS or REALITY) as a hop of the chain.
-Xray is **never offered alone**: a bare Xray mode would be a plain v2ray
-client, which is not what this app adds.
+The user's own Xray server (VLESS / VMess / Trojan / Shadowsocks / Hysteria2 /
+WireGuard / SOCKS over TCP, WS, gRPC, XHTTP, HTTPUpgrade, mKCP, Hysteria or
+UDP, with TLS or REALITY) as a hop of the chain. Xray **connects first** and is
+**never offered alone**: the user's server is what the network sees, and WARP,
+Psiphon or Tor ride inside it. A bare Xray mode would be a plain v2ray client,
+which is not what this app adds.
 
 | Mode | Path (device first) |
 |---|---|
-| `XRAY_OVER_AETHER` | Xray -> Aether -> internet |
-| `XRAY_OVER_PSIPHON` | Xray -> Psiphon -> internet |
-| `XRAY_OVER_PSIPHON_OVER_AETHER` | Xray -> Psiphon -> Aether -> internet |
+| `AETHER_OVER_XRAY` | Aether -> Xray -> internet |
+| `PSIPHON_OVER_XRAY` | Psiphon -> Xray -> internet |
+| `PSIPHON_OVER_AETHER_OVER_XRAY` | Psiphon -> Aether -> Xray -> internet |
 | `TOR_OVER_XRAY` | Tor -> Xray -> internet |
-| `TOR_OVER_XRAY_OVER_AETHER` | Tor -> Xray -> Aether -> internet |
+| `TOR_OVER_AETHER_OVER_XRAY` | Tor -> Aether -> Xray -> internet |
+
+The earlier Xray-on-top mode names (`XRAY_OVER_AETHER`, `XRAY_OVER_PSIPHON`,
+`XRAY_OVER_PSIPHON_OVER_AETHER`, `TOR_OVER_XRAY_OVER_AETHER`) are still read by
+`ChainMode.fromStored` and migrate to the matching Xray-first mode.
 
 ## Config
 
 Pasted on the Chain page, under the selected Xray mode: a share link
 (`vless://`, `vmess://` in both spellings, `trojan://`, `ss://` in SIP002,
-percent-encoded 2022 and legacy forms), a base64 subscription body (its first
-link is used), or Xray JSON (one outbound, or a full config whose first proxy
-outbound is used). Parsed by `core/XrayConfig.kt` (`XrayLink`), pure Kotlin,
-pinned by `XrayConfigTest`. Refused up front: REALITY without a public key,
-Shadowsocks with a SIP003 plugin, anything that is not a proxy outbound, and
-everything the pinned core itself refuses (next section).
+percent-encoded 2022 and legacy forms, `hy2://` / `hysteria2://`, `wireguard://`
+/ `wg://`, `socks://` / `socks5://`), a base64 subscription body, or Xray JSON
+(`//` and `/* */` comments allowed; one outbound, an array of them, or a full
+config). **The first entry this app can run is used**: every line of a paste or
+subscription, and every proxy outbound of a JSON config, is tried in order.
+Parsed by `core/XrayConfig.kt` (`XrayLink`), pure Kotlin, pinned by
+`XrayConfigTest`. Refused up front: REALITY without a public key, Shadowsocks
+with a SIP003 plugin, Hysteria2 Salamander `obfs` or port hopping, anything
+that is not a proxy outbound, and removed transports (next section).
 
-Share-link extras that are carried: `pcs` (`pinnedPeerCertSha256`), `vcn`
-(`verifyPeerCertByName`), `ech` (`echConfigList`), `pqv` (REALITY
-`mldsa65Verify`), and XHTTP's `extra`.
+Share-link extras that are carried: `pcs` / `pinSHA256`
+(`pinnedPeerCertSha256`), `vcn` (`verifyPeerCertByName`), `ech`
+(`echConfigList`), `pqv` (REALITY `mldsa65Verify`), and XHTTP's `extra`.
 
 The config is a credential. It is stored only in the Keystore-sealed
 `SecretStore` (`data/XrayConfigStore.kt`), never in the profile, so it is
@@ -36,14 +45,15 @@ is masked and uses a password keyboard; what was understood is shown as
 
 ## What Xray-core v26.9.30 refuses
 
-Xray refuses the WHOLE config over any one of these, so `XrayLink` deals with
-them before Xray ever sees the text (each pinned by `XrayConfigTest`):
+Xray refuses the WHOLE config over any one of these, so `XrayLink` and
+`XrayConfig` deal with them before Xray ever sees the text (each pinned by
+`XrayConfigTest`):
 
 | Old config | v26.9.30 | What the app does |
 |---|---|---|
-| `allowInsecure: true` / `allowInsecure=1` | removed feature, hard error | never written; dropped from pasted JSON. Use `pcs=<sha256>` (and `vcn=`) in the link for a self-signed server. |
+| `allowInsecure: true` / `allowInsecure=1` | removed feature, hard error | never written; dropped from pasted JSON. Use `pcs=<sha256>` / `pinSHA256=<sha256>` (and `vcn=`) in the link for a self-signed server. |
 | `type=h2` / `http` / `h3`, `quic` | removed (migrated to XHTTP) | refused: "not a config Aether can run" |
-| VLESS (no VLESS Encryption) or Trojan without TLS / REALITY | refused unless the server is a private address | refused, except for loopback / RFC 1918 / link-local / ULA / `localhost` servers |
+| VLESS (no VLESS Encryption) or Trojan without TLS / REALITY | refused unless the server is a private address | marked `relayed` and pointed at the on-device `dokodemo-door` relay on `127.0.0.1:1850` (`TunnelConfig.XRAY_RELAY_PORT`), whose `freedom` outbound reaches the real server unchanged |
 | `proxySettings` | removed (migrated to `sockopt.dialerProxy`) | dropped; the chaining is the app's |
 
 mKCP's `seed` and `header` are still accepted by the parser but no longer do
@@ -54,24 +64,26 @@ relies on a seed needs a JSON outbound with its Finalmask settings.
 
 `XrayConfig.build` wraps the user's outbound into a config of its own: one
 SOCKS inbound on `127.0.0.1:1849` (`TunnelConfig.XRAY_SOCKS_PORT`, not
-v2rayNG's 10808/10809), the proxy outbound, and - when a hop is underneath -
-`streamSettings.sockopt.dialerProxy = "chain-up"`, a SOCKS outbound on that
-hop's port. The whole handshake to the user's server therefore rides WARP
-and/or Psiphon. Any `dialerProxy` / `proxySettings` / tag in the paste is
-dropped: the paste never decides the chaining.
+v2rayNG's 10808/10809), the proxy outbound, and - when a plaintext VLESS /
+Trojan config to a public server needs it - the on-device relay on
+`127.0.0.1:1850` (`TunnelConfig.XRAY_RELAY_PORT`). Any `dialerProxy` /
+`proxySettings` / tag in the paste is dropped: the paste never decides the
+chaining.
 
-`ChainStack` starts hops in `ChainMode.hops` order, so every core dials
-through a hop that is already proven ready.
+Because Xray sits UNDER the Aether engine (`ChainMode.hopsBeforeEngine`), the
+session runs in two stages (`ChainStack.startBeforeEngine` and
+`ChainStack.start`): Xray comes up and proves a round trip through the user's
+server first, the engine is launched with `AETHER_UPSTREAM=socks5://127.0.0.1:1849`
+so both its TCP and its UDP (WARP's MASQUE / WireGuard) dial through Xray, and
+then any hops above the engine (Psiphon via `UpstreamProxyUrl`, Tor via
+`Socks5Proxy`) start on top of it.
 
 ## DNS and UDP
 
-An Xray entry needs no `SocksFront`: its inbound speaks UDP ASSOCIATE, and a
-routing rule sends inbound UDP to port 53 to a `dns` outbound, answered by
-Xray's own resolver over TCP (`tcp://1.1.1.1`, `tcp://8.8.8.8`) through the
-proxy. That works over Psiphon too, which carries no UDP. Other UDP is carried
-when the server protocol carries it (VLESS / VMess / Trojan inside their TCP
-stream); Shadowsocks UDP needs a UDP-capable hop underneath (Aether, not
-Psiphon).
+Xray's SOCKS inbound speaks UDP ASSOCIATE, which is what lets the Aether engine
+send WARP's UDP through it (`AETHER_UPSTREAM`), and a routing rule sends
+inbound UDP to port 53 to a `dns` outbound, answered by Xray's own resolver
+over TCP (`tcp://1.1.1.1:53`, `tcp://8.8.8.8:53`) through the proxy.
 
 ## Readiness
 
@@ -79,8 +91,8 @@ Xray's SOCKS inbound acknowledges a CONNECT before its outbound has reached
 anything, so a CONNECT probe proves nothing. The hop is READY only when a
 DNS-over-TCP query through the inbound gets an answer back
 (`Readiness.awaitRoundTrip`), i.e. when the handshake with the user's server
-succeeded through the chain. Budgets: `XRAY_PORT_WAIT_MS` (15 s) for the
-inbound to bind, `XRAY_READY_WAIT_MS` (60 s) for the first answer.
+succeeded. Budgets: `XRAY_PORT_WAIT_MS` (15 s) for the inbound to bind,
+`XRAY_READY_WAIT_MS` (60 s) for the first answer.
 
 Failures map to `ChainFailure.XRAY_MISSING` (no or unstartable binary),
 `XRAY_CONFIG` (no / unreadable config, or Xray refused it) and

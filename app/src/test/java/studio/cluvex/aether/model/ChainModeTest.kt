@@ -10,19 +10,26 @@ import kotlin.test.assertTrue
  * The hop order is the whole feature.
  *
  * Get it backwards and "Tor over Aether" silently becomes "Aether over Tor",
- * which cannot be built at all (the engine has no upstream-proxy option) - and
- * the failure would show up as a connect timeout three minutes later, not as a
- * wrong answer. So it is pinned here, on the JVM, where it costs nothing.
+ * which cannot be built at all (neither Psiphon nor Tor carries UDP, and WARP
+ * is UDP) - and the failure would show up as a connect timeout three minutes
+ * later, not as a wrong answer. So it is pinned here, on the JVM, where it
+ * costs nothing.
  */
 class ChainModeTest {
 
     @Test
-    fun `aether is always the internet-facing hop`() {
+    fun `aether is the internet-facing hop unless xray sits underneath it`() {
         ChainMode.entries.filter { it.usesAether }.forEach { mode ->
+            val expected = if (mode.usesXray) Hop.XRAY else Hop.AETHER
             assertEquals(
-                Hop.AETHER,
+                expected,
                 mode.hops.first(),
-                "${mode.name} must dial out through Aether, not into it",
+                "${mode.name} must put $expected at the internet side",
+            )
+            assertEquals(
+                if (mode.usesXray) listOf(Hop.XRAY) else emptyList(),
+                mode.hopsBeforeEngine,
+                "${mode.name} hops before the engine",
             )
         }
     }

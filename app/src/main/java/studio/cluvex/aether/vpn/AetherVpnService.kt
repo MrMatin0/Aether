@@ -1053,7 +1053,13 @@ class AetherVpnService : VpnService() {
                 }
                 started.getOrNull()
             }
-            natives.startEngine(profile, upstreamPort)
+            val spawned = runCatching { natives.startEngine(profile, upstreamPort) }
+            spawned.exceptionOrNull()?.let { error ->
+                if (error is CancellationException) throw error
+                DiagnosticsLog.w(TAG, "Engine restart failed: ${error.message}")
+                natives.stopCores()
+                return false
+            }
             val opened = PortProbe.awaitOpen(
                 VpnTunables.SOCKS_HOST,
                 VpnTunables.ENGINE_SOCKS_PORT,
