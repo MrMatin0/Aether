@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chain_xray">فقط Xray</string>
+    <string name="chain_xray_desc">فقط سرور Xray خودتان، بدون هیچ هسته‌ای روی آن. وقتی سرورتان خودش رد می‌شود، سریع‌ترین گزینه است.</string>
     <string name="chain_aether_over_xray">Aether روی Xray</string>
     <string name="chain_aether_over_xray_desc">اول سرور Xray شما وصل می‌شود و WARP از داخل آن زده می‌شود.</string>
     <string name="chain_psiphon_over_xray">Psiphon روی Xray</string>
@@ -18,8 +20,9 @@
     <string name="xray_config_empty">هنوز کانفیگ Xray ذخیره نشده.</string>
     <string name="xray_config_not_saved">کانفیگ روی این دستگاه ذخیره نشد. دوباره بچسبانید.</string>
     <string name="xray_chain_note">اول Xray وصل می‌شود و بقیه هسته‌ها از داخل سرور شما زده می‌شوند.</string>
+    <string name="xray_alone_note">Xray به‌تنهایی اجرا می‌شود: ترافیک شما مستقیم از سرورتان عبور می‌کند، بدون هسته دیگر.</string>
     <string name="xray_missing">این نسخه هسته Xray را ندارد.</string>
-    <string name="xray_config_stored">رمزنگاری‌شده روی همین دستگاه ذخیره می‌شود و هرگز اکسپورت نمی‌شود.</string>
+    <string name="xray_config_stored">بدون رمزنگاری روی همین دستگاه ذخیره می‌شود و هرگز اکسپورت نمی‌شود.</string>
     <string name="err_xray_config">کانفیگ قابل استفاده‌ای برای Xray نیست. یک لینک سالم در صفحه زنجیره بچسبانید.</string>
     <string name="err_xray_timeout">سرور Xray جواب نداد. سرور، UUID/پسورد و تنظیمات TLS/REALITY را چک کنید.</string>
 </resources>
