@@ -288,8 +288,8 @@ fn worth_retrying(status: reqwest::StatusCode) -> bool {
 /// has arrived, so a timeout out of it means nothing came back at all. On a
 /// filtered network that is the dpi box (it either resets the handshake or
 /// silently drops it), and it will do the same on the next attempt, so backing
-/// off and retrying only delays the camouflaged route by up to a couple of
-/// minutes.
+/// off and retrying only delays the camouflaged route (and ech) by up to a
+/// couple of minutes.
 fn cut_on_the_wire(error: &reqwest::Error) -> bool {
     if error.is_connect() || error.is_timeout() {
         return true;
@@ -357,8 +357,9 @@ async fn fallback_call(
     jwt: Option<&str>,
 ) -> Result<AccountData> {
     log::info!(
-        "[*] {label} over the camouflaged route: random cloudflare edge address, no dns \
-         lookup, split client hello, alternate tls fingerprints"
+        "[*] {label} over the camouflaged route: ech first (camouflaged edge DoH or decoy \
+         retry_configs recovery), multi-prefix cloudflare edges, split client hello, \
+         alternate tls fingerprints"
     );
 
     let request = apifront::ApiRequest {
@@ -406,8 +407,14 @@ struct FrontCall<'a> {
     jwt: Option<&'a str>,
 }
 
-/// One call to the account api, over both routes: the direct route goes first
-/// and the camouflaged one follows when it fails.
+/// One call to the account api, over both routes.
+///
+/// Without ECH (`AETHER_ECH` unset/off) the direct route goes first and the
+/// camouflaged one (which still races ECH first) follows when the direct route
+/// is cut or fails. With `--ech` (`AETHER_ECH=auto` or base64), the camouflaged
+/// route goes FIRST so the encrypted ECH handshake is the very first packet on
+/// the wire and `api.cloudflareclient.com` is never exposed in plaintext unless
+/// the camouflaged route is completely exhausted.
 ///
 /// A refused identity (401, 404, 410) is the api's own answer and final on
 /// either route: the other route reaches the same api and would only get the
@@ -424,6 +431,30 @@ where
         bearer,
         jwt,
     } = front;
+
+    if crate::dns::ech_requested() {
+        log::info!(
+            "[*] {label}: ech was asked for, so the camouflaged route and its ech handshake go \
+             first and the plaintext direct route only last"
+        );
+        let camouflaged = match fallback_call(label, method, path, body, bearer, jwt).await {
+            Ok(account) => return Ok(account),
+            Err(error @ AetherError::IdentityRefused(_)) => return Err(error),
+            Err(error) => error,
+        };
+        log::warn!(
+            "[!] {label} failed over the camouflaged route: {camouflaged}; trying the direct \
+             route as a last resort"
+        );
+        return match send_with_retry(label, build).await {
+            Ok(account) => Ok(account),
+            Err(direct) => Err(combine(
+                label,
+                ("camouflaged route", camouflaged),
+                ("direct route", direct),
+            )),
+        };
+    }
 
     let primary = match send_with_retry(label, build).await {
         Ok(account) => return Ok(account),
@@ -1169,8 +1200,8 @@ mod tests {
     fn two_plain_failures_are_reported_together() {
         let combined = combine(
             "registration",
+            ("camouflaged route", AetherError::Api("no ech key".into())),
             ("direct route", AetherError::Api("connection reset".into())),
-            ("camouflaged route", AetherError::Api("no edge answered".into())),
         );
         let text = combined.to_string();
         assert!(matches!(combined, AetherError::Api(_)));
