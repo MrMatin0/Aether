@@ -47,5 +47,5 @@
     <string name="hub_state_timers">زمان‌سنج‌های سفارشی</string>
     <string name="hub_state_no_probe">بدون بررسی داده</string>
     <string name="hub_state_no_retry">بدون جایگزین پروفایل</string>
-    <string name="hub_state_version">%1$s \u00B7 هسته %2$s</string>
+    <string name="hub_state_version">V%1$s \u00B7 هسته %2$s</string>
 </resources>

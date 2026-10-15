@@ -33,8 +33,8 @@ plugins {
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
-val appVersionName = "1.5.3"
-val appBaseVersionCode = 18
+val appVersionName = "1.5.5"
+val appBaseVersionCode = 20
 
 // Each split APK needs its own code, and the universal one must outrank both,
 // otherwise a device that can take the arm64 split could still be offered the
@@ -52,10 +52,11 @@ val shippedAbis = listOf("arm64-v8a", "armeabi-v7a")
 
 // ================================================================= SIGNING ==
 //
-// Priority: keystore.properties / KEYSTORE_* env (the real release key) ->
-// .github/ci-keystore.jks.b64 (the key every published release so far was
-// signed with). There is no third option: a build that invents a certificate
-// produces an APK that existing users cannot install over their current app.
+// Priority: keystore.properties / KEYSTORE_* env (the release key, provided via
+// repository Secrets in CI or keystore.properties locally) ->
+// .github/ci-keystore.jks.b64 (legacy fallback if restored locally).
+// There is no third option: a build that invents a certificate produces an APK
+// that existing users cannot install over their current app.
 val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
@@ -65,8 +66,12 @@ fun signingValue(propKey: String, envKey: String): String? =
     (keystoreProps.getProperty(propKey) ?: System.getenv(envKey))?.takeIf { it.isNotBlank() }
 
 val releaseStorePath: String? = signingValue("storeFile", "KEYSTORE_PATH")
+val releaseStoreFile: File? = releaseStorePath?.let { path ->
+    val f = File(path)
+    if (f.isAbsolute) f else rootProject.file(path)
+}
 val hasReleaseKeystore: Boolean =
-    releaseStorePath != null && rootProject.file(releaseStorePath).exists()
+    releaseStoreFile != null && releaseStoreFile.exists()
 
 val ciKeystoreB64 = rootProject.file(".github/ci-keystore.jks.b64")
 val useCiKeystore: Boolean = !hasReleaseKeystore && ciKeystoreB64.exists()
@@ -440,7 +445,7 @@ android {
             enableV2Signing = true
             enableV3Signing = true
             if (hasReleaseKeystore) {
-                storeFile = rootProject.file(releaseStorePath!!)
+                storeFile = releaseStoreFile
                 storePassword = signingValue("storePassword", "KEYSTORE_PASSWORD")
                 keyAlias = signingValue("keyAlias", "KEY_ALIAS")
                 keyPassword = signingValue("keyPassword", "KEY_PASSWORD")
@@ -565,10 +570,9 @@ if (!hasReleaseKeystore && !useCiKeystore) {
         if (offender != null) {
             throw GradleException(
                 "No stable release keystore configured - refusing to build a " +
-                    "debug-signed release (${offender.path}). Run " +
-                    "scripts/generate-keystore.sh, or provide KEYSTORE_PATH / " +
-                    "KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD, or restore " +
-                    ".github/ci-keystore.jks.b64.",
+                    "debug-signed release (${offender.path}). Provide KEYSTORE_PATH / " +
+                    "KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD (or KEYSTORE_BASE64 in " +
+                    "GitHub Secrets), or configure keystore.properties locally.",
             )
         }
     }
