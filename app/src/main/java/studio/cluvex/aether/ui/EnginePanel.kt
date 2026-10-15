@@ -83,7 +83,7 @@ internal fun EngineDestination(
             SettingsPage.TRANSPORT -> TransportSection(
                 noize = profile.noize, keepalive = profile.keepalive, mtu = profile.mtu,
                 fragment = profile.fragment, fragmentSize = profile.fragmentSize,
-                fragmentDelay = profile.fragmentDelay, ech = profile.ech,
+                fragmentDelay = profile.fragmentDelay,
                 quicV2Opener = profile.quicV2Opener,
                 socketMark = profile.socketMark,
                 protocol = profile.protocol, masqueHttp2 = profile.masqueHttp2,

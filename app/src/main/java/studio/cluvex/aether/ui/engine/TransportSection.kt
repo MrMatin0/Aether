@@ -24,14 +24,14 @@ import studio.cluvex.aether.ui.spoofModeLabel
  * page scans instead of scrolling as one long sheet:
  *
  *  1. Anti-DPI & obfuscation: Amnezia noize, TLS fragmentation (size + delay
- *     side by side when on), ECH, and ClientHello spoofing.
- *  2. Protocol & QUIC: the QUIC v2 opener and the WireGuard experiments.
+ *     side by side when on), and ClientHello spoofing.
+ *  2. Protocol & QUIC: the QUIC v2 opener.
  *  3. Packet & network: MTU + keepalive side by side, then the socket mark.
  *
  * Explanations moved behind (?) buttons.
  *
  * SPOOFING lives in card 1 because it is one more way the ClientHello is
- * shaped, next to fragmentation and ECH. It only does anything on the MASQUE
+ * shaped, next to fragmentation. It only does anything on the MASQUE
  * transports (SNI) and the HTTP/2 carrier (split modes); elsewhere the picker
  * is shown disabled at Off and the (?) says why, instead of offering switches
  * that would do nothing.
@@ -44,7 +44,6 @@ internal fun TransportSection(
     fragment: Boolean,
     fragmentSize: String,
     fragmentDelay: String,
-    ech: Boolean,
     quicV2Opener: Boolean,
     socketMark: String,
     protocol: Protocol,
@@ -102,14 +101,6 @@ internal fun TransportSection(
                 Spacer(Modifier.height(EngineSpacing.Inline))
             }
             EngineDivider()
-            SwitchRow(
-                title = stringResource(R.string.ech_title),
-                info = stringResource(R.string.ech_desc),
-                checked = ech,
-                enabled = enabled,
-                onChange = { value -> edit { copy(ech = value) } },
-            )
-            EngineDivider()
 
             // The SNI applies to MASQUE carriers; the split modes only to H2.
             val spoofEditable = protocol.isMasque && masqueHttp2
@@ -157,9 +148,6 @@ internal fun TransportSection(
                 enabled = enabled,
                 onChange = { value -> edit { copy(quicV2Opener = value) } },
             )
-            EngineDivider()
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            WgExperimentControls(protocol = protocol, enabled = enabled)
         }
 
         // ----------------------------------------- 3. packet & network --
