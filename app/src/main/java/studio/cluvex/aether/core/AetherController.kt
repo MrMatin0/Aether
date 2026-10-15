@@ -149,7 +149,8 @@ object AetherController {
  * and decodes as [Protocol.MIM]. The engine-Tor keys are ignored like any other
  * unknown key - the app has one Tor, and it is configured by the chain fields.
  * So are `smartDnsDirect` / `smartDnsProxies`: the direct path is chosen
- * automatically now, and the proxy ranges are detected per session.
+ * automatically now, and the proxy ranges are detected per session. And so is
+ * `ech`: the ECH switch was removed from the app.
  *
  * The two Zero Trust SECRETS ([ConnectionProfile.accessClientSecret],
  * [ConnectionProfile.accessToken]) are deliberately NOT part of the payload:
@@ -173,7 +174,6 @@ object ProfileCodec {
         add("range=${flatten(p.manualRange)}")
         add("keepalive=${p.keepalive}")
         add("fragment=${p.fragment}")
-        add("ech=${p.ech}")
         add("mtu=${p.mtu}")
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
@@ -287,7 +287,6 @@ object ProfileCodec {
                 manualRange = map["range"] ?: d.manualRange,
                 keepalive = map["keepalive"]?.toIntOrNull() ?: d.keepalive,
                 fragment = map["fragment"]?.toBooleanStrictOrNull() ?: d.fragment,
-                ech = map["ech"]?.toBooleanStrictOrNull() ?: d.ech,
                 mtu = map["mtu"]?.toIntOrNull() ?: d.mtu,
                 proxyMode = map["proxy"]?.toBooleanStrictOrNull() ?: d.proxyMode,
                 splitMode = map["split"]?.let { enumOr<SplitMode>(it) } ?: d.splitMode,
