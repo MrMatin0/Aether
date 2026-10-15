@@ -16,14 +16,31 @@ use tokio::time::Instant;
 
 use crate::error::{AetherError, Result};
 use crate::fragment::{FragmentConfig, FragmentingStream};
+use crate::masque_h2::{spoof::SpoofMode, SpoofingStream};
 
 extern "C" {
     fn X509_STORE_CTX_get_error(ctx: *const c_void) -> c_int;
     fn X509_verify_cert_error_string(err: c_long) -> *const c_char;
 }
 
-const EDGE_PREFIX: [u8; 3] = [141, 101, 113];
-const EDGE_SAMPLES: usize = 3;
+/// Diverse Cloudflare anycast / ingress / DoH prefixes used to reach the WARP
+/// registration and key enrollment API without DNS.
+///
+/// Relying on a single `/24` (`141.101.113.x`) fails when an ISP null-routes or
+/// blackholes that prefix. Sampling across multiple distinct Cloudflare AS13335
+/// prefixes (API ingress, DoH edge, CDN anycast, WARP ingress) ensures at least
+/// one routed path answers on port 443.
+pub const EDGE_PREFIXES: &[[u8; 3]] = &[
+    [141, 101, 113],
+    [162, 159, 36],
+    [162, 159, 46],
+    [104, 16, 132],
+    [172, 64, 155],
+    [188, 114, 96],
+    [162, 159, 192],
+];
+
+const EDGE_SAMPLES: usize = 6;
 const RESOLVED_SAMPLES: usize = 2;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -34,11 +51,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 512 * 1024;
 
-/// The camouflaged route starts new attempts for this long. It used to walk
-/// every fingerprint on every address one after the other, and on a line that
-/// lets tcp up but blackholes the ClientHello each of those attempts cost the
-/// full handshake timeout: minutes for one api call, past the key fetch's
-/// 240 s for MASQUE's two and far past a Smart Auto rung.
+/// The camouflaged route starts new attempts for this long.
 const ROUTE_BUDGET: Duration = Duration::from_secs(35);
 /// Attempts already under way get this much longer to finish their exchange.
 const ROUTE_GRACE: Duration = Duration::from_secs(20);
@@ -46,8 +59,48 @@ const ROUTE_GRACE: Duration = Duration::from_secs(20);
 const PARALLEL_ATTEMPTS: usize = 4;
 /// The time between two attempts starting.
 const ATTEMPT_STAGGER: Duration = Duration::from_millis(300);
+/// The ECH attempts have the field to themselves this long, so a plaintext
+/// ClientHello that happens to come up first does not carry the request while
+/// an ECH one is a round trip away.
+const ECH_HEAD_START: Duration = Duration::from_secs(3);
+/// How long the API waits for the core's ECH key lookup (`dns.rs`, including
+/// camouflaged edge DoH) before starting from decoy/bootstrap ECH configs and
+/// harvesting live `retry_configs` directly from the Cloudflare edge.
+const ECH_KEY_WAIT: Duration = Duration::from_secs(3);
 /// How long the system resolver may take over the api name.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Deterministic 32-byte X25519 public key whose private key exists nowhere,
+/// used to synthesize RFC 9849 decoy/bootstrap `ECHConfigList` payloads.
+///
+/// When offered to any Cloudflare edge, the edge cannot open the inner
+/// ClientHello and rejects ECH per RFC 9849 §6.1.6: it completes or aborts the
+/// outer handshake under the cover `public_name` and sends back its live
+/// `ECHConfigList` in the `encrypted_client_hello` `retry_configs` extension.
+pub const DECOY_ECH_PUBKEY: [u8; 32] = [
+    0x7c, 0x75, 0xf0, 0xdd, 0x6b, 0x5e, 0x0b, 0xdf, 0x9e, 0xfa, 0x74, 0x1e, 0x03, 0x39, 0xde,
+    0x60, 0x8f, 0x74, 0x1d, 0xa8, 0x18, 0xb0, 0x29, 0x71, 0x41, 0xd5, 0x64, 0xb2, 0xce, 0x6c,
+    0x34, 0x39,
+];
+
+/// Cover `public_name` domains used in decoy ECH configs when no DNS / DoH
+/// answer was available. Rotating outer names avoids a single static outer SNI
+/// signature if a censor filters `cloudflare-ech.com`.
+pub const DECOY_PUBLIC_NAMES: &[&str] = &[
+    "cloudflare-ech.com",
+    "crypto.cloudflare.com",
+    "one.one.one.one",
+];
+
+/// Canonical 71-byte bootstrap `ECHConfigList` (`0xfe0d`, X25519,
+/// HKDF-SHA256/AES-128-GCM, `cloudflare-ech.com`).
+pub const BOOTSTRAP_ECH_CONFIG: [u8; 71] = [
+    0x00, 0x45, 0xfe, 0x0d, 0x00, 0x41, 0x5a, 0x00, 0x20, 0x00, 0x20, 0x7c, 0x75, 0xf0, 0xdd,
+    0x6b, 0x5e, 0x0b, 0xdf, 0x9e, 0xfa, 0x74, 0x1e, 0x03, 0x39, 0xde, 0x60, 0x8f, 0x74, 0x1d,
+    0xa8, 0x18, 0xb0, 0x29, 0x71, 0x41, 0xd5, 0x64, 0xb2, 0xce, 0x6c, 0x34, 0x39, 0x00, 0x04,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x12, 0x63, 0x6c, 0x6f, 0x75, 0x64, 0x66, 0x6c, 0x61, 0x72,
+    0x65, 0x2d, 0x65, 0x63, 0x68, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x00,
+];
 
 /// Extra trust anchors: a directory of PEM/DER files, or one PEM bundle.
 /// This is also the only way to trust a user installed CA on purpose.
@@ -95,13 +148,15 @@ AES256-SHA";
 const LEGACY_GROUPS: &str = "X25519:P-256";
 const MODERN_GROUPS: &str = "X25519:P-256:P-384";
 const CHROME_GROUPS: &str = "P-256:X25519:P-384";
+const ECH_GROUPS: &str = "X25519:P-256:P-384";
 
 const ALPN_HTTP1: &[u8] = b"\x08http/1.1";
 
 static TRUST_ROOTS: OnceLock<Vec<X509>> = OnceLock::new();
 
 /// The stream an api exchange runs over.
-type ApiStream = tokio_boring::SslStream<FragmentingStream<tokio::net::TcpStream>>;
+type ApiStream =
+    tokio_boring::SslStream<SpoofingStream<FragmentingStream<tokio::net::TcpStream>>>;
 
 /// Reads every certificate in a PEM bundle (Android's cacerts files carry a
 /// text dump before the PEM block, which the PEM reader skips), falling back to
@@ -302,8 +357,9 @@ fn verify_error(ctx: &X509StoreContextRef) -> String {
 }
 
 /// Leaves the verdict to BoringSSL, but says why a certificate was refused.
-/// Anything that is not a cloudflare issuer means the connection is being
-/// intercepted.
+/// A subject of `cloudflare-ech.com` (or another cover public_name) means the
+/// edge rejected ECH and answered with the outer name; anything that is not a
+/// Cloudflare issuer means the connection is being intercepted.
 fn report_verification(preverify_ok: bool, ctx: &mut X509StoreContextRef) -> bool {
     if !preverify_ok {
         let depth = ctx.error_depth();
@@ -340,6 +396,14 @@ fn install_trust(builder: &mut SslContextBuilder) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fingerprint {
+    /// Encrypted Client Hello with SNI-split fragmentation (hides inner SNI
+    /// completely inside HPKE payload and splits outer cover SNI across TCP
+    /// segments).
+    Ech,
+    /// Encrypted Client Hello with multi-record stream splitting (`64/32/24`
+    /// byte cuts across the first write), bypassing middleboxes that reassemble
+    /// single-cut segments or inspect record boundaries.
+    EchStreamSplit,
     SplitLegacy,
     SplitModern,
     Modern,
@@ -360,6 +424,8 @@ fn split_fragments() -> FragmentConfig {
 impl Fingerprint {
     pub fn label(self) -> &'static str {
         match self {
+            Fingerprint::Ech => "ech",
+            Fingerprint::EchStreamSplit => "ech-stream-split",
             Fingerprint::SplitLegacy => "split-tls12",
             Fingerprint::SplitModern => "split-tls13",
             Fingerprint::Modern => "plain-tls13",
@@ -367,8 +433,14 @@ impl Fingerprint {
         }
     }
 
-    fn all() -> [Fingerprint; 4] {
+    pub fn is_ech(self) -> bool {
+        matches!(self, Fingerprint::Ech | Fingerprint::EchStreamSplit)
+    }
+
+    fn all() -> [Fingerprint; 6] {
         [
+            Fingerprint::Ech,
+            Fingerprint::EchStreamSplit,
             Fingerprint::SplitLegacy,
             Fingerprint::SplitModern,
             Fingerprint::Modern,
@@ -378,8 +450,25 @@ impl Fingerprint {
 
     fn fragments(self) -> FragmentConfig {
         match self {
-            Fingerprint::SplitLegacy | Fingerprint::SplitModern => split_fragments(),
+            Fingerprint::Ech | Fingerprint::SplitLegacy | Fingerprint::SplitModern => {
+                split_fragments()
+            }
+            Fingerprint::EchStreamSplit => FragmentConfig {
+                enabled: true,
+                size_min: 16,
+                size_max: 36,
+                delay_min_ms: 1,
+                delay_max_ms: 5,
+                sni_split: true,
+            },
             _ => FragmentConfig::disabled(),
+        }
+    }
+
+    fn spoof_mode(self) -> SpoofMode {
+        match self {
+            Fingerprint::EchStreamSplit => SpoofMode::StreamSplit,
+            _ => SpoofMode::Off,
         }
     }
 
@@ -390,6 +479,20 @@ impl Fingerprint {
         let tls = |error: boring::error::ErrorStack| AetherError::Tls(error.to_string());
 
         match self {
+            Fingerprint::Ech | Fingerprint::EchStreamSplit => {
+                builder
+                    .set_min_proto_version(Some(SslVersion::TLS1_3))
+                    .map_err(tls)?;
+                builder
+                    .set_max_proto_version(Some(SslVersion::TLS1_3))
+                    .map_err(tls)?;
+                builder.set_grease_enabled(true);
+                builder.set_permute_extensions(true);
+                builder.set_curves_list(ECH_GROUPS).map_err(tls)?;
+                builder.set_alpn_protos(ALPN_HTTP1).map_err(tls)?;
+                builder.enable_signed_cert_timestamps();
+                builder.enable_ocsp_stapling();
+            }
             Fingerprint::SplitLegacy => {
                 builder
                     .set_min_proto_version(Some(SslVersion::TLS1_2))
@@ -442,7 +545,13 @@ impl Fingerprint {
 
         install_trust(&mut builder);
 
-        builder.build().configure().map_err(tls)
+        let mut config = builder.build().configure().map_err(tls)?;
+        if !self.is_ech() {
+            // Emit synthetic ECH GREASE on plaintext fallback fingerprints so
+            // extension-inspecting DPI boxes still see an ECH extension.
+            crate::tls::set_enable_ech_grease(&mut config, true);
+        }
+        Ok(config)
     }
 }
 
@@ -462,9 +571,15 @@ pub struct ApiResponse {
     pub route: String,
 }
 
+/// Picks a random Cloudflare edge address from the first prefix (`141.101.113.0/24`)
+/// or from a specific prefix slot.
 pub fn random_edge_address() -> SocketAddr {
+    random_edge_in_prefix(&EDGE_PREFIXES[0])
+}
+
+pub fn random_edge_in_prefix(prefix: &[u8; 3]) -> SocketAddr {
     let host = rand::rng().random_range(1..=254u8);
-    let ip = Ipv4Addr::new(EDGE_PREFIX[0], EDGE_PREFIX[1], EDGE_PREFIX[2], host);
+    let ip = Ipv4Addr::new(prefix[0], prefix[1], prefix[2], host);
     SocketAddr::new(IpAddr::V4(ip), 443)
 }
 
@@ -491,16 +606,33 @@ fn usable_edge(address: &SocketAddr) -> bool {
     }
 }
 
-/// The edge addresses to try: random addresses in the Cloudflare edge range,
-/// plus the public IPv4 answers the system resolver gives for the api within
-/// [RESOLVE_TIMEOUT].
+/// Builds a diverse list of Cloudflare edge addresses across multiple `/24`
+/// prefixes (`141.101.113.x`, `162.159.36.x`, `162.159.46.x`, `104.16.132.x`,
+/// `172.64.155.x`, `188.114.96.x`, `162.159.192.x`).
+///
+/// With ECH requested (`--ech`), the API hostname (`api.cloudflareclient.com`)
+/// is NEVER looked up over plaintext system DNS so the name stays off the wire.
 async fn candidates(host: &str) -> Vec<SocketAddr> {
+    let ech = crate::dns::ech_requested();
+    let samples = if ech {
+        EDGE_SAMPLES + RESOLVED_SAMPLES
+    } else {
+        EDGE_SAMPLES
+    };
+
     let mut list: Vec<SocketAddr> = Vec::new();
-    while list.len() < EDGE_SAMPLES {
-        let candidate = random_edge_address();
+    let mut prefix_idx = 0usize;
+    while list.len() < samples {
+        let prefix = &EDGE_PREFIXES[prefix_idx % EDGE_PREFIXES.len()];
+        prefix_idx += 1;
+        let candidate = random_edge_in_prefix(prefix);
         if !list.contains(&candidate) {
             list.push(candidate);
         }
+    }
+
+    if ech {
+        return list;
     }
 
     match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 443))).await {
@@ -519,6 +651,68 @@ async fn candidates(host: &str) -> Vec<SocketAddr> {
     }
 
     list
+}
+
+/// True when `list` is one of our synthetic decoy `ECHConfigList` payloads
+/// whose private key does not exist (and therefore must never be cached as the
+/// session key).
+pub fn is_decoy_ech_config(list: &[u8]) -> bool {
+    if list == BOOTSTRAP_ECH_CONFIG.as_slice() {
+        return true;
+    }
+    // Check if the 32-byte X25519 public key inside the first config matches
+    // DECOY_ECH_PUBKEY.
+    list.windows(DECOY_ECH_PUBKEY.len())
+        .any(|w| w == DECOY_ECH_PUBKEY)
+}
+
+/// Synthesizes a decoy `ECHConfigList` for a given attempt slot, rotating
+/// through `DECOY_PUBLIC_NAMES` (`cloudflare-ech.com`, `crypto.cloudflare.com`,
+/// `one.one.one.one`) so outer ClientHellos do not all share one fixed SNI.
+pub fn decoy_ech_config_for_slot(slot: usize) -> Vec<u8> {
+    let name = DECOY_PUBLIC_NAMES[slot % DECOY_PUBLIC_NAMES.len()];
+    crate::dns::synthesize_ech_config_list(0x5a, &DECOY_ECH_PUBKEY, name)
+        .unwrap_or_else(|| BOOTSTRAP_ECH_CONFIG.to_vec())
+}
+
+/// The key the core already has for this process (see `dns.rs`).
+fn cached_ech() -> Option<Vec<u8>> {
+    crate::dns::cached_key()
+}
+
+/// Hands a key an edge sent back to the core, which keeps it for every later
+/// ECH handshake of the process, the MASQUE tunnel's included. Returns whether
+/// it was kept: only a plausible `ECHConfigList` is, and never a decoy/bootstrap
+/// set, which no edge can decrypt.
+fn remember_ech(list: Vec<u8>) -> bool {
+    if is_decoy_ech_config(&list) {
+        return false;
+    }
+    crate::dns::remember(list)
+}
+
+/// Resolves the initial `ECHConfigList` for the camouflaged route:
+///  1. Waits up to `ECH_KEY_WAIT` (3 s) for `dns::session_key()` (which races
+///     camouflaged edge DoH to `162.159.36.1`/`162.159.46.1`, standard DoH, and
+///     UDP/TCP DNS).
+///  2. If all DNS/DoH paths are blocked or time out, returns
+///     `BOOTSTRAP_ECH_CONFIG` so the first handshake triggers RFC 9849
+///     `retry_configs` recovery directly from the Cloudflare TLS edge with zero
+///     DNS dependency.
+async fn ech_config_list() -> Option<Vec<u8>> {
+    match tokio::time::timeout(ECH_KEY_WAIT, crate::dns::session_key()).await {
+        Ok(Some(list)) => return Some(list),
+        Ok(None) => log::info!(
+            "[apifront] the core has no ECHConfigList for the api; offering decoy ECH config \
+             set so the edge hands back its live retry_configs"
+        ),
+        Err(_) => log::info!(
+            "[apifront] no ECHConfigList after {}s; offering decoy ECH config set so the edge \
+             hands back its live retry_configs",
+            ECH_KEY_WAIT.as_secs()
+        ),
+    }
+    Some(BOOTSTRAP_ECH_CONFIG.to_vec())
 }
 
 fn render_request(request: &ApiRequest) -> Vec<u8> {
@@ -625,8 +819,14 @@ fn final_api_answer(response: &ApiResponse) -> bool {
 }
 
 /// A tcp connection to `address` and a tls handshake for `host` over it, with
-/// `fingerprint`'s ClientHello. The request is not sent yet (see [send]).
-async fn establish(host: &str, address: SocketAddr, fingerprint: Fingerprint) -> Result<ApiStream> {
+/// `fingerprint`'s ClientHello and, when given, ECH with `ech`. The request is
+/// not sent yet (see [send]).
+async fn establish(
+    host: &str,
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+    ech: Option<&[u8]>,
+) -> Result<ApiStream> {
     let tcp = match crate::upstream::configured() {
         Some(proxy) => tokio::time::timeout(PROXY_CONNECT_TIMEOUT, proxy.connect(address))
             .await
@@ -643,8 +843,12 @@ async fn establish(host: &str, address: SocketAddr, fingerprint: Fingerprint) ->
     };
     tcp.set_nodelay(true).ok();
 
-    let config = fingerprint.configure()?;
-    let stream = FragmentingStream::new(tcp, fingerprint.fragments());
+    let mut config = fingerprint.configure()?;
+    if let Some(list) = ech {
+        crate::tls::set_ech_config_list(&mut config, list)?;
+    }
+    let frag_stream = FragmentingStream::new(tcp, fingerprint.fragments());
+    let stream = SpoofingStream::new(frag_stream, fingerprint.spoof_mode());
 
     let handshake = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
@@ -656,11 +860,48 @@ async fn establish(host: &str, address: SocketAddr, fingerprint: Fingerprint) ->
     let tls = match handshake {
         Ok(tls) => tls,
         Err(error) => {
+            if ech.is_some() {
+                if let Some(retry) = error.ssl().and_then(crate::tls::ech_retry_configs) {
+                    let size = retry.len();
+                    if remember_ech(retry) {
+                        return Err(AetherError::Ech(format!(
+                            "{address} rejected our ech keys and handed back fresh ones \
+                             ({size} bytes): {error}"
+                        )));
+                    }
+                    log::info!(
+                        "[apifront] {address} handed back a {size} byte ech key set that is not \
+                         a usable ECHConfigList; keeping ours"
+                    );
+                }
+            }
             return Err(AetherError::Api(format!(
                 "tls handshake with {address}: {error}"
             )));
         }
     };
+
+    if ech.is_some() {
+        if crate::tls::ech_accepted(tls.ssl()) {
+            log::info!(
+                "[apifront] ech ({}) accepted by {address}; the api name stayed encrypted",
+                fingerprint.label()
+            );
+        } else {
+            if let Some(retry) = crate::tls::ech_retry_configs(tls.ssl()) {
+                let size = retry.len();
+                if remember_ech(retry) {
+                    return Err(AetherError::Ech(format!(
+                        "{address} completed outer handshake without ECH and handed back \
+                         {size} bytes of retry_configs"
+                    )));
+                }
+            }
+            return Err(AetherError::Ech(format!(
+                "{address} completed the handshake without accepting ech"
+            )));
+        }
+    }
 
     if tls.ssl().selected_alpn_protocol() == Some(b"h2") {
         return Err(AetherError::Api(format!(
@@ -669,6 +910,61 @@ async fn establish(host: &str, address: SocketAddr, fingerprint: Fingerprint) ->
     }
 
     Ok(tls)
+}
+
+/// An ECH handshake with `address`, plus an immediate retry when the edge
+/// rejects our keys (or decoy config) and hands back the live `retry_configs`
+/// it currently serves.
+///
+/// If the edge's `ECH_REJECTED` handshake fails before `ech_retry_configs` can
+/// be extracted (for instance if a middlebox interferes with the outer alert or
+/// cert), falls back to a quick camouflaged edge DoH query directly against
+/// `address` to pull the `HTTPS` record before retrying.
+async fn establish_ech(
+    host: &str,
+    address: SocketAddr,
+    fingerprint: Fingerprint,
+    list: Vec<u8>,
+) -> Result<ApiStream> {
+    match establish(host, address, fingerprint, Some(&list)).await {
+        Err(first) => {
+            if let Some(fresh) = cached_ech().filter(|fresh| *fresh != list) {
+                log::info!("[apifront] first ech attempt via {address} failed: {first}");
+                log::info!(
+                    "[apifront] retrying {address} ({}) with the {} byte ech key set it handed back",
+                    fingerprint.label(),
+                    fresh.len()
+                );
+                return establish(host, address, fingerprint, Some(&fresh)).await;
+            }
+
+            // If we offered a decoy config and did not get retry_configs from
+            // the TLS alert, probe `/dns-query` on the same edge over a
+            // fragmented TLS session to harvest the ECHConfigList.
+            if is_decoy_ech_config(&list) {
+                if let Ok(doh_list) = crate::dns::query_edge_doh(
+                    address,
+                    "one.one.one.one",
+                    "/dns-query",
+                    crate::dns::DEFAULT_ECH_DOMAIN,
+                    Duration::from_secs(4),
+                )
+                .await
+                {
+                    if remember_ech(doh_list.clone()) {
+                        log::info!(
+                            "[apifront] recovered {} byte ECHConfigList via edge DoH on {address}; retrying ECH handshake",
+                            doh_list.len()
+                        );
+                        return establish(host, address, fingerprint, Some(&doh_list)).await;
+                    }
+                }
+            }
+
+            Err(first)
+        }
+        established => established,
+    }
 }
 
 /// The request, over a stream [establish] brought up, and the answer.
@@ -716,9 +1012,20 @@ async fn exchange(
     request: &ApiRequest,
     address: SocketAddr,
     fingerprint: Fingerprint,
+    ech: Option<&[u8]>,
 ) -> Result<ApiResponse> {
-    let tls = establish(&request.host, address, fingerprint).await?;
+    let tls = establish(&request.host, address, fingerprint, ech).await?;
     send(request, tls, address, fingerprint).await
+}
+
+#[cfg(test)]
+async fn attempt_ech(
+    request: &ApiRequest,
+    address: SocketAddr,
+    list: Vec<u8>,
+) -> Result<ApiResponse> {
+    let tls = establish_ech(&request.host, address, Fingerprint::Ech, list).await?;
+    send(request, tls, address, Fingerprint::Ech).await
 }
 
 /// One attempt of the camouflaged route: one fingerprint to one address.
@@ -726,18 +1033,25 @@ async fn exchange(
 struct Attempt {
     address: SocketAddr,
     fingerprint: Fingerprint,
+    slot: usize,
 }
 
-/// Every attempt, in the order they are started: each fingerprint on every
-/// address, one fingerprint after the other.
-fn attempt_plan(addresses: &[SocketAddr]) -> VecDeque<Attempt> {
+/// Every attempt, in the order they are started: ECH fingerprints (`Ech` and
+/// `EchStreamSplit`) on every address first, then each plaintext fallback
+/// fingerprint on every address.
+fn attempt_plan(addresses: &[SocketAddr], with_ech: bool) -> VecDeque<Attempt> {
     Fingerprint::all()
         .into_iter()
+        .filter(|fingerprint| with_ech || !fingerprint.is_ech())
         .flat_map(|fingerprint| {
-            addresses.iter().map(move |&address| Attempt {
-                address,
-                fingerprint,
-            })
+            addresses
+                .iter()
+                .enumerate()
+                .map(move |(slot, &address)| Attempt {
+                    address,
+                    fingerprint,
+                    slot,
+                })
         })
         .collect()
 }
@@ -749,9 +1063,28 @@ fn attempt_plan(addresses: &[SocketAddr]) -> VecDeque<Attempt> {
 async fn run_attempt(
     request: &ApiRequest,
     attempt: Attempt,
+    ech: Option<&[u8]>,
     turn: &Semaphore,
 ) -> Result<ApiResponse> {
-    let tls = establish(&request.host, attempt.address, attempt.fingerprint).await?;
+    let tls = if attempt.fingerprint.is_ech() {
+        // A live key another attempt already got from an edge or DoH beats the
+        // one this route started with; if we only have a decoy config, rotate
+        // its outer public_name across attempt slots.
+        let list = cached_ech()
+            .or_else(|| {
+                ech.map(|raw| {
+                    if is_decoy_ech_config(raw) {
+                        decoy_ech_config_for_slot(attempt.slot)
+                    } else {
+                        raw.to_vec()
+                    }
+                })
+            })
+            .ok_or_else(|| AetherError::Ech("no ech config list".into()))?;
+        establish_ech(&request.host, attempt.address, attempt.fingerprint, list).await?
+    } else {
+        establish(&request.host, attempt.address, attempt.fingerprint, None).await?
+    };
 
     let _turn = turn
         .acquire()
@@ -764,7 +1097,8 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
     // Load (and log) the trust store up front rather than inside the first handshake.
     let _ = trust_roots();
 
-    let addresses = candidates(&request.host).await;
+    // The edge addresses and the ECH key are worked out side by side.
+    let (addresses, ech) = tokio::join!(candidates(&request.host), ech_config_list());
     if addresses.is_empty() {
         return Err(AetherError::Api(
             "no camouflaged route to the api was available".into(),
@@ -776,21 +1110,25 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
     // off in that case.
     let proxied = crate::upstream::configured().is_some();
 
+    let ech_key = ech.as_deref();
     let turn = Semaphore::new(1);
     let turn = &turn;
 
-    let mut queue = attempt_plan(&addresses);
+    let mut queue = attempt_plan(&addresses, ech_key.is_some());
     log::info!(
-        "[apifront] racing {} attempts over {} edge addresses, {} at a time",
+        "[apifront] racing {} attempts over {} edge addresses{}, {} at a time",
         queue.len(),
         addresses.len(),
+        if ech_key.is_some() { ", ech first" } else { "" },
         PARALLEL_ATTEMPTS
     );
 
     let started = Instant::now();
     let stop_starting = started + ROUTE_BUDGET;
     let give_up = stop_starting + ROUTE_GRACE;
+    let ech_alone_until = started + ECH_HEAD_START;
     let mut next_start = started;
+    let mut ech_running = 0usize;
     let mut running = FuturesUnordered::new();
 
     let mut rejection: Option<ApiResponse> = None;
@@ -828,9 +1166,16 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
                 wake = wake.min(next_start);
                 break;
             }
+            if !attempt.fingerprint.is_ech() && ech_running > 0 && now < ech_alone_until {
+                wake = wake.min(ech_alone_until);
+                break;
+            }
             queue.pop_front();
+            if attempt.fingerprint.is_ech() {
+                ech_running += 1;
+            }
             running.push(async move {
-                let outcome = run_attempt(request, attempt, turn).await;
+                let outcome = run_attempt(request, attempt, ech_key, turn).await;
                 (attempt, outcome)
             });
             next_start = now + ATTEMPT_STAGGER;
@@ -843,6 +1188,9 @@ pub async fn fetch(request: &ApiRequest) -> Result<ApiResponse> {
         tokio::select! {
             finished = running.next(), if !running.is_empty() => {
                 if let Some((attempt, outcome)) = finished {
+                    if attempt.fingerprint.is_ech() {
+                        ech_running = ech_running.saturating_sub(1);
+                    }
                     let address = attempt.address;
                     match outcome {
                         Ok(response) if (200..300).contains(&response.status) => {
@@ -1078,7 +1426,7 @@ mod tests {
         assert!(!never_connected(&AetherError::Api(
             "tls handshake with 141.101.113.131:443 timed out".into()
         )));
-        assert!(!never_connected(&AetherError::Tls("connect to x".into())));
+        assert!(!never_connected(&AetherError::Ech("connect to x".into())));
     }
 
     #[test]
@@ -1100,17 +1448,19 @@ mod tests {
     }
 
     #[test]
-    fn every_random_edge_address_stays_inside_the_cloudflare_range() {
-        for _ in 0..64 {
-            let address = random_edge_address();
-            assert_eq!(address.port(), 443);
-            match address.ip() {
-                IpAddr::V4(v4) => {
-                    let octets = v4.octets();
-                    assert_eq!([octets[0], octets[1], octets[2]], EDGE_PREFIX);
-                    assert!(octets[3] >= 1 && octets[3] <= 254);
+    fn every_random_edge_address_stays_inside_the_cloudflare_ranges() {
+        for prefix in EDGE_PREFIXES {
+            for _ in 0..16 {
+                let address = random_edge_in_prefix(prefix);
+                assert_eq!(address.port(), 443);
+                match address.ip() {
+                    IpAddr::V4(v4) => {
+                        let octets = v4.octets();
+                        assert_eq!([octets[0], octets[1], octets[2]], *prefix);
+                        assert!(octets[3] >= 1 && octets[3] <= 254);
+                    }
+                    IpAddr::V6(_) => panic!("the edge range is ipv4 only"),
                 }
-                IpAddr::V6(_) => panic!("the edge range is ipv4 only"),
             }
         }
     }
@@ -1141,17 +1491,34 @@ mod tests {
     }
 
     #[test]
-    fn every_fingerprint_is_queued_for_every_address() {
+    fn every_ech_attempt_is_queued_before_any_other_fingerprint() {
         let addresses: Vec<SocketAddr> = (1..=4).map(edge).collect();
-        let plan = attempt_plan(&addresses);
+        let plan = attempt_plan(&addresses, true);
+        let ech_count = addresses.len() * 2; // Ech + EchStreamSplit
         assert_eq!(plan.len(), addresses.len() * Fingerprint::all().len());
-        for fingerprint in Fingerprint::all() {
-            for address in &addresses {
-                assert!(plan
-                    .iter()
-                    .any(|attempt| attempt.fingerprint == fingerprint && attempt.address == *address));
-            }
+        assert!(plan
+            .iter()
+            .take(ech_count)
+            .all(|attempt| attempt.fingerprint.is_ech()));
+        assert!(plan
+            .iter()
+            .skip(ech_count)
+            .all(|attempt| !attempt.fingerprint.is_ech()));
+        for address in &addresses {
+            assert!(plan
+                .iter()
+                .take(addresses.len())
+                .any(|attempt| attempt.address == *address));
         }
+
+        let without = attempt_plan(&addresses, false);
+        assert_eq!(
+            without.len(),
+            addresses.len() * (Fingerprint::all().len() - 2)
+        );
+        assert!(without
+            .iter()
+            .all(|attempt| !attempt.fingerprint.is_ech()));
     }
 
     #[test]
@@ -1159,8 +1526,78 @@ mod tests {
         // A Smart Auto rung waits 75 s for the engine; the key fetch gives
         // MASQUE's two api calls 240 s together.
         assert!(ROUTE_BUDGET + ROUTE_GRACE <= Duration::from_secs(60));
+        assert!(ECH_KEY_WAIT < ROUTE_BUDGET);
+        assert!(ECH_HEAD_START < ROUTE_BUDGET);
         assert!(RESOLVE_TIMEOUT < ROUTE_BUDGET);
         assert!(PARALLEL_ATTEMPTS >= 2);
+    }
+
+    #[test]
+    fn the_bootstrap_key_set_is_shaped_like_cloudflares() {
+        let list = &BOOTSTRAP_ECH_CONFIG;
+        assert!(crate::dns::plausible_ech_list(list));
+        // ECHConfigList length, then one ECHConfig of version 0xfe0d.
+        assert_eq!(
+            u16::from_be_bytes([list[0], list[1]]) as usize,
+            list.len() - 2
+        );
+        assert_eq!(&list[2..4], &[0xfe, 0x0d]);
+        assert_eq!(
+            u16::from_be_bytes([list[4], list[5]]) as usize,
+            list.len() - 6
+        );
+        // DHKEM(X25519, HKDF-SHA256) with a 32 byte public key.
+        assert_eq!(&list[7..9], &[0x00, 0x20]);
+        assert_eq!(&list[9..11], &[0x00, 0x20]);
+        // One suite: HKDF-SHA256, AES-128-GCM. No name padding.
+        assert_eq!(&list[43..49], &[0x00, 0x04, 0x00, 0x01, 0x00, 0x01]);
+        assert_eq!(list[49], 0);
+        // The public name the edge answers a rejection as, and no extensions.
+        let name_len = list[50] as usize;
+        assert_eq!(&list[51..51 + name_len], b"cloudflare-ech.com");
+        assert_eq!(&list[51 + name_len..], &[0, 0]);
+    }
+
+    #[test]
+    fn decoy_ech_configs_rotate_public_names_and_never_become_session_keys() {
+        for slot in 0..DECOY_PUBLIC_NAMES.len() {
+            let decoy = decoy_ech_config_for_slot(slot);
+            assert!(crate::dns::plausible_ech_list(&decoy));
+            assert_eq!(
+                crate::dns::extract_public_name(&decoy).as_deref(),
+                Some(DECOY_PUBLIC_NAMES[slot])
+            );
+            assert!(is_decoy_ech_config(&decoy));
+            assert!(!remember_ech(decoy));
+        }
+    }
+
+    #[test]
+    fn boring_takes_the_bootstrap_key_set() {
+        let mut config = Fingerprint::Ech.configure().expect("ech configures");
+        assert!(crate::tls::set_ech_config_list(&mut config, &BOOTSTRAP_ECH_CONFIG).is_ok());
+    }
+
+    #[test]
+    fn the_bootstrap_key_set_never_becomes_the_session_key() {
+        assert!(!remember_ech(BOOTSTRAP_ECH_CONFIG.to_vec()));
+    }
+
+    #[test]
+    fn the_ech_route_is_tried_before_anything_else() {
+        assert_eq!(Fingerprint::all()[0], Fingerprint::Ech);
+        assert_eq!(Fingerprint::all()[1], Fingerprint::EchStreamSplit);
+    }
+
+    #[test]
+    fn an_empty_ech_list_is_refused_before_it_reaches_boring() {
+        let mut config = Fingerprint::Ech.configure().expect("ech configures");
+        assert!(crate::tls::set_ech_config_list(&mut config, &[]).is_err());
+    }
+
+    #[test]
+    fn the_api_route_keeps_no_ech_key_of_its_own() {
+        assert!(!remember_ech(vec![0, 3, 0xfe, 0x0d, 0]));
     }
 
     #[test]
@@ -1255,6 +1692,8 @@ mod tests {
 
     #[test]
     fn only_the_split_profiles_chop_the_client_hello() {
+        assert!(Fingerprint::Ech.fragments().enabled);
+        assert!(Fingerprint::EchStreamSplit.fragments().enabled);
         assert!(Fingerprint::SplitLegacy.fragments().enabled);
         assert!(Fingerprint::SplitModern.fragments().enabled);
         assert!(!Fingerprint::Modern.fragments().enabled);
@@ -1274,8 +1713,11 @@ mod tests {
 
         let mut reached = 0;
         for fingerprint in Fingerprint::all() {
+            if fingerprint.is_ech() {
+                continue;
+            }
             let address = random_edge_address();
-            match exchange(&request, address, fingerprint).await {
+            match exchange(&request, address, fingerprint, None).await {
                 Ok(response) => {
                     reached += 1;
                     println!(
@@ -1290,5 +1732,61 @@ mod tests {
         }
 
         assert!(reached > 0, "no fingerprint reached the edge");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs live network access to the cloudflare edge"]
+    async fn the_ech_route_reaches_the_warp_api() {
+        let request = ApiRequest {
+            method: "GET".to_string(),
+            host: "api.cloudflareclient.com".to_string(),
+            path: "/v0a4471/reg/nonexistent".to_string(),
+            headers: vec![("User-Agent".to_string(), "WARP for Android".to_string())],
+            body: None,
+        };
+
+        let list = ech_config_list()
+            .await
+            .expect("always a key set, the bootstrap one at worst");
+
+        let address = random_edge_address();
+        let response = attempt_ech(&request, address, list)
+            .await
+            .expect("the ech route should reach the api");
+        println!(
+            "ech -> {} via {}: {}",
+            response.status, response.route, response.body
+        );
+        assert!(
+            !response.body.trim_start().starts_with('<'),
+            "an html page means the edge did not route us to the api"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs live network access to the cloudflare edge"]
+    async fn the_bootstrap_key_set_brings_back_the_live_keys() {
+        // No DNS at all: the edge rejects the bootstrap set, hands back its
+        // live keys, and the retry is a real ECH handshake.
+        let request = ApiRequest {
+            method: "GET".to_string(),
+            host: "api.cloudflareclient.com".to_string(),
+            path: "/v0a4471/reg/nonexistent".to_string(),
+            headers: vec![("User-Agent".to_string(), "WARP for Android".to_string())],
+            body: None,
+        };
+
+        let address = random_edge_address();
+        let response = attempt_ech(&request, address, BOOTSTRAP_ECH_CONFIG.to_vec())
+            .await
+            .expect("the edge should hand back its keys and accept them");
+        assert!(
+            cached_ech().is_some(),
+            "the live keys are kept for the tunnel"
+        );
+        assert!(
+            !response.body.trim_start().starts_with('<'),
+            "an html page means the edge did not route us to the api"
+        );
     }
 }
