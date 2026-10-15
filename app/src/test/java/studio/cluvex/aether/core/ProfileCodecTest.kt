@@ -64,9 +64,6 @@ class ProfileCodecTest {
         manualRange = "188.114.96.0/24",
         keepalive = 25,
         fragment = true,
-        // OFF on purpose: ECH defaults to ON in the model now, so only false
-        // proves the codec actually carries the switch.
-        ech = false,
         mtu = 1420,
         proxyMode = true,
         splitMode = SplitMode.EXCLUDE,
@@ -261,6 +258,21 @@ class ProfileCodecTest {
         assertEquals(Protocol.GOOL, decoded.protocol)
         assertEquals(1380, decoded.mtu)
         assertEquals(ConnectionProfile().scanMode, decoded.scanMode)
+    }
+
+    /**
+     * The ECH switch was removed. A payload or saved setup from a build that
+     * had it must still decode, keep everything else, and never have the key
+     * written back or reach the engine.
+     */
+    @Test
+    fun theRetiredEchKeyIsIgnored() {
+        val decoded = ProfileCodec.decode("protocol=MASQUE\nech=true\nmtu=1380")
+        assertEquals(Protocol.MASQUE, decoded.protocol)
+        assertEquals(1380, decoded.mtu)
+        assertFalse(ProfileCodec.encode(decoded).lineSequence().any { it.startsWith("ech=") })
+        assertFalse("--ech" in decoded.toArgs())
+        assertFalse(decoded.toEnv().keys.any { it.startsWith("AETHER_ECH") })
     }
 
     @Test
