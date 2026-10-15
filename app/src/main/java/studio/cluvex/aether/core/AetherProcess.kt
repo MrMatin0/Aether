@@ -3,7 +3,6 @@ package studio.cluvex.aether.core
 import android.util.Log
 import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.model.ConnectionProfile
-import studio.cluvex.aether.data.WgExperimentPrefs
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -66,12 +65,8 @@ class AetherProcess(
         val builder = ProcessBuilder(command)
             .directory(workingDir)
             .redirectErrorStream(true)
-        // Snapshot once per launch. Changing a lab switch never mutates a live
-        // child, and boot/restart paths read the same persisted device settings.
-        val experiments = WgExperimentPrefs.state.value.toEnv(profile.protocol)
         builder.environment().apply {
             putAll(profile.toEnv())
-            putAll(experiments)
             // Set explicitly in BOTH directions: an AETHER_UPSTREAM inherited
             // from the app's own environment must never send a session that
             // has nothing under the engine through some other proxy.
@@ -87,7 +82,6 @@ class AetherProcess(
         val proc = builder.start()
         process = proc
 
-        DiagnosticsLog.i("engine", "WireGuard experiments: hop=${experiments["AETHER_WG_PORT_HOP"]}, padding=${experiments["AETHER_WG_DATA_PADDING"]}")
         if (upstreamPort != null) {
             DiagnosticsLog.i(
                 "engine",

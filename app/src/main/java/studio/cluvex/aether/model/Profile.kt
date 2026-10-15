@@ -277,6 +277,11 @@ enum class SpoofMode(val engineValue: String) {
  * and branch. The app already has a Psiphon - core/PsiphonCore.kt, built from
  * source to close audit finding F-8 - so this profile never emits `--psiphon*`
  * or `AETHER_PSIPHON*`. EngineOverlayGuardTest holds both rules.
+ *
+ * NO ECH. The Encrypted Client Hello switch (`--ech auto`, AETHER_ECH and the
+ * AETHER_ECH_DOMAIN / AETHER_ECH_DNS key lookup) was removed: it did not work
+ * for users, neither on the MASQUE tunnel nor on the WARP API registration.
+ * This profile emits none of it, so the engine runs both without ECH.
  */
 data class ConnectionProfile(
     val protocol: Protocol = Protocol.AUTO,
@@ -329,15 +334,6 @@ data class ConnectionProfile(
     val keepalive: Int = 0,
     /** Fragment the TLS ClientHello on the HTTP/2 transport (anti-DPI). */
     val fragment: Boolean = false,
-    /**
-     * Encrypted Client Hello, from the engine's own ECH (`--ech auto`), on
-     * every protocol; see [sendsEch] for what it changes on each. The key is
-     * the HTTPS record of [ECH_DOMAIN], asked of [ECH_DNS] (see [toEnv]).
-     */
-    // ECH is enabled by default: WARP enrollment itself is the first
-    // Cloudflare request, so leaving this off exposes api.cloudflareclient.com
-    // before the user can enable the switch.
-    val ech: Boolean = true,
 
     // ---- App-side only (never reach the engine CLI) ----
 
@@ -776,32 +772,6 @@ data class ConnectionProfile(
         get() = (sanitizedRules(routeBlock) + sanitizedRules(routeDirect)).any { !ADDRESS_RULE.matches(it) }
 
     /**
-     * True when [ech] reaches the engine as `--ech auto` (and AETHER_ECH).
-     *
-     * EVERY PROTOCOL (fix/ech-from-core). The ECH comes from the engine itself:
-     * one key per session, looked up as [ECH_DOMAIN] via [ECH_DNS] (dns.rs).
-     *
-     *  - On every protocol the WARP API calls (registration, MASQUE key
-     *    enrollment, the device refresh) go over the ECH route FIRST, so the
-     *    API name never leaves in plaintext before the encrypted attempt, and
-     *    the plaintext direct route is only the last resort (account.rs).
-     *    That is the whole effect on WireGuard and Gool, which have no
-     *    ClientHello of their own.
-     *  - On MASQUE and MASQUE-in-MASQUE over HTTP/3 the tunnel handshake
-     *    offers ECH too (lib.rs resolve_ech). Over HTTP/2 core 2.1.0 has no
-     *    ECH on the carrier, so there it is the API part only.
-     *
-     * This used to be false on MASQUE (fix/masque-scan), because the engine
-     * then spent up to ~18 s cycling through six DNS lookups before every
-     * scan. The lookup is now ONE resolver with an 8 s ceiling, cached for the
-     * process and shared with the API calls, and upstream 2.3.0 offers ECH on
-     * both MASQUE carriers and measured the edge accepting it
-     * (docs/CORE_V2_3.md). With the switch off nothing is sent, as before.
-     */
-    val sendsEch: Boolean
-        get() = ech
-
-    /**
      * The spoofing mode that actually reaches the engine for this profile.
      *
      * Spoofing shapes a TLS ClientHello, which only the MASQUE HTTP/2 carrier
@@ -906,9 +876,6 @@ data class ConnectionProfile(
         }
 
         if (fragment) args += "--fragment"
-        // The engine's own ECH, on every protocol; see sendsEch. Where its key
-        // is looked up travels through the environment (toEnv).
-        if (sendsEch) { args += "--ech"; args += "auto" }
         if (keepalive > 0) { args += "--keepalive"; args += keepalive.toString() }
 
         // ---- engine v1.5.0 ----
@@ -991,19 +958,6 @@ data class ConnectionProfile(
             put("AETHER_MASQUE_H2_SPOOF", effectiveSpoofMode.engineValue)
         }
         effectiveSpoofSni.takeIf { it.isNotEmpty() }?.let { put("AETHER_MASQUE_SNI", it) }
-
-        // ECH comes from the engine (dns.rs), and where it looks its key up is
-        // set on EVERY session, switch on or off: the WARP API's camouflaged
-        // route offers ECH whenever it is used, and the engine's own default
-        // (cloudflare-ech.com over 1.1.1.1 and friends) is what a filtered
-        // network tends to break. These are upstream 2.3.0's own variables
-        // (--ech-domain / --ech-dns), so an engine sync keeps them meaning the
-        // same thing; an engine that does not know them ignores them.
-        put("AETHER_ECH_DOMAIN", ECH_DOMAIN)
-        put("AETHER_ECH_DNS", ECH_DNS)
-        // The switch itself, also sent as --ech auto (toArgs), so a profile
-        // reproduced in a shell behaves identically.
-        if (sendsEch) put("AETHER_ECH", "auto")
 
         // Which addresses the engine's scanner may consider.
         //
@@ -1218,19 +1172,6 @@ data class ConnectionProfile(
 
         /** First core where WireGuard-in-WireGuard gool is `--gool-classic`; see [toArgs]. */
         const val GOOL_CLASSIC_SINCE = "2.3.0"
-
-        /**
-         * Where the engine looks its ECH key up (AETHER_ECH_DOMAIN /
-         * AETHER_ECH_DNS, upstream's --ech-domain / --ech-dns): the HTTPS record
-         * of ip.gs, a Cloudflare-fronted name that carries Cloudflare's shared
-         * ECH key set, asked of 8.8.8.8 over UDP. A pair that answers from Iran,
-         * where cloudflare-ech.com via 1.1.1.1 often does not; the key is the
-         * same one, because Cloudflare publishes one set for every name it
-         * fronts with ECH.
-         */
-        const val ECH_DOMAIN = "cloudflare-ech.com"
-        // dns.rs races this first candidate with its built-in DoH fallbacks.
-        const val ECH_DNS = "https://1.1.1.1/dns-query"
 
         /** Hard caps so a pasted blob can't build a gigantic argv. */
         const val MAX_DNS_SERVERS = 8

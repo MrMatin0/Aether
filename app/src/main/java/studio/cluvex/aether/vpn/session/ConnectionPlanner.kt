@@ -34,9 +34,6 @@ internal object ConnectionPlanner {
      * never gives up by itself (an empty sweep is followed by a fresh one), so
      * the budget the app waits is the only thing that ends an attempt, and it
      * has to outlast the scan it is waiting for.
-     *
-     * The anti-DPI pass no longer asks for ECH: the MASQUE endpoint does not
-     * accept it (see [ConnectionProfile.sendsEch]).
      */
     fun manualProtocol(profile: ConnectionProfile): List<AutoCandidate> {
         val fullBudget = profile.connectTimeoutMs()

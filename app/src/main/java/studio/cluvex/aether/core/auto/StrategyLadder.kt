@@ -59,7 +59,6 @@ internal object StrategyLadder {
         val noize: Noize,
         val http2: Boolean = false,
         val fragment: Boolean = false,
-        val ech: Boolean = false,
     )
 
     /** How many probe-verified ranges a candidate is narrowed to. */
@@ -100,10 +99,6 @@ internal object StrategyLadder {
     /**
      * A `when` rather than a map, so adding a [DpiClass] is a compile error here
      * instead of a missing-key crash on someone's phone.
-     *
-     * No MASQUE rung asks for ECH (fix/masque-scan): the WARP MASQUE endpoint
-     * does not accept it, and the engine only spent DNS time fetching a config
-     * for a handshake its scan had never tested. See [ConnectionProfile.sendsEch].
      */
     private fun stepsFor(dpiClass: DpiClass): List<Step> = when (dpiClass) {
         DpiClass.OPEN -> listOf(
@@ -139,7 +134,6 @@ internal object StrategyLadder {
             noize = mergeNoize(user.noize, step.noize),
             masqueHttp2 = user.masqueHttp2 || (step.http2 && step.protocol == Protocol.MASQUE),
             fragment = user.fragment || step.fragment,
-            ech = user.ech || step.ech,
             // TURBO per attempt: the ladder's speed comes from trying the NEXT
             // strategy quickly, not from one long exhaustive scan.
             scanMode = ScanMode.TURBO,
@@ -200,8 +194,6 @@ internal object StrategyLadder {
         append(" · noize=").append(profile.noize.name.lowercase())
         if (profile.masqueHttp2) append(" · h2")
         if (profile.fragment) append(" · fragment")
-        // What the engine is actually sent, not the switch: MASQUE never gets ECH.
-        if (profile.sendsEch) append(" · ech")
         if (ranges.isNotEmpty()) append(" · ranges[").append(ranges).append("]")
         append(" · scan=").append(profile.scanMode.name.lowercase())
     }

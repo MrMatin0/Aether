@@ -52,7 +52,6 @@ class ProfileStore(private val context: Context) {
         val range = stringPreferencesKey("range")
         val keepalive = intPreferencesKey("keepalive")
         val fragment = booleanPreferencesKey("fragment")
-        val ech = booleanPreferencesKey("ech")
         val mtu = intPreferencesKey("mtu")
         val proxy = booleanPreferencesKey("proxy")
         val split = stringPreferencesKey("split")
@@ -176,6 +175,12 @@ class ProfileStore(private val context: Context) {
          */
         val retiredSmartDnsDirect = booleanPreferencesKey("smartDnsDirect")
         val retiredSmartDnsProxies = stringPreferencesKey("smartDnsProxies")
+
+        /**
+         * The Encrypted Client Hello switch. ECH was removed from the app, so
+         * this is never read, only deleted.
+         */
+        val retiredEch = booleanPreferencesKey("ech")
     }
 
     /**
@@ -296,7 +301,6 @@ class ProfileStore(private val context: Context) {
             manualRange = prefs[Keys.range] ?: "",
             keepalive = prefs[Keys.keepalive] ?: 0,
             fragment = prefs[Keys.fragment] ?: false,
-            ech = prefs[Keys.ech] ?: true,
             mtu = prefs[Keys.mtu] ?: d.mtu,
             proxyMode = prefs[Keys.proxy] ?: false,
             splitMode = prefs[Keys.split]
@@ -389,7 +393,6 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.range] = profile.manualRange
             prefs[Keys.keepalive] = profile.keepalive
             prefs[Keys.fragment] = profile.fragment
-            prefs[Keys.ech] = profile.ech
             prefs[Keys.mtu] = profile.mtu
             prefs[Keys.proxy] = profile.proxyMode
             prefs[Keys.split] = profile.splitMode.name
@@ -465,13 +468,15 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.sstpCountryName] = sstp.countryName
             // Retired keys. The protocol written above already carries the
             // MIM choice, so the old switch has nothing left to say, the
-            // engine-Tor keys describe a Tor this app no longer runs, and
-            // Smart DNS picks its path and proxies by itself now.
+            // engine-Tor keys describe a Tor this app no longer runs,
+            // Smart DNS picks its path and proxies by itself now, and ECH is
+            // gone from the app.
             prefs.remove(Keys.legacyMim)
             Keys.retiredEngineTor.forEach { prefs.remove(it) }
             prefs.remove(Keys.retiredEngineTorBind)
             prefs.remove(Keys.retiredSmartDnsDirect)
             prefs.remove(Keys.retiredSmartDnsProxies)
+            prefs.remove(Keys.retiredEch)
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         // Writing a blank value clears the entry, so "Reset settings" (which

@@ -13,9 +13,8 @@ import studio.cluvex.aether.model.ScanMode
  * for it. Both were wrong in ways that looked like "MASQUE does not scan" from
  * the outside. See docs/MASQUE_SCAN.md.
  *
- * fix/ech-from-core: the ECH part of that contract. ECH is the engine's own,
- * reaches every protocol when switched on, and every session tells the engine
- * where to look its key up. See docs/ECH.md.
+ * ECH was removed from the app, so no session asks the engine for it any more
+ * (the guard at the bottom of this file).
  */
 class MasqueScanBudgetTest {
 
@@ -35,8 +34,6 @@ class MasqueScanBudgetTest {
      * time, 5 s each.
      */
     private val ringMs = 8 * 5_000L
-
-    private val identityProtocols = listOf(Protocol.MASQUE, Protocol.MIM, Protocol.WIREGUARD, Protocol.GOOL)
 
     @Test
     fun a_masque_budget_outlasts_the_ring_plus_the_sweep_in_every_mode() {
@@ -68,69 +65,18 @@ class MasqueScanBudgetTest {
     }
 
     /**
-     * REGRESSION (fix/ech-from-core): the switch used to reach no engine that
-     * could use it. MASQUE never got --ech, and WireGuard / Gool got it with
-     * nothing in the engine reading it.
+     * ECH is gone: neither the tunnel nor the WARP API registration may be
+     * asked for it, on any protocol or carrier.
      */
     @Test
-    fun ech_reaches_every_protocol_when_switched_on() {
-        for (protocol in identityProtocols) {
+    fun no_session_asks_the_engine_for_ech() {
+        for (protocol in Protocol.entries) {
             for (http2 in listOf(false, true)) {
-                val on = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = true)
-                assertTrue(on.sendsEch, "$protocol h2=$http2")
-                assertTrue(on.toArgs(core21).windowed(2).contains(listOf("--ech", "auto")), "$protocol h2=$http2")
-                assertEquals("auto", on.toEnv()["AETHER_ECH"], "$protocol h2=$http2")
+                val profile = ConnectionProfile(protocol = protocol, masqueHttp2 = http2)
+                val args = profile.toArgs(core21)
+                assertFalse(args.any { it == "--ech" || it.startsWith("--ech-") }, "$protocol h2=$http2: $args")
+                assertFalse(profile.toEnv().keys.any { it.startsWith("AETHER_ECH") }, "$protocol h2=$http2")
             }
         }
-    }
-
-    /**
-     * ECH is on out of the box: WARP enrollment is the first Cloudflare request
-     * a session makes, so a default of off sent api.cloudflareclient.com in the
-     * clear before the user had a chance to switch it on.
-     */
-    @Test
-    fun ech_is_on_by_default() {
-        for (protocol in Protocol.entries) {
-            val fresh = ConnectionProfile(protocol = protocol)
-            assertTrue(fresh.sendsEch, "$protocol")
-            assertTrue(fresh.toArgs(core21).windowed(2).contains(listOf("--ech", "auto")), "$protocol")
-            assertEquals("auto", fresh.toEnv()["AETHER_ECH"], "$protocol")
-        }
-    }
-
-    @Test
-    fun ech_stays_off_when_switched_off() {
-        for (protocol in Protocol.entries) {
-            val off = ConnectionProfile(protocol = protocol, ech = false)
-            assertFalse(off.sendsEch, "$protocol")
-            assertFalse("--ech" in off.toArgs(core21), "$protocol")
-            assertFalse(off.toEnv().containsKey("AETHER_ECH"), "$protocol")
-        }
-    }
-
-    /**
-     * The WARP API's camouflaged route offers ECH whether or not the switch is
-     * on, so every session says where the key lives: cloudflare-ech.com, asked
-     * over DNS-over-HTTPS of 1.1.1.1 (dns.rs races it with its own DoH
-     * fallbacks).
-     */
-    @Test
-    fun every_session_tells_the_engine_where_the_ech_key_lives() {
-        for (protocol in Protocol.entries) {
-            for (ech in listOf(false, true)) {
-                val env = ConnectionProfile(protocol = protocol, ech = ech).toEnv()
-                assertEquals("cloudflare-ech.com", env["AETHER_ECH_DOMAIN"], "$protocol ech=$ech")
-                assertEquals("https://1.1.1.1/dns-query", env["AETHER_ECH_DNS"], "$protocol ech=$ech")
-            }
-        }
-    }
-
-    /** The lookup settings are environment only: an older core ignores them instead of refusing to start. */
-    @Test
-    fun the_ech_lookup_never_becomes_an_argument() {
-        val args = ConnectionProfile(protocol = Protocol.MASQUE, ech = true).toArgs(core21)
-        assertFalse(args.any { it.startsWith("--ech-") }, "$args")
-        assertFalse(args.any { it.contains("cloudflare-ech.com") || it.contains("dns-query") }, "$args")
     }
 }

@@ -25,13 +25,10 @@ class ConnectionPlannerTest {
      * ring it walks first, so a scan that was slow but working was killed
      * before it could finish. The transport fallback must not override the
      * obfuscation setting either.
-     *
-     * ECH is on by default now, so it is switched off explicitly here to check
-     * that the anti-DPI pass never turns it back on by itself.
      */
     @Test
     fun `masque gets a full first pass and an http2 second one`() {
-        val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF, ech = false)
+        val profile = ConnectionProfile(protocol = Protocol.MASQUE, noize = Noize.OFF)
         val plan = ConnectionPlanner.manualProtocol(profile)
 
         assertEquals(2, plan.size)
@@ -48,26 +45,7 @@ class ConnectionPlannerTest {
         assertTrue(hardened.toArgs().windowed(2).contains(listOf("--noize", "off")))
         assertTrue(hardened.masqueHttp2, "the anti-DPI pass turns HTTP/2 on for MASQUE")
         assertTrue(hardened.fragment, "the anti-DPI pass fragments the TLS handshake")
-        assertFalse("--ech" in hardened.toArgs(), "the anti-DPI pass never switches ECH on by itself")
-    }
-
-    /**
-     * ECH is the user's switch (fix/ech-from-core): no MASQUE attempt turns it
-     * on by itself, and a switched-on ECH reaches the first pass as it was set.
-     */
-    @Test
-    fun `ech on masque attempts follows the switch`() {
-        for (protocol in listOf(Protocol.MASQUE, Protocol.MIM)) {
-            for (http2 in listOf(false, true)) {
-                val off = ConnectionProfile(protocol = protocol, masqueHttp2 = http2, ech = false)
-                ConnectionPlanner.manualProtocol(off).forEach {
-                    assertFalse("--ech" in it.profile.toArgs(), it.label)
-                }
-
-                val first = ConnectionPlanner.manualProtocol(off.copy(ech = true)).first()
-                assertTrue(first.profile.toArgs().windowed(2).contains(listOf("--ech", "auto")), first.label)
-            }
-        }
+        assertFalse("--ech" in hardened.toArgs(), "no pass asks the engine for ECH")
     }
 
     @Test
@@ -117,7 +95,6 @@ class ConnectionPlannerTest {
             noize = Noize.FIREWALL,
             masqueHttp2 = true,
             fragment = true,
-            ech = true,
         )
         val plan = ConnectionPlanner.manualProtocol(profile)
 

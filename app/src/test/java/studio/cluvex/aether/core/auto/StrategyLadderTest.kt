@@ -97,25 +97,15 @@ class StrategyLadderTest {
         }
     }
 
-    /**
-     * fix/masque-scan took ECH off the MASQUE rungs the ladder had added it to
-     * on its own, and that stays: no rung switches ECH on by itself. What
-     * changed with fix/ech-from-core is the user's own switch, which now
-     * reaches the MASQUE rungs as it reaches every other protocol. ECH is on
-     * by default, so the "off" half switches it off explicitly.
-     */
+    /** ECH was removed from the app: no rung of any ladder asks for it. */
     @Test
-    fun `masque rungs carry ech only when the user switched it on`() {
+    fun `no rung asks the engine for ech`() {
         for (dpi in DpiClass.entries) {
-            StrategyLadder.build(ConnectionProfile(ech = false), fingerprint(dpi))
-                .filter { it.profile.protocol.isMasque }
-                .forEach {
-                    assertFalse("--ech" in it.profile.toArgs(), "$dpi: ${it.label}")
-                    assertFalse(it.label.contains("· ech"), "$dpi: ${it.label}")
-                }
-            StrategyLadder.build(ConnectionProfile(ech = true), fingerprint(dpi))
-                .filter { it.profile.protocol.isMasque }
-                .forEach { assertTrue(it.profile.sendsEch, "$dpi: ${it.label}") }
+            StrategyLadder.build(ConnectionProfile(), fingerprint(dpi)).forEach {
+                assertFalse("--ech" in it.profile.toArgs(), "$dpi: ${it.label}")
+                assertFalse(it.label.contains("· ech"), "$dpi: ${it.label}")
+                assertFalse(it.profile.toEnv().keys.any { key -> key.startsWith("AETHER_ECH") }, "$dpi: ${it.label}")
+            }
         }
     }
 

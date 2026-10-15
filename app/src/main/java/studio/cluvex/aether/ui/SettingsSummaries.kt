@@ -109,7 +109,6 @@ private fun transportStateLine(profile: ConnectionProfile): String {
     val parts = listOfNotNull(
         if (profile.noize != Noize.OFF) noizeLabel(profile.noize) else null,
         if (profile.fragment) stringResource(R.string.hub_state_fragment) else null,
-        if (profile.ech) stringResource(R.string.hub_state_ech) else null,
         if (spoof != SpoofMode.OFF) spoofModeLabel(spoof) else null,
         if (spoofSni.isNotEmpty()) stringResource(R.string.hub_state_spoof_sni, spoofSni) else null,
         if (profile.mtu != ConnectionProfile.DEFAULT_MTU) stringResource(R.string.hub_state_mtu, profile.mtu) else null,
