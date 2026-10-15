@@ -1,5 +1,5 @@
-use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::ffi::{c_void, CStr};
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use boring::pkey::PKey;
@@ -18,10 +18,18 @@ extern "C" {
         ech_config_list_len: usize,
     ) -> c_int;
 
+    fn SSL_set_enable_ech_grease(ssl: *mut c_void, enable: c_int);
+
     fn SSL_get0_ech_retry_configs(
         ssl: *const c_void,
         out_retry_configs: *mut *const u8,
         out_retry_configs_len: *mut usize,
+    );
+
+    fn SSL_get0_ech_name_override(
+        ssl: *const c_void,
+        out_name: *mut *const c_char,
+        out_name_len: *mut usize,
     );
 
     fn SSL_ech_accepted(ssl: *const c_void) -> c_int;
@@ -278,6 +286,17 @@ pub fn set_ech_config_list(ssl: &mut boring::ssl::SslRef, ech_config_list: &[u8]
     Ok(())
 }
 
+/// Enable or disable ECH GREASE on a BoringSSL handle. When enabled without an
+/// `ECHConfigList`, BoringSSL emits a realistic synthetic `encrypted_client_hello`
+/// extension (RFC 9849 §6.2) that blinds stateless DPI boxes inspecting the
+/// extension layout while keeping a standard handshake with the edge.
+pub fn set_enable_ech_grease(ssl: &mut boring::ssl::SslRef, enable: bool) {
+    let ssl_ptr = ssl.as_ptr() as *mut c_void;
+    unsafe {
+        SSL_set_enable_ech_grease(ssl_ptr, if enable { 1 } else { 0 });
+    }
+}
+
 /// Fresh keys the server handed back after rejecting our ECH offer, if any.
 pub fn ech_retry_configs(ssl: &boring::ssl::SslRef) -> Option<Vec<u8>> {
     let ssl_ptr = ssl.as_ptr() as *const c_void;
@@ -297,10 +316,51 @@ pub fn ech_retry_configs(ssl: &boring::ssl::SslRef) -> Option<Vec<u8>> {
     Some(slice.to_vec())
 }
 
+/// When ECH is offered and rejected by the server, BoringSSL populates the
+/// outer `public_name` override so the certificate verifier can authenticate
+/// the retry configs against the outer name (`cloudflare-ech.com`).
+pub fn ech_name_override(ssl: &boring::ssl::SslRef) -> Option<String> {
+    let ssl_ptr = ssl.as_ptr() as *const c_void;
+    let mut out_name: *const c_char = ptr::null();
+    let mut out_len: usize = 0;
+
+    unsafe {
+        SSL_get0_ech_name_override(ssl_ptr, &mut out_name, &mut out_len);
+    }
+
+    if out_name.is_null() || out_len == 0 {
+        return None;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(out_name as *const u8, out_len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// Whether the server decrypted the inner client hello.
 pub fn ech_accepted(ssl: &boring::ssl::SslRef) -> bool {
     let ssl_ptr = ssl.as_ptr() as *const c_void;
     unsafe { SSL_ech_accepted(ssl_ptr) == 1 }
+}
+
+/// Returns the last BoringSSL error string on the current thread, if any, without
+/// disturbing the error queue. Useful for detecting `ECH_REJECTED` even when the
+/// outer wrapper only formats a generic handshake error.
+pub fn contains_ech_rejected(error_text: &str) -> bool {
+    let upper = error_text.to_ascii_uppercase();
+    upper.contains("ECH_REJECTED") || upper.contains("ECH_NOT_NEGOTIATED")
+}
+
+/// Describe an X509 store verification error code using BoringSSL's own table.
+pub fn verify_cert_error_text(code: i32) -> String {
+    extern "C" {
+        fn X509_verify_cert_error_string(err: std::os::raw::c_long) -> *const c_char;
+    }
+    let ptr = unsafe { X509_verify_cert_error_string(code as std::os::raw::c_long) };
+    if ptr.is_null() {
+        return format!("verify error {code}");
+    }
+    let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
+    format!("{text} (code {code})")
 }
 
 pub fn decode_ech_config_list(b64: &str) -> Result<Vec<u8>> {
@@ -345,5 +405,18 @@ mod cc_tests {
             parse_congestion_control("reno"),
             (quiche::CongestionControlAlgorithm::Reno, "reno")
         ));
+    }
+
+    #[test]
+    fn ech_grease_and_rejection_helpers_work_on_a_fresh_ssl_handle() {
+        let builder = SslContextBuilder::new(SslMethod::tls()).expect("ctx");
+        let ctx = builder.build();
+        let mut ssl = boring::ssl::Ssl::new(&ctx).expect("ssl");
+        set_enable_ech_grease(&mut ssl, true);
+        assert!(!ech_accepted(&ssl));
+        assert!(ech_name_override(&ssl).is_none());
+        assert!(ech_retry_configs(&ssl).is_none());
+        assert!(contains_ech_rejected("error:10000136:SSL routines:OPENSSL_internal:ECH_REJECTED"));
+        assert!(!contains_ech_rejected("connection reset by peer"));
     }
 }

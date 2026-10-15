@@ -3,6 +3,7 @@ package studio.cluvex.aether.core
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -12,7 +13,9 @@ import studio.cluvex.aether.model.TeamAuth
 
 /**
  * The manual key request runs the user's saved settings (IP family,
- * obfuscation), not a bare ConnectionProfile(), and never asks for ECH.
+ * obfuscation), not a bare ConnectionProfile(), and injects the ECH-first
+ * camouflaged API environment exclusively for the key-fetch subprocess while
+ * leaving normal session profiles free of ECH flags.
  */
 class WarpKeyFetcherTest {
 
@@ -43,6 +46,17 @@ class WarpKeyFetcherTest {
             val profile = WarpKeyFetcher.keyProfile(saved, protocol)
             assertFalse("--ech" in profile.toArgs(), "$protocol")
             assertFalse(profile.toEnv().keys.any { it.startsWith("AETHER_ECH") }, "$protocol")
+        }
+    }
+
+    @Test
+    fun key_env_enables_ech_first_camouflaged_api_route_for_subprocess() {
+        for (protocol in WarpKeyFetcher.PROTOCOLS) {
+            val profile = WarpKeyFetcher.keyProfile(saved, protocol)
+            val env = WarpKeyFetcher.keyEnv(profile)
+            assertEquals("auto", env["AETHER_ECH"], "$protocol")
+            assertTrue(env["AETHER_ECH_DOMAIN"]?.contains("cloudflare-ech.com") == true, "$protocol")
+            assertTrue(env["AETHER_ECH_DNS"]?.contains("https://162.159.36.1/dns-query") == true, "$protocol")
         }
     }
 

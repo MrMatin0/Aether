@@ -43,9 +43,10 @@ data class WarpKeyState(
  * WHY: the engine registers a WARP identity the first time a protocol is used,
  * and in some regions the registration API itself is filtered, so the very
  * first connect can never succeed. With another VPN app active - or with an
- * Aether session that does not use WARP at all (Tor, Psiphon, SSTP) - this
- * process's traffic leaves through that tunnel instead, so the same engine
- * binary can register there.
+ * Aether session that does not use WARP at all (Tor, Psiphon, SSTP) - or
+ * directly over a filtered network without a VPN using the engine's ECH-first
+ * camouflaged API route, the bundled engine binary can register and save a
+ * fresh identity.
  *
  * HOW: the bundled engine is started with the protocol's own flag on a side
  * SOCKS port ([BIND], so it never fights the session for 127.0.0.1:1819) in the
@@ -56,10 +57,14 @@ data class WarpKeyState(
  * `aether-masque.toml` for MASQUE, and a `-secondary` sibling for the second
  * hop of Gool and MASQUE-in-MASQUE.
  *
- * WITH THE USER'S SETTINGS. The request runs the saved profile through
- * [keyProfile]: the same IP family and obfuscation a session would use. No
- * ECH: the registration goes over the direct route first and the camouflaged
- * one after it, exactly as a session's would.
+ * WITH THE USER'S SETTINGS + ECH-FIRST API ROUTE. The request runs the saved
+ * profile through [keyProfile] (same IP family and obfuscation a session would
+ * use) and injects [keyEnv] (`AETHER_ECH=auto`, `AETHER_ECH_DOMAIN`,
+ * `AETHER_ECH_DNS`) for the subprocess only. That makes `account.rs` run the
+ * camouflaged ECH route FIRST (using camouflaged edge DoH and RFC 9849 decoy
+ * `retry_configs` recovery across multiple Cloudflare edge prefixes) so users
+ * can fetch a WARP key without a VPN even when `api.cloudflareclient.com` and
+ * port 53 are blocked.
  *
  * A request always produces a FRESH identity: existing files are set aside
  * first and are only discarded once the new ones are complete. On failure,
@@ -70,6 +75,17 @@ object WarpKeyFetcher {
 
     private const val TAG = "warp-key"
     private const val BIND = "127.0.0.1:1839"
+
+    /**
+     * Environment variables set exclusively for manual WARP key fetches so the
+     * engine's account API client (`account.rs` / `apifront.rs` / `dns.rs`)
+     * prioritizes the ECH-first camouflaged route without enabling ECH on normal
+     * tunnel sessions.
+     */
+    internal const val KEY_ECH_MODE = "auto"
+    internal const val KEY_ECH_DOMAIN = "cloudflare-ech.com,crypto.cloudflare.com,ip.gs"
+    internal const val KEY_ECH_DNS =
+        "https://162.159.36.1/dns-query,https://162.159.46.1/dns-query,https://1.1.1.1/dns-query,udp://8.8.8.8"
 
     /**
      * MASQUE makes two API calls (registration, then key enrollment) and on a
@@ -135,6 +151,19 @@ object WarpKeyFetcher {
             teamAuth = TeamAuth.OFF,
             team = "",
         )
+
+    /**
+     * Environment map passed to the key-fetch subprocess: the profile's own
+     * environment plus ECH-first API routing variables so registration and
+     * MASQUE key enrollment succeed on filtered networks without a VPN.
+     */
+    internal fun keyEnv(profile: ConnectionProfile): Map<String, String> =
+        buildMap {
+            putAll(profile.toEnv())
+            put("AETHER_ECH", KEY_ECH_MODE)
+            put("AETHER_ECH_DOMAIN", KEY_ECH_DOMAIN)
+            put("AETHER_ECH_DNS", KEY_ECH_DNS)
+        }
 
     @Synchronized
     fun start(context: Context, protocol: Protocol) {
@@ -208,13 +237,13 @@ object WarpKeyFetcher {
                 .directory(dir)
                 .redirectErrorStream(true)
             builder.environment().apply {
-                putAll(profile.toEnv())
+                putAll(keyEnv(profile))
                 put("AETHER_LOG_LEVEL", "info")
                 put("HOME", dir.absolutePath)
                 put("TMPDIR", dir.absolutePath)
             }
 
-            DiagnosticsLog.i(TAG, "requesting a fresh ${protocol.name} identity")
+            DiagnosticsLog.i(TAG, "requesting a fresh ${protocol.name} identity (ech-first camouflaged route)")
             val proc = builder.start()
             process = proc
             drain(proc)
