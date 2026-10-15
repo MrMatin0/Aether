@@ -3,7 +3,6 @@ package studio.cluvex.aether.core
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -12,8 +11,8 @@ import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.TeamAuth
 
 /**
- * fix/ech-from-core: the manual key request ran a bare ConnectionProfile(),
- * so the user's ECH switch never reached the registration it was meant for.
+ * The manual key request runs the user's saved settings (IP family,
+ * obfuscation), not a bare ConnectionProfile(), and never asks for ECH.
  */
 class WarpKeyFetcherTest {
 
@@ -21,7 +20,6 @@ class WarpKeyFetcherTest {
         protocol = Protocol.WIREGUARD,
         scanMode = ScanMode.ULTRA,
         quickReconnect = true,
-        ech = true,
         ipVersion = IpVersion.BOTH,
         noize = Noize.GFW,
         team = "acme",
@@ -30,15 +28,21 @@ class WarpKeyFetcherTest {
     )
 
     @Test
-    fun a_key_request_keeps_the_users_ech_and_network_settings() {
+    fun a_key_request_keeps_the_users_network_settings() {
         for (protocol in WarpKeyFetcher.PROTOCOLS) {
             val profile = WarpKeyFetcher.keyProfile(saved, protocol)
             assertEquals(protocol, profile.protocol)
-            assertTrue(profile.sendsEch, "$protocol")
-            assertTrue(profile.toArgs().windowed(2).contains(listOf("--ech", "auto")), "$protocol")
-            assertEquals("cloudflare-ech.com", profile.toEnv()["AETHER_ECH_DOMAIN"], "$protocol")
             assertEquals(IpVersion.BOTH, profile.ipVersion)
             assertEquals(Noize.GFW, profile.noize)
+        }
+    }
+
+    @Test
+    fun a_key_request_never_asks_for_ech() {
+        for (protocol in WarpKeyFetcher.PROTOCOLS) {
+            val profile = WarpKeyFetcher.keyProfile(saved, protocol)
+            assertFalse("--ech" in profile.toArgs(), "$protocol")
+            assertFalse(profile.toEnv().keys.any { it.startsWith("AETHER_ECH") }, "$protocol")
         }
     }
 
