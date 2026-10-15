@@ -1,48 +1,43 @@
 //! Where the core gets its ECH key.
 //!
-//! Aether Mobile patch (fix/ech-from-core, 2026-10-08; fix/ech-doh, 2026-10-09).
-//! One ECHConfigList per process, looked up once and shared by everything that
-//! offers ECH: the camouflaged route to the WARP API (apifront.rs) on every
-//! protocol, and the MASQUE tunnel (lib.rs resolve_ech). The lookup is
-//! configured with upstream 2.3.0's variables, so the next core sync lands on
-//! the same settings:
+//! Aether Mobile ECH key acquisition engine:
+//! One `ECHConfigList` per process, looked up once and shared by everything
+//! that offers ECH: the camouflaged route to the WARP API (`apifront.rs`) on
+//! every protocol, and the MASQUE tunnel (`lib.rs` `resolve_ech`).
 //!
-//!   AETHER_ECH         --ech: auto, or a base64 ECHConfigList
-//!   AETHER_ECH_DOMAIN  the name(s) whose HTTPS record holds the key
-//!                      (upstream's --ech-domain), comma separated
-//!   AETHER_ECH_DNS     the resolver(s) it is asked of, comma separated:
-//!                      udp://ip[:port], tcp://ip[:port] or
-//!                      https://ip[:port][/path] (DNS over HTTPS, RFC 8484)
-//!                      (upstream's --ech-dns)
+//! Why previous ECH key lookups failed on filtered networks without a VPN:
+//!  - Port 53 (UDP and TCP) to `1.1.1.1` and `8.8.8.8` is dropped, poisoned or
+//!    answered with private/sinkhole records;
+//!  - Unfragmented `reqwest` DoH to `https://1.1.1.1/dns-query` and
+//!    `https://8.8.8.8/dns-query` is blocked by IP or TLS-reset on port 443.
 //!
-//! fix/ech-doh: ONE plain-DNS resolver was a single point of failure. UDP and
-//! TCP on port 53 are exactly what a filtered network drops, rewrites or
-//! answers late, and then the API route had no key and the tunnel no ECH. So,
-//! the way Xray-based clients do it (`echConfigList: "https://1.1.1.1/dns-query"`):
-//!
-//!  - the configured lookups are made together with DoH on port 443 to
-//!    1.1.1.1 and 8.8.8.8 ([DOH_FALLBACK]), for the configured domain and for
-//!    cloudflare-ech.com. DoH by IP address sends no SNI and hides the name
-//!    that is asked about, so a DPI box sees one more TLS session to 1.1.1.1;
-//!  - every lookup runs AT THE SAME TIME and the first plausible
-//!    ECHConfigList wins, so the slowest resolver never decides how long a
-//!    connect waits (at most [ECH_LOOKUP_TIMEOUT], instead of one lookup after
-//!    the other);
-//!  - a failure says what every lookup answered, not only the last one.
-//!
-//! With neither of the two variables set the lookup is the one every core
-//! before this made (cloudflare-ech.com and crypto.cloudflare.com, each asked
-//! of 1.1.1.1, 1.0.0.1 and 8.8.8.8 over UDP), plus the same DoH lookups.
+//! How this module solves it:
+//!  1. Configured lookups (`AETHER_ECH_DNS` / `AETHER_ECH_DOMAIN`) run side by
+//!     side with UDP, TCP, standard DoH (`1.1.1.1`, `8.8.8.8`), AND
+//!     **camouflaged edge DoH** (`query_edge_doh`): RFC 8484 POST queries over
+//!     BoringSSL + `FragmentingStream` (SNI-split ClientHello) to Cloudflare's
+//!     dedicated DoH ranges (`162.159.36.1`, `162.159.46.1`, `162.159.36.2`,
+//!     `162.159.46.2`) using neutral cover SNIs (`one.one.one.one`,
+//!     `cloudflare-dns.com`).
+//!  2. Every lookup runs concurrently and the first plausible, offerable
+//!     `ECHConfigList` wins immediately.
+//!  3. `synthesize_ech_config_list` builds valid RFC 9849 (`0xfe0d`)
+//!     `ECHConfigList` wire structures with arbitrary public names and X25519
+//!     keys, and `rewrite_public_name` re-tags any real `ECHConfigList` with a
+//!     chosen cover `public_name` while preserving its `config_id`, KEM, HPKE
+//!     public key, and cipher suites.
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use boring::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout_at;
 
 use crate::error::{AetherError, Result};
+use crate::fragment::{FragmentConfig, FragmentingStream};
 
 pub const BOOTSTRAP_DNS: &[&str] = &["1.1.1.1:53", "1.0.0.1:53", "8.8.8.8:53"];
 pub const ECH_HOSTS: &[&str] = &["cloudflare-ech.com", "crypto.cloudflare.com"];
@@ -51,6 +46,24 @@ pub const ECH_HOSTS: &[&str] = &["cloudflare-ech.com", "crypto.cloudflare.com"];
 /// address on purpose: no name to resolve first and no SNI on the wire; both
 /// certificates carry their IP address.
 pub const DOH_FALLBACK: &[&str] = &["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
+
+/// Cloudflare's dedicated DoH edge addresses (`162.159.36.0/24` and
+/// `162.159.46.0/24`), which answer RFC 8484 `/dns-query` even when `1.1.1.1`
+/// and `8.8.8.8` are IP-blocked on filtered networks.
+pub const EDGE_DOH_SERVERS: &[(&str, &str)] = &[
+    ("162.159.36.1:443", "one.one.one.one"),
+    ("162.159.46.1:443", "cloudflare-dns.com"),
+    ("162.159.36.2:443", "one.one.one.one"),
+    ("162.159.46.2:443", "cloudflare-dns.com"),
+];
+
+/// Domains fronted by Cloudflare whose `HTTPS` (type 65) records publish
+/// Cloudflare's shared ECH key set.
+pub const EDGE_DOH_DOMAINS: &[&str] = &[
+    "cloudflare-ech.com",
+    "crypto.cloudflare.com",
+    "ip.gs",
+];
 
 /// --ech: `auto`, or a base64 ECHConfigList.
 pub const ECH_VARIABLE: &str = "AETHER_ECH";
@@ -68,6 +81,15 @@ pub const DEFAULT_ECH_DOMAIN: &str = "cloudflare-ech.com";
 const RR_HTTPS: u16 = 65;
 const SVCPARAM_ECH: u16 = 5;
 
+/// ECH version 0xfe0d (RFC 9849).
+pub const ECH_VERSION_FE0D: u16 = 0xfe0d;
+/// DHKEM(X25519, HKDF-SHA256) KEM ID.
+pub const KEM_X25519_HKDF_SHA256: u16 = 0x0020;
+/// HKDF-SHA256 KDF ID.
+pub const KDF_HKDF_SHA256: u16 = 0x0001;
+/// AES-128-GCM AEAD ID.
+pub const AEAD_AES_128_GCM: u16 = 0x0001;
+
 /// The path of a DoH resolver given without one.
 const DOH_PATH: &str = "/dns-query";
 /// RFC 8484's media type, for the question and the answer.
@@ -81,10 +103,9 @@ const ECH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
 const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Over UDP the question goes out again after this long without an answer.
 const UDP_RESEND_AFTER: Duration = Duration::from_secs(2);
-/// A lookup that failed is not repeated for this long: the WARP API and the
-/// MASQUE tunnel both ask, seconds apart, and the second would only wait for
-/// the same silence again.
-const FAILURE_HOLD: Duration = Duration::from_secs(60);
+/// A lookup that failed is not repeated for this long: a short cooldown avoids
+/// hammering dead resolvers while still allowing recovery on the next attempt.
+const FAILURE_HOLD: Duration = Duration::from_secs(15);
 
 /// The smallest ECHConfig contents worth considering: config id, kem, an x25519
 /// public key, one cipher suite, max name length, a public name and extensions
@@ -384,6 +405,147 @@ pub fn ech_requested() -> bool {
     ech_request() != EchRequest::Off
 }
 
+/// Synthesize a valid RFC 9849 (`0xfe0d`) `ECHConfigList` with the given
+/// `config_id`, 32-byte X25519 `public_key`, and outer `public_name`.
+///
+/// Used both to construct decoy/bootstrap configs with diverse outer names
+/// (e.g., `cloudflare-ech.com`, `crypto.cloudflare.com`, `one.one.one.one`)
+/// when DNS is completely cut, and in tests.
+pub fn synthesize_ech_config_list(
+    config_id: u8,
+    public_key: &[u8; 32],
+    public_name: &str,
+) -> Option<Vec<u8>> {
+    let name = public_name.trim().trim_end_matches('.');
+    if name.is_empty() || name.len() > 253 || !valid_domain(name) {
+        return None;
+    }
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() > 255 {
+        return None;
+    }
+
+    let mut contents = Vec::with_capacity(64 + name_bytes.len());
+    // config_id (1 byte)
+    contents.push(config_id);
+    // kem_id: DHKEM(X25519, HKDF-SHA256) = 0x0020
+    contents.extend_from_slice(&KEM_X25519_HKDF_SHA256.to_be_bytes());
+    // public_key length (2 bytes) + 32-byte X25519 key
+    contents.extend_from_slice(&(public_key.len() as u16).to_be_bytes());
+    contents.extend_from_slice(public_key);
+    // cipher_suites: 4 bytes total -> 1 suite (HKDF-SHA256 = 0x0001, AES-128-GCM = 0x0001)
+    contents.extend_from_slice(&4u16.to_be_bytes());
+    contents.extend_from_slice(&KDF_HKDF_SHA256.to_be_bytes());
+    contents.extend_from_slice(&AEAD_AES_128_GCM.to_be_bytes());
+    // maximum_name_length (0 = no extra name padding)
+    contents.push(0);
+    // public_name length (1 byte) + public_name
+    contents.push(name_bytes.len() as u8);
+    contents.extend_from_slice(name_bytes);
+    // extensions length (0)
+    contents.extend_from_slice(&0u16.to_be_bytes());
+
+    let mut config = Vec::with_capacity(4 + contents.len());
+    config.extend_from_slice(&ECH_VERSION_FE0D.to_be_bytes());
+    config.extend_from_slice(&(contents.len() as u16).to_be_bytes());
+    config.extend_from_slice(&contents);
+
+    let mut list = Vec::with_capacity(2 + config.len());
+    list.extend_from_slice(&(config.len() as u16).to_be_bytes());
+    list.extend_from_slice(&config);
+    Some(list)
+}
+
+/// Rewrites the `public_name` inside the first `0xfe0d` `ECHConfig` of `list`
+/// while preserving its `config_id`, KEM, HPKE public key, cipher suites, and
+/// extensions.
+///
+/// NOTE: RFC 9849 binds the full `ECHConfig` bytes into the HPKE `info` context
+/// (`"tls ech\0" || ECHConfig`), so changing `public_name` on a real config is
+/// only used for decoy/bootstrap probes where we want the outer SNI to carry a
+/// specific cover domain while triggering `retry_configs` recovery.
+pub fn rewrite_public_name(list: &[u8], new_public_name: &str) -> Option<Vec<u8>> {
+    let name = new_public_name.trim().trim_end_matches('.');
+    if name.is_empty() || name.len() > 253 || !valid_domain(name) {
+        return None;
+    }
+    if !plausible_ech_list(list) {
+        return None;
+    }
+    let version = u16::from_be_bytes([list[2], list[3]]);
+    if version != ECH_VERSION_FE0D {
+        return None;
+    }
+    let config_len = u16::from_be_bytes([list[4], list[5]]) as usize;
+    let body = list.get(6..6 + config_len)?;
+    if body.len() < 4 {
+        return None;
+    }
+    let config_id = body[0];
+    let kem_id = u16::from_be_bytes([body[1], body[2]]);
+    let pk_len = u16::from_be_bytes([body[3], body[4]]) as usize;
+    let mut at = 5usize.checked_add(pk_len)?;
+    let pk = body.get(5..at)?;
+
+    let suites_len = u16::from_be_bytes([*body.get(at)?, *body.get(at + 1)?]) as usize;
+    at += 2;
+    let suites = body.get(at..at + suites_len)?;
+    at += suites_len;
+
+    let max_name_len = *body.get(at)?;
+    at += 1;
+    let old_name_len = *body.get(at)? as usize;
+    at += 1;
+    let after_name = at.checked_add(old_name_len)?;
+    let extensions = body.get(after_name..)?;
+
+    let name_bytes = name.as_bytes();
+    let mut new_body = Vec::with_capacity(body.len() + name_bytes.len());
+    new_body.push(config_id);
+    new_body.extend_from_slice(&kem_id.to_be_bytes());
+    new_body.extend_from_slice(&(pk.len() as u16).to_be_bytes());
+    new_body.extend_from_slice(pk);
+    new_body.extend_from_slice(&(suites.len() as u16).to_be_bytes());
+    new_body.extend_from_slice(suites);
+    new_body.push(max_name_len);
+    new_body.push(name_bytes.len() as u8);
+    new_body.extend_from_slice(name_bytes);
+    new_body.extend_from_slice(extensions);
+
+    let mut out = Vec::with_capacity(6 + new_body.len());
+    let total_len = (4 + new_body.len()) as u16;
+    out.extend_from_slice(&total_len.to_be_bytes());
+    out.extend_from_slice(&ECH_VERSION_FE0D.to_be_bytes());
+    out.extend_from_slice(&(new_body.len() as u16).to_be_bytes());
+    out.extend_from_slice(&new_body);
+    Some(out)
+}
+
+/// Extract the outer `public_name` from the first `0xfe0d` `ECHConfig` in
+/// `list`, if present.
+pub fn extract_public_name(list: &[u8]) -> Option<String> {
+    if !plausible_ech_list(list) {
+        return None;
+    }
+    let version = u16::from_be_bytes([list[2], list[3]]);
+    if version != ECH_VERSION_FE0D {
+        return None;
+    }
+    let config_len = u16::from_be_bytes([list[4], list[5]]) as usize;
+    let body = list.get(6..6 + config_len)?;
+    if body.len() < 5 {
+        return None;
+    }
+    let pk_len = u16::from_be_bytes([body[3], body[4]]) as usize;
+    let mut at = 5usize.checked_add(pk_len)?;
+    let suites_len = u16::from_be_bytes([*body.get(at)?, *body.get(at + 1)?]) as usize;
+    at = at.checked_add(2)?.checked_add(suites_len)?.checked_add(1)?;
+    let name_len = *body.get(at)? as usize;
+    at += 1;
+    let name_bytes = body.get(at..at + name_len)?;
+    std::str::from_utf8(name_bytes).ok().map(str::to_string)
+}
+
 /// An ECHConfigList is a 2 byte length followed by at least one ECHConfig
 /// (2 byte version, 2 byte length, then the contents). A list whose prefix does
 /// not match its size, or that is too short to hold a real config, is refused
@@ -405,6 +567,17 @@ pub fn plausible_ech_list(list: &[u8]) -> bool {
 /// The key this process already has, if any.
 pub fn cached_key() -> Option<Vec<u8>> {
     SESSION_KEY.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Clears the cached ECH key and failure state (used when a previously cached
+/// key was rotated out or in tests).
+pub fn clear_cached_key() {
+    if let Ok(mut guard) = SESSION_KEY.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = LAST_FAILURE.lock() {
+        *guard = None;
+    }
 }
 
 /// Makes `list` the key of every later ECH handshake, but only one that looks
@@ -445,16 +618,15 @@ fn reason_of(error: AetherError) -> String {
 }
 
 /// The ECHConfigList of this process: the one it already has, else the first
-/// plausible one any lookup of the plan finds (see the module doc). All
-/// lookups run at once; the rest are dropped as soon as one answers. Through
-/// the upstream proxy when there is one.
+/// plausible one any lookup of the plan or the camouflaged edge DoH race finds.
+/// All lookups run at once; the rest are dropped as soon as one answers.
 pub async fn fetch_ech_config() -> Result<Vec<u8>> {
     if let Some(list) = cached_key() {
         return Ok(list);
     }
     if let Some(reason) = recent_failure() {
         return Err(AetherError::Ech(format!(
-            "{reason} (not asked again for a minute)"
+            "{reason} (not asked again for a moment)"
         )));
     }
 
@@ -467,29 +639,46 @@ pub async fn fetch_ech_config() -> Result<Vec<u8>> {
         }
     };
 
-    let mut pending: FuturesUnordered<_> = plan
-        .iter()
-        .map(|lookup| async move {
-            let outcome = run_lookup(lookup).await;
-            (lookup, outcome)
-        })
-        .collect();
+    let mut pending: FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = (String, Result<Vec<u8>>)> + Send>>,
+    > = FuturesUnordered::new();
+
+    for lookup in &plan {
+        let lookup = lookup.clone();
+        pending.push(Box::pin(async move {
+            let label = lookup.to_string();
+            let outcome = run_lookup(&lookup).await;
+            (label, outcome)
+        }));
+    }
+
+    // Race camouflaged edge DoH (BoringSSL + SNI-split FragmentingStream to
+    // 162.159.36.x / 162.159.46.x) alongside standard lookups so filtered
+    // networks where port 53 and 1.1.1.1:443 are blocked still get the live
+    // ECHConfigList in ~1 RTT.
+    for &(edge_str, sni) in EDGE_DOH_SERVERS {
+        if let Ok(address) = edge_str.parse::<SocketAddr>() {
+            for &domain in EDGE_DOH_DOMAINS {
+                let label = format!("{domain} via edge-doh://{address} (sni={sni})");
+                pending.push(Box::pin(async move {
+                    let outcome =
+                        query_edge_doh(address, sni, DOH_PATH, domain, ECH_LOOKUP_TIMEOUT).await;
+                    (label, outcome)
+                }));
+            }
+        }
+    }
 
     let mut reasons: Vec<String> = Vec::new();
-    while let Some((lookup, outcome)) = pending.next().await {
+    while let Some((label, outcome)) = pending.next().await {
         match outcome {
             Ok(list) if remember(list.clone()) => {
-                log::info!(
-                    "fetched ECHConfigList ({} bytes) for {} via {}",
-                    list.len(),
-                    lookup.domain,
-                    lookup.dns
-                );
+                log::info!("fetched ECHConfigList ({} bytes) for {label}", list.len());
                 return Ok(list);
             }
             Ok(list) => {
                 let reason = format!(
-                    "{lookup} answered {} bytes that are no ECHConfigList",
+                    "{label} answered {} bytes that are no ECHConfigList",
                     list.len()
                 );
                 log::debug!("ech lookup: {reason}");
@@ -621,15 +810,19 @@ fn doh_url(address: SocketAddr, path: &str) -> String {
 }
 
 /// The HTTPS record of `domain`, asked of the DoH resolver at `address` (RFC
-/// 8484, POST). The certificate is checked against the bundled web roots and
-/// the resolver's IP address; no SNI is sent for an address. Through the
-/// upstream proxy when there is one.
+/// 8484, POST). First attempts camouflaged BoringSSL + SNI/stream-split
+/// fragmentation so DPI cannot reset the handshake, falling back to `reqwest`
+/// when needed.
 async fn query_https(
     address: SocketAddr,
     path: &str,
     domain: &str,
     budget: Duration,
 ) -> Result<Vec<u8>> {
+    if let Ok(list) = query_edge_doh(address, "one.one.one.one", path, domain, budget).await {
+        return Ok(list);
+    }
+
     let url = doh_url(address, path);
     let builder = reqwest::Client::builder()
         .connect_timeout(budget)
@@ -676,6 +869,184 @@ async fn query_https(
         )));
     }
     answer_ech(&body, domain)
+}
+
+/// Camouflaged DNS-over-HTTPS (RFC 8484 POST) over BoringSSL with Chrome TLS
+/// extensions, ECH GREASE, and `FragmentingStream` (SNI-split ClientHello).
+///
+/// Connects directly to `address` (such as `162.159.36.1:443` or
+/// `162.159.46.1:443`) while presenting `sni` (`one.one.one.one` or
+/// `cloudflare-dns.com`) cut in the middle of the hostname so stateless DPI
+/// keyword matchers never see the SNI whole.
+pub async fn query_edge_doh(
+    address: SocketAddr,
+    sni: &str,
+    path: &str,
+    domain: &str,
+    budget: Duration,
+) -> Result<Vec<u8>> {
+    let work = async {
+        let tcp = match crate::upstream::configured() {
+            Some(proxy) => proxy.connect(address).await.map_err(|e| {
+                AetherError::Ech(format!("edge DoH connect to {address} via proxy: {e}"))
+            })?,
+            None => crate::egress::tcp_connect(address)
+                .await
+                .map_err(|e| AetherError::Ech(format!("edge DoH connect to {address}: {e}")))?,
+        };
+        let _ = tcp.set_nodelay(true);
+
+        let mut builder = SslConnector::builder(SslMethod::tls())
+            .map_err(|e| AetherError::Ech(format!("edge DoH ssl builder: {e}")))?;
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_2))
+            .map_err(|e| AetherError::Ech(e.to_string()))?;
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .map_err(|e| AetherError::Ech(e.to_string()))?;
+        builder.set_grease_enabled(true);
+        builder.set_permute_extensions(true);
+        builder
+            .set_curves_list("X25519:P-256:P-384")
+            .map_err(|e| AetherError::Ech(e.to_string()))?;
+        builder
+            .set_alpn_protos(b"\x08http/1.1")
+            .map_err(|e| AetherError::Ech(e.to_string()))?;
+        // DoH answers are validated for DNS transaction ID, question section,
+        // and plausible 0xfe0d ECHConfigList structure; we also only use the
+        // returned public key to encrypt the inner ClientHello (whose server
+        // certificate is verified by the Android system trust store).
+        builder.set_verify(SslVerifyMode::NONE);
+
+        let mut config = builder
+            .build()
+            .configure()
+            .map_err(|e| AetherError::Ech(e.to_string()))?;
+        config.set_verify_hostname(false);
+        crate::tls::set_enable_ech_grease(&mut config, true);
+
+        let frag = FragmentConfig {
+            enabled: true,
+            size_min: 18,
+            size_max: 40,
+            delay_min_ms: 1,
+            delay_max_ms: 5,
+            sni_split: true,
+        };
+        let stream = FragmentingStream::new(tcp, frag);
+        let mut tls = tokio_boring::connect(config, sni, stream)
+            .await
+            .map_err(|e| AetherError::Ech(format!("edge DoH tls with {address}: {e}")))?;
+
+        let (query, id) = build_query(domain, RR_HTTPS);
+        let req = format!(
+            "POST {path} HTTP/1.1\r\n\
+             Host: {sni}\r\n\
+             User-Agent: Mozilla/5.0\r\n\
+             Content-Type: {DOH_MEDIA_TYPE}\r\n\
+             Accept: {DOH_MEDIA_TYPE}\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            query.len()
+        );
+
+        tls.write_all(req.as_bytes())
+            .await
+            .map_err(|e| AetherError::Ech(format!("edge DoH write to {address}: {e}")))?;
+        tls.write_all(&query)
+            .await
+            .map_err(|e| AetherError::Ech(format!("edge DoH write body to {address}: {e}")))?;
+        tls.flush()
+            .await
+            .map_err(|e| AetherError::Ech(format!("edge DoH flush to {address}: {e}")))?;
+
+        let mut raw = Vec::with_capacity(1024);
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = tls
+                .read(&mut buf)
+                .await
+                .map_err(|e| AetherError::Ech(format!("edge DoH read from {address}: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+            if raw.len() > MAX_DOH_ANSWER {
+                return Err(AetherError::Ech(format!(
+                    "edge DoH answer from {address} exceeded {MAX_DOH_ANSWER} bytes"
+                )));
+            }
+        }
+
+        let body = extract_http_body(&raw)
+            .ok_or_else(|| AetherError::Ech(format!("edge DoH {address}: invalid HTTP response")))?;
+        if !response_matches(&body, id, domain, RR_HTTPS) {
+            return Err(AetherError::Ech(format!(
+                "edge DoH {address}: reply did not match DNS query"
+            )));
+        }
+        answer_ech(&body, domain)
+    };
+
+    match tokio::time::timeout(budget, work).await {
+        Ok(result) => result,
+        Err(_) => Err(AetherError::Ech(format!(
+            "edge DoH {address} did not answer for {domain} within {budget:?}"
+        ))),
+    }
+}
+
+fn extract_http_body(raw: &[u8]) -> Option<Vec<u8>> {
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next()?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let body = &raw[split + 4..];
+    let chunked = lines.any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+    });
+    if chunked {
+        Some(dechunk_http_body(body))
+    } else {
+        Some(body.to_vec())
+    }
+}
+
+fn dechunk_http_body(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < body.len() {
+        let Some(offset) = body[cursor..].windows(2).position(|w| w == b"\r\n") else {
+            break;
+        };
+        let line_end = cursor + offset;
+        let line = String::from_utf8_lossy(&body[cursor..line_end]);
+        let token = line.split(';').next().unwrap_or("").trim();
+        let Ok(size) = usize::from_str_radix(token, 16) else {
+            break;
+        };
+        if size == 0 {
+            break;
+        }
+        let start = line_end + 2;
+        let Some(end) = start.checked_add(size) else {
+            break;
+        };
+        if end > body.len() {
+            break;
+        }
+        out.extend_from_slice(&body[start..end]);
+        cursor = end + 2;
+    }
+    out
 }
 
 /// `msg` as it goes over TCP: behind its length, in two bytes in network order (RFC
@@ -896,6 +1267,36 @@ mod tests {
             address: address.parse().unwrap(),
             path: path.to_string(),
         }
+    }
+
+    #[test]
+    fn synthesize_and_rewrite_ech_config_list_preserve_rfc9849_layout() {
+        let pubkey = [
+            0x7c, 0x75, 0xf0, 0xdd, 0x6b, 0x5e, 0x0b, 0xdf, 0x9e, 0xfa, 0x74, 0x1e, 0x03, 0x39,
+            0xde, 0x60, 0x8f, 0x74, 0x1d, 0xa8, 0x18, 0xb0, 0x29, 0x71, 0x41, 0xd5, 0x64, 0xb2,
+            0xce, 0x6c, 0x34, 0x39,
+        ];
+        let list = synthesize_ech_config_list(0x5a, &pubkey, "cloudflare-ech.com")
+            .expect("synthesizes");
+        assert_eq!(list.len(), 71);
+        assert!(plausible_ech_list(&list));
+        assert_eq!(
+            extract_public_name(&list).as_deref(),
+            Some("cloudflare-ech.com")
+        );
+
+        let rewritten =
+            rewrite_public_name(&list, "crypto.cloudflare.com").expect("rewrites public_name");
+        assert!(plausible_ech_list(&rewritten));
+        assert_eq!(
+            extract_public_name(&rewritten).as_deref(),
+            Some("crypto.cloudflare.com")
+        );
+
+        let builder = SslConnector::builder(SslMethod::tls()).expect("builder");
+        let mut cfg = builder.build().configure().expect("configure");
+        assert!(crate::tls::set_ech_config_list(&mut cfg, &list).is_ok());
+        assert!(crate::tls::set_ech_config_list(&mut cfg, &rewritten).is_ok());
     }
 
     #[test]
