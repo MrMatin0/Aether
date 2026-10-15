@@ -56,11 +56,10 @@ data class WarpKeyState(
  * `aether-masque.toml` for MASQUE, and a `-secondary` sibling for the second
  * hop of Gool and MASQUE-in-MASQUE.
  *
- * WITH THE USER'S SETTINGS (fix/ech-from-core). The request used to run a bare
- * [ConnectionProfile], so it never had the ECH switch and always took the
- * plaintext route to the API first. It now runs the saved profile through
- * [keyProfile]: the same ECH, IP family and obfuscation a session would use,
- * plus the ECH key lookup every session gets (see [ConnectionProfile.toEnv]).
+ * WITH THE USER'S SETTINGS. The request runs the saved profile through
+ * [keyProfile]: the same IP family and obfuscation a session would use. No
+ * ECH: the registration goes over the direct route first and the camouflaged
+ * one after it, exactly as a session's would.
  *
  * A request always produces a FRESH identity: existing files are set aside
  * first and are only discarded once the new ones are complete. On failure,
@@ -74,9 +73,9 @@ object WarpKeyFetcher {
 
     /**
      * MASQUE makes two API calls (registration, then key enrollment) and on a
-     * filtered network either can need the camouflaged route, whose sweep is
-     * an ECH lookup plus several edges and fingerprints. 150 s ended requests
-     * that were still on their way through it.
+     * filtered network either can need the camouflaged route, whose sweep
+     * races several edges and fingerprints. 150 s ended requests that were
+     * still on their way through it.
      */
     private const val TIMEOUT_MS = 240_000L
     private const val POLL_MS = 400L
@@ -120,9 +119,9 @@ object WarpKeyFetcher {
 
     /**
      * The profile a key request for [protocol] runs with: the user's [saved]
-     * settings - ECH above all, so the registration takes the route a session
-     * would - on [protocol], with a turbo scan and no quick reconnect, since
-     * the engine is stopped the moment the identity is on disk.
+     * settings, so the registration takes the route a session would, on
+     * [protocol], with a turbo scan and no quick reconnect, since the engine
+     * is stopped the moment the identity is on disk.
      *
      * Always consumer WARP: a Zero Trust identity is saved under a
      * team-specific name (`aether-team-<team>.toml`) this fetcher does not
@@ -215,11 +214,7 @@ object WarpKeyFetcher {
                 put("TMPDIR", dir.absolutePath)
             }
 
-            DiagnosticsLog.i(
-                TAG,
-                "requesting a fresh ${protocol.name} identity" +
-                    if (profile.sendsEch) " (ech first)" else "",
-            )
+            DiagnosticsLog.i(TAG, "requesting a fresh ${protocol.name} identity")
             val proc = builder.start()
             process = proc
             drain(proc)
