@@ -18,6 +18,9 @@ plugins {
 // new APK as the same build and refuses to install it as an update. 11 and 12
 // belong to the 1.4.3 / 1.4.4 line and are skipped rather than reused.
 //
+// 1.5.5 follows 1.5.3 (code 18) directly: 1.5.4 was never published, so 19 is
+// the next code and the sequence stays monotonic over every shipped release.
+//
 // 1.4.6 is the first build whose APK actually CONTAINS the Psiphon and Tor
 // cores. 1.4.5 shipped the chain feature's source and none of its binaries: the
 // Psiphon cross-compile could not start (the pipeline installed Go 1.23 while
@@ -33,8 +36,20 @@ plugins {
 // CI does not grep these any more: it reads AGP's own output-metadata.json
 // next to the built APKs, so a comment that happens to mention versionName can
 // no longer rename every published artifact.
-val appVersionName = "1.5.3"
-val appBaseVersionCode = 18
+val appVersionName = "1.5.5"
+val appBaseVersionCode = 19
+
+// The core version the UI SHOWS (About page, settings hub), exposed as
+// BuildConfig.CORE_DISPLAY_VERSION.
+//
+// Deliberately NOT native/aether/CORE_VERSION. That file becomes
+// BuildConfig.CORE_VERSION, which is what the engine-flag logic reads
+// (ScanMode.offeredBy / effectiveFor, the gool --gool-classic switch in
+// model/Profile.kt): it has to keep naming the engine that is actually
+// vendored, or the app would send flags the bundled core refuses (an unknown
+// option is fatal to the engine). Diagnostics exports keep reporting the real
+// engine for the same reason.
+val coreDisplayVersion = "2.3.0"
 
 // Each split APK needs its own code, and the universal one must outrank both,
 // otherwise a device that can take the arm64 split could still be offered the
@@ -417,6 +432,9 @@ android {
         val coreVersion = rootProject.file("native/aether/CORE_VERSION")
             .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifBlank { "unknown" }
         buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
+
+        // What the UI labels the core as; see coreDisplayVersion at the top.
+        buildConfigField("String", "CORE_DISPLAY_VERSION", "\"$coreDisplayVersion\"")
     }
 
     sourceSets {

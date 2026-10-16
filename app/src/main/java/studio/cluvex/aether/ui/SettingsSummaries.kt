@@ -72,7 +72,8 @@ internal fun settingsEntries(profile: ConnectionProfile, presetCount: Int): List
         ),
         entryOf(SettingsPage.TUNING, tuningStateLine(profile)),
         entryOf(SettingsPage.RESET, null),
-        entryOf(SettingsPage.ABOUT, stringResource(R.string.hub_state_version, version, BuildConfig.CORE_VERSION)),
+        // The UI's core label (CORE_DISPLAY_VERSION), same as the About page.
+        entryOf(SettingsPage.ABOUT, stringResource(R.string.hub_state_version, version, BuildConfig.CORE_DISPLAY_VERSION)),
     )
 }
 
