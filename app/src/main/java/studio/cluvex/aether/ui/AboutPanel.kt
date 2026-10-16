@@ -29,10 +29,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -83,22 +82,17 @@ private const val REPO_LABEL = "github.com/MrMatin0/Aether"
 private const val CORE_URL = "https://github.com/CluvexStudio/Aether"
 private const val CORE_LABEL = "github.com/CluvexStudio/Aether"
 
-/** The developer's Telegram. */
-private const val TELEGRAM_URL = "https://t.me/MTinF"
-private const val TELEGRAM_LABEL = "@MTinF"
-
-/** Telegram's brand blue. Used for the glyph only, never for text (contrast). */
-private val TelegramBlue = Color(0xFF2AABEE)
-
 /**
  * ABOUT.
  *
  * One scrolling story, top to bottom:
  *  1. a hero with the app identity, build/core versions and a short summary;
- *  2. credit to Cluvex Studio for the Aether core;
- *  3. the developer: Telegram and this fork's repository;
- *  4. thanks to the people who helped shape the app;
- *  5. a quiet footer.
+ *  2. credit to Cluvex Studio for the Aether core, linking the core repository;
+ *  3. this project's own repository;
+ *  4. a quiet footer.
+ *
+ * Exactly two links live on this page - the project and the core - and no
+ * personal contacts or names. Keep it that way.
  *
  * Hosted inside [SettingsPageBody], which already scrolls and pads, so this
  * panel must not add its own scroll container. All motion collapses to static
@@ -119,17 +113,8 @@ fun AboutPanel(modifier: Modifier = Modifier) {
 
         Reveal(2) {
             Column(Modifier.fillMaxWidth()) {
-                SectionLabel(Icons.Rounded.Person, stringResource(R.string.aboutpage_section_dev))
+                SectionLabel(Icons.Rounded.Code, stringResource(R.string.aboutpage_section_project))
                 AboutCard {
-                    LinkRow(
-                        icon = painterResource(R.drawable.ic_telegram),
-                        iconTint = TelegramBlue,
-                        iconWash = TelegramBlue.copy(alpha = 0.14f),
-                        title = stringResource(R.string.aboutpage_telegram_title),
-                        value = TELEGRAM_LABEL,
-                        onClick = { open(TELEGRAM_URL) },
-                    )
-                    RowDivider()
                     val accents = LocalAetherAccents.current
                     LinkRow(
                         icon = painterResource(R.drawable.ic_github),
@@ -144,13 +129,6 @@ fun AboutPanel(modifier: Modifier = Modifier) {
         }
 
         Reveal(3) {
-            Column(Modifier.fillMaxWidth()) {
-                SectionLabel(Icons.Rounded.Favorite, stringResource(R.string.aboutpage_section_thanks))
-                ThanksCard()
-            }
-        }
-
-        Reveal(4) {
             Text(
                 stringResource(R.string.aboutpage_footer),
                 Modifier.fillMaxWidth(),
@@ -306,7 +284,9 @@ private fun VersionPill() {
         Box(Modifier.size(7.dp).clip(CircleShape).background(accents.protected))
         Spacer(Modifier.width(8.dp))
         Text(
-            stringResource(R.string.hub_state_version, BuildConfig.VERSION_NAME, BuildConfig.CORE_VERSION),
+            // CORE_DISPLAY_VERSION, not CORE_VERSION: the label the UI shows
+            // for the core is set in app/build.gradle.kts (coreDisplayVersion).
+            stringResource(R.string.hub_state_version, BuildConfig.VERSION_NAME, BuildConfig.CORE_DISPLAY_VERSION),
             style = MaterialTheme.typography.labelLarge.copy(textDirection = TextDirection.Content),
             color = MaterialTheme.colorScheme.onSurface,
         )
@@ -378,102 +358,6 @@ private fun CoreCreditCard(onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun ThanksCard() {
-    val accents = LocalAetherAccents.current
-    val shape = RoundedCornerShape(24.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(Brush.linearGradient(listOf(accents.workingWash, accents.card, accents.brandWash)))
-            .border(1.dp, accents.cardBorder, shape)
-            .padding(18.dp),
-    ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Icon(Icons.Rounded.Favorite, null, Modifier.padding(top = 2.dp).size(18.dp), tint = accents.failed)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                stringResource(R.string.aboutpage_thanks_body),
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            PersonChip(
-                initial = stringResource(R.string.aboutpage_taraneh_initial),
-                name = stringResource(R.string.aboutpage_taraneh),
-                gradient = listOf(accents.failed, accents.working),
-                onGradient = accents.onWorking,
-                modifier = Modifier.weight(1f),
-            )
-            PersonChip(
-                initial = stringResource(R.string.aboutpage_sina_initial),
-                name = stringResource(R.string.aboutpage_sina),
-                gradient = listOf(accents.brand, accents.protected),
-                onGradient = accents.onBrand,
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
-
-@Composable
-private fun PersonChip(
-    initial: String,
-    name: String,
-    gradient: List<Color>,
-    onGradient: Color,
-    modifier: Modifier = Modifier,
-) {
-    val accents = LocalAetherAccents.current
-    val shape = RoundedCornerShape(20.dp)
-    Column(
-        modifier
-            .clip(shape)
-            .background(accents.card)
-            .border(1.dp, accents.cardBorder, shape)
-            .padding(horizontal = 12.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(Brush.linearGradient(gradient))
-                .clearAndSetSemantics { },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                initial,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = onGradient,
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            name,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            stringResource(R.string.aboutpage_contributor),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
 // --------------------------------------------------------------- building ---
 
 @Composable
@@ -502,18 +386,6 @@ private fun AboutCard(content: @Composable () -> Unit) {
             .background(accents.card)
             .border(1.dp, accents.cardBorder, shape),
     ) { content() }
-}
-
-@Composable
-private fun RowDivider() {
-    val accents = LocalAetherAccents.current
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 74.dp, end = 16.dp)
-            .height(1.dp)
-            .background(accents.cardBorder),
-    )
 }
 
 @Composable
