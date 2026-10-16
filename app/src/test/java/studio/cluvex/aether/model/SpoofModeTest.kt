@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The spoofing profile contract.
@@ -49,7 +50,7 @@ class SpoofModeTest {
     }
 
     @Test
-    fun `unknown values keep the off default instead of guessing`() {
+    fun `unknown values keep the profile default instead of guessing`() {
         assertNull(SpoofMode.fromStored(null))
         assertNull(SpoofMode.fromStored(""))
         assertNull(SpoofMode.fromStored("  "))
@@ -80,9 +81,45 @@ class SpoofModeTest {
 
     @Test
     fun `off emits nothing at all`() {
-        val profile = ConnectionProfile(protocol = Protocol.MASQUE, masqueHttp2 = true)
+        // OFF and a blank SNI are asked for explicitly: neither is the
+        // default any more (see the defaults test below).
+        val profile = ConnectionProfile(
+            protocol = Protocol.MASQUE,
+            masqueHttp2 = true,
+            spoofMode = SpoofMode.OFF,
+            spoofSni = "",
+        )
         assertEquals(SpoofMode.OFF, profile.effectiveSpoofMode)
         assertFalse(profile.toEnv().containsKey("AETHER_MASQUE_H2_SPOOF"))
+        assertFalse(profile.toEnv().containsKey("AETHER_MASQUE_SNI"))
+    }
+
+    /**
+     * The 1.5.5 defaults: MASQUE over HTTP/2 on both IP families, the Precise
+     * scan, SNI-split spoofing (the first mode in the picker) and
+     * speedtest.net as the SNI. Pinned end to end, because a default is only
+     * real once it reaches the engine's argv and environment.
+     */
+    @Test
+    fun `the default profile is masque h2 dual stack with sni split on speedtest net`() {
+        val d = ConnectionProfile()
+        assertEquals(Protocol.MASQUE, d.protocol)
+        assertTrue(d.masqueHttp2)
+        assertEquals(IpVersion.BOTH, d.ipVersion)
+        assertEquals(ScanMode.PRECISE, d.scanMode)
+        assertEquals(SpoofMode.SNI_SPLIT, d.spoofMode)
+        assertEquals(ConnectionProfile.DEFAULT_SPOOF_SNI, d.spoofSni)
+        assertEquals("speedtest.net", ConnectionProfile.DEFAULT_SPOOF_SNI)
+
+        val args = d.toArgs("2.1.0")
+        assertTrue("--masque" in args, "$args")
+        assertTrue("--dual" in args, "$args")
+        assertTrue(ScanMode.PRECISE.engineFlag in args, "$args")
+
+        val env = d.toEnv()
+        assertEquals("1", env["AETHER_MASQUE_HTTP2"])
+        assertEquals("sni_split", env["AETHER_MASQUE_H2_SPOOF"])
+        assertEquals("speedtest.net", env["AETHER_MASQUE_SNI"])
     }
 
     @Test

@@ -51,12 +51,15 @@ class ProfileCodecTest {
      */
     private val populated = ConnectionProfile(
         // MIM rather than MASQUE: it is the protocol whose extra fields
-        // (mimOuterPeer / mimInnerPeer) the round trip has to carry.
+        // (mimOuterPeer / mimInnerPeer) the round trip has to carry - and
+        // MASQUE is the default since 1.5.5.
         protocol = Protocol.MIM,
         scanMode = ScanMode.ULTRA,
-        ipVersion = IpVersion.BOTH,
+        // V6, not BOTH: dual stack is the default since 1.5.5.
+        ipVersion = IpVersion.V6,
         quickReconnect = false,
-        masqueHttp2 = true,
+        // HTTP/2 is the default since 1.5.5, so the fixture carries HTTP/3.
+        masqueHttp2 = false,
         lanShare = true,
         noize = Noize.AGGRESSIVE,
         endpointMode = EndpointMode.MANUAL_PEER,
@@ -123,7 +126,9 @@ class ProfileCodecTest {
         psiphonCdnEdgeIps = "23.215.0.206,104.16.0.0/24",
         psiphonCdnSni = "www.example.com",
         // ---- 2.2.0: MASQUE spoofing ----
-        spoofMode = SpoofMode.SNI_SPLIT,
+        // STREAM_SPLIT and a non-speedtest name: SNI split on speedtest.net
+        // is the default since 1.5.5.
+        spoofMode = SpoofMode.STREAM_SPLIT,
         spoofSni = "speed.cloudflare.com",
         // ---- Smart DNS ----
         // DoH rather than the PLAIN default, so the protocol travels too.
