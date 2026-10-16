@@ -265,6 +265,13 @@ enum class SpoofMode(val engineValue: String) {
  * User-tunable connection profile. Knows how to turn itself into the engine's
  * CLI arguments and environment variables.
  *
+ * DEFAULTS (1.5.5). A fresh install - and "Reset settings" - starts on MASQUE
+ * over the HTTP/2 carrier ([protocol], [masqueHttp2]), on both IP families
+ * ([ipVersion]), with the Precise scan, SNI-split spoofing ([spoofMode]) and
+ * [DEFAULT_SPOOF_SNI] as the ClientHello name ([spoofSni]). Smart Auto is
+ * still one tap away in the protocol picker; a profile the user already saved
+ * keeps whatever it says.
+ *
  * ONE TOR. The app runs exactly one Tor implementation: the bundled tor binary
  * behind the Tor chain modes (see core/TorCore.kt, [chain] and the bridge
  * fields below). Engine v2.0.0 can also embed its own Arti-based tor, but that
@@ -284,11 +291,17 @@ enum class SpoofMode(val engineValue: String) {
  * This profile emits none of it, so the engine runs both without ECH.
  */
 data class ConnectionProfile(
-    val protocol: Protocol = Protocol.AUTO,
+    /** MASQUE by default since 1.5.5 (see the class doc); was [Protocol.AUTO]. */
+    val protocol: Protocol = Protocol.MASQUE,
     val scanMode: ScanMode = ScanMode.PRECISE,
-    val ipVersion: IpVersion = IpVersion.V4,
+    /** IPv4 and IPv6 (`--dual`) by default since 1.5.5; was [IpVersion.V4]. */
+    val ipVersion: IpVersion = IpVersion.BOTH,
     val quickReconnect: Boolean = true,
-    val masqueHttp2: Boolean = false,
+    /**
+     * MASQUE over the HTTP/2 carrier instead of HTTP/3. ON by default since
+     * 1.5.5: it is also the only carrier the [spoofMode] split modes apply to.
+     */
+    val masqueHttp2: Boolean = true,
     /**
      * Share the tunnel with other devices on the same Wi-Fi / hotspot via the
      * in-app proxy bridge (see [studio.cluvex.aether.core.ShareBridge]).
@@ -609,15 +622,18 @@ data class ConnectionProfile(
 
     /**
      * How the ClientHello toward the MASQUE edge is shaped; see [SpoofMode].
-     * [SpoofMode.OFF] by default: every one of these changes the bytes on the
-     * wire, and an untested default that changes the handshake is how a
-     * feature ships as an outage.
+     *
+     * [SpoofMode.SNI_SPLIT] by default since 1.5.5 - spoofing on, first mode
+     * in the picker. It was OFF before. It still only reaches the engine on
+     * the MASQUE HTTP/2 carrier ([effectiveSpoofMode]), which is also the
+     * default transport now; on any other transport nothing is emitted.
      */
-    val spoofMode: SpoofMode = SpoofMode.OFF,
+    val spoofMode: SpoofMode = SpoofMode.SNI_SPLIT,
 
     /**
      * A custom SNI to put in the ClientHello toward the MASQUE edge, INSTEAD
-     * of the default `consumer-masque.cloudflareclient.com`. Blank = default.
+     * of the default `consumer-masque.cloudflareclient.com`. Defaults to
+     * [DEFAULT_SPOOF_SNI] since 1.5.5; blank = the engine default.
      * The engine uses it on both carriers (HTTP/2 and HTTP/3), and in the
      * scanner's verify probes too, so the name an edge was accepted with is
      * the name the tunnel dials it with.
@@ -634,7 +650,7 @@ data class ConnectionProfile(
      * a code one - the connection either validates end to end or it does not,
      * and the engine already refuses to expose the proxy until it does.
      */
-    val spoofSni: String = "",
+    val spoofSni: String = DEFAULT_SPOOF_SNI,
 
     // ---- Smart DNS: sanctions bypass through a proxying resolver ----
 
@@ -1169,6 +1185,9 @@ data class ConnectionProfile(
         val MTU_PRESETS = listOf(1280, 1380, 1420, 1500, 8500)
         /** Keepalive presets offered in the UI (0 = engine default). */
         val KEEPALIVE_PRESETS = listOf(0, 10, 25, 45)
+
+        /** The ClientHello SNI a fresh profile carries toward the MASQUE edge (1.5.5). */
+        const val DEFAULT_SPOOF_SNI = "speedtest.net"
 
         /** First core where WireGuard-in-WireGuard gool is `--gool-classic`; see [toArgs]. */
         const val GOOL_CLASSIC_SINCE = "2.3.0"

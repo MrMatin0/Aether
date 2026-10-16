@@ -123,8 +123,8 @@ class ProfileStore(private val context: Context) {
         val psiphonCdnIps = stringPreferencesKey("psiphonCdnIps")
         val psiphonCdnSni = stringPreferencesKey("psiphonCdnSni")
         // Added in 2.2.0 (MASQUE spoofing). Both keys read with the profile's
-        // own defaults, so a profile saved before they existed means OFF/blank
-        // exactly as a fresh one does.
+        // own defaults, so a profile saved before they existed gets the same
+        // spoofing a fresh one does (SNI split + speedtest.net since 1.5.5).
         val spoofMode = stringPreferencesKey("spoofMode")
         val spoofSni = stringPreferencesKey("spoofSni")
         // Smart DNS. Same key names as ProfileCodec; all of them read with the
@@ -261,8 +261,10 @@ class ProfileStore(private val context: Context) {
 
         // MIGRATION (MASQUE-in-MASQUE): it used to be a switch beside the
         // protocol and is a protocol now. MASQUE + mim=true is read as MIM.
+        // A missing key falls back to the model default (MASQUE since 1.5.5),
+        // the same way ProfileCodec does.
         val storedProtocol = prefs[Keys.protocol]
-            ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: Protocol.AUTO
+            ?.let { runCatching { Protocol.valueOf(it) }.getOrNull() } ?: d.protocol
 
         // SSTP. Before this profile ever saved SSTP settings the password is
         // the public VPN Gate default; after that, whatever is sealed - an
@@ -290,9 +292,9 @@ class ProfileStore(private val context: Context) {
             // name is MIGRATED rather than dropped on the floor.
             scanMode = ScanMode.fromStored(prefs[Keys.scan]) ?: d.scanMode,
             ipVersion = prefs[Keys.ip]
-                ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: IpVersion.V4,
+                ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: d.ipVersion,
             quickReconnect = prefs[Keys.quick] ?: true,
-            masqueHttp2 = prefs[Keys.h2] ?: false,
+            masqueHttp2 = prefs[Keys.h2] ?: d.masqueHttp2,
             lanShare = prefs[Keys.share] ?: false,
             noize = noize,
             endpointMode = prefs[Keys.endpoint]
@@ -362,10 +364,12 @@ class ProfileStore(private val context: Context) {
             psiphonCdnSni = prefs[Keys.psiphonCdnSni] ?: "",
             // ---- MASQUE spoofing (2.2.0). Not valueOf(): fromStored also
             // understands the reference repo's option names ("wrong_seq" and
-            // friends), and anything unrecognised keeps the OFF default
+            // friends), and anything unrecognised keeps the profile default
             // instead of throwing the whole profile away.
             spoofMode = SpoofMode.fromStored(prefs[Keys.spoofMode]) ?: d.spoofMode,
-            spoofSni = prefs[Keys.spoofSni] ?: "",
+            // A stored blank stays blank (the user cleared it); only a missing
+            // key takes the default name.
+            spoofSni = prefs[Keys.spoofSni] ?: d.spoofSni,
             // ---- Smart DNS ----
             smartDns = prefs[Keys.smartDns] ?: d.smartDns,
             smartDnsProtocol = SmartDnsProtocol.fromStored(prefs[Keys.smartDnsProtocol])

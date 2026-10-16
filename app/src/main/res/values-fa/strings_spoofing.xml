@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="spoof_mode_title">جعل ClientHello (MASQUE)</string>
-    <string name="spoof_mode_desc">شکل handshake TLS ارسالی به لبه را تغییر می‌دهد تا تطبیق DPI سخت‌تر شود. پیش‌فرض خاموش است و هر حالت بایت‌های روی شبکه را تغییر می‌دهد.</string>
+    <string name="spoof_mode_desc">شکل handshake TLS ارسالی به لبه را تغییر می‌دهد تا تطبیق DPI سخت‌تر شود. پیش‌فرض «شکستن SNI» است و هر حالت بایت‌های روی شبکه را تغییر می‌دهد.</string>
     <string name="spoof_mode_off">خاموش</string>
     <string name="spoof_mode_sni_split">شکستن SNI</string>
     <string name="spoof_mode_stream_split">تقسیم جریان</string>
