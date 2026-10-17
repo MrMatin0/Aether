@@ -98,6 +98,10 @@ private val SSTP_HOST_PATTERN = Regex("^[A-Za-z0-9._-]+$|^\\[?[0-9A-Fa-f:]+]?$")
  * [enabled] locks the fields that write the profile. The relay hero is NOT
  * one of them: it only opens the VPN Gate browser, which can be refreshed and
  * probed while connected (see SstpDestination).
+ *
+ * The relay hero ([SstpRelayHero]) and the server fields ([SstpServerFields])
+ * are also the SSTP sheet of the connection tab's core selector: one editor,
+ * two places.
  */
 @Composable
 fun SstpSettingsPanel(
@@ -112,7 +116,6 @@ fun SstpSettingsPanel(
     var advancedOpen by rememberSaveable {
         mutableStateOf(config.customSni.isNotBlank() || config.mru != 0 || config.mtu != 0)
     }
-    val hostError = config.hostname.isNotEmpty() && !SSTP_HOST_PATTERN.matches(config.hostname)
 
     ControlSection(
         title = stringResource(R.string.sstp_title),
@@ -124,53 +127,7 @@ fun SstpSettingsPanel(
 
         // ------------------------------------------------------------ server --
         SectionTitle(stringResource(R.string.sstp_section_server), Modifier.padding(top = 32.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            LtrOutlinedTextField(
-                value = config.hostname,
-                onValueChange = { raw ->
-                    val (host, port) = splitSstpHostPort(raw)
-                    val sameHost = host.equals(config.hostname, ignoreCase = true)
-                    onConfigChange(
-                        config.copy(
-                            hostname = host,
-                            port = port ?: config.port,
-                            source = if (sameHost) config.source else SstpSource.MANUAL,
-                            countryCode = if (sameHost) config.countryCode else "",
-                            countryName = if (sameHost) config.countryName else "",
-                        ),
-                    )
-                },
-                modifier = Modifier.weight(1f),
-                enabled = enabled,
-                label = { Text(stringResource(R.string.sstp_hostname)) },
-                placeholder = { Text("public-vpn-123.opengw.net", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                supportingText = if (hostError) {
-                    { Text(stringResource(R.string.sstp_hostname_error)) }
-                } else {
-                    null
-                },
-                keyboardType = KeyboardType.Uri,
-                isError = hostError,
-                leadingIcon = { Icon(Icons.Rounded.Dns, null) },
-            )
-            LtrOutlinedTextField(
-                value = config.port.toString(),
-                onValueChange = { text ->
-                    // Only valid ports are committed; anything else reverts on blur.
-                    val port = text.toIntOrNull()
-                    if (port != null && port in 1..65535) onConfigChange(config.copy(port = port))
-                },
-                modifier = Modifier.width(112.dp),
-                enabled = enabled,
-                label = { Text(stringResource(R.string.sstp_port)) },
-                keyboardType = KeyboardType.Number,
-                inputTransform = { it.filter(Char::isDigit).take(5) },
-            )
-        }
+        SstpServerFields(config = config, onConfigChange = onConfigChange, enabled = enabled)
 
         // ----------------------------------------------------------- sign-in --
         SectionTitle(stringResource(R.string.sstp_section_auth), Modifier.padding(top = 24.dp))
@@ -288,6 +245,69 @@ fun SstpSettingsPanel(
 }
 
 /**
+ * Hostname and port, side by side. Pasting `host:port` (or an `sstp://` /
+ * `https://` URL) fills both; typing a different host than the selected VPN
+ * Gate relay turns the config back into a manual one, so the relay's country
+ * is never shown next to a server it does not belong to.
+ */
+@Composable
+internal fun SstpServerFields(
+    config: SstpConfig,
+    onConfigChange: (SstpConfig) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val hostError = config.hostname.isNotEmpty() && !SSTP_HOST_PATTERN.matches(config.hostname)
+    Row(
+        modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        LtrOutlinedTextField(
+            value = config.hostname,
+            onValueChange = { raw ->
+                val (host, port) = splitSstpHostPort(raw)
+                val sameHost = host.equals(config.hostname, ignoreCase = true)
+                onConfigChange(
+                    config.copy(
+                        hostname = host,
+                        port = port ?: config.port,
+                        source = if (sameHost) config.source else SstpSource.MANUAL,
+                        countryCode = if (sameHost) config.countryCode else "",
+                        countryName = if (sameHost) config.countryName else "",
+                    ),
+                )
+            },
+            modifier = Modifier.weight(1f),
+            enabled = enabled,
+            label = { Text(stringResource(R.string.sstp_hostname)) },
+            placeholder = { Text("public-vpn-123.opengw.net", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            supportingText = if (hostError) {
+                { Text(stringResource(R.string.sstp_hostname_error)) }
+            } else {
+                null
+            },
+            keyboardType = KeyboardType.Uri,
+            isError = hostError,
+            leadingIcon = { Icon(Icons.Rounded.Dns, null) },
+        )
+        LtrOutlinedTextField(
+            value = config.port.toString(),
+            onValueChange = { text ->
+                // Only valid ports are committed; anything else reverts on blur.
+                val port = text.toIntOrNull()
+                if (port != null && port in 1..65535) onConfigChange(config.copy(port = port))
+            },
+            modifier = Modifier.width(112.dp),
+            enabled = enabled,
+            label = { Text(stringResource(R.string.sstp_port)) },
+            keyboardType = KeyboardType.Number,
+            inputTransform = { it.filter(Char::isDigit).take(5) },
+        )
+    }
+}
+
+/**
  * The top card: the chosen VPN Gate relay, or the way to go and pick one.
  *
  * Always tappable. It used to share the profile lock, so while connected the
@@ -295,7 +315,7 @@ fun SstpSettingsPanel(
  * writes nothing, and using a relay is locked inside the browser instead.
  */
 @Composable
-private fun SstpRelayHero(config: SstpConfig, onBrowse: () -> Unit) {
+internal fun SstpRelayHero(config: SstpConfig, onBrowse: () -> Unit) {
     val accents = LocalAetherAccents.current
     val locale = LocalConfiguration.current.locales[0]
     val fromGate = config.source == SstpSource.VPNGATE && config.hostname.isNotBlank()

@@ -1,6 +1,5 @@
 package studio.cluvex.aether.ui.engine
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -23,12 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,19 +34,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.PsiphonCdnFronting
 import studio.cluvex.aether.core.PsiphonRegions
-import studio.cluvex.aether.core.XrayLink
-import studio.cluvex.aether.core.XrayOutbound
-import studio.cluvex.aether.data.XrayConfigStore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.Hop
 import studio.cluvex.aether.model.PsiphonProtocol
@@ -62,6 +47,8 @@ import studio.cluvex.aether.ui.components.FieldLabel
 import studio.cluvex.aether.ui.components.Hint
 import studio.cluvex.aether.ui.components.InfoTip
 import studio.cluvex.aether.ui.components.NoticeBar
+import studio.cluvex.aether.ui.psiphonProtocolDescription
+import studio.cluvex.aether.ui.psiphonProtocolLabel
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 
@@ -92,7 +79,9 @@ import studio.cluvex.aether.ui.theme.LocalAetherAccents
  * ### Where the per-core options live
  *
  * Directly under the selected mode row. Only the SELECTED row opens them, so
- * the page never shows two editors for one setting.
+ * the page never shows two editors for one setting. The Xray editor is
+ * [XrayConfigEditor], the same composable the connection tab's Xray sheet
+ * uses, so the two can never save or validate a config differently.
  *
  * ### NoticeBars
  *
@@ -236,10 +225,11 @@ private fun ColumnScope.ChainModeEntry(
     }
     if (mode.usesXray) {
         DependentBlock(visible = mode == selected) {
-            XrayOptions(
+            XrayConfigEditor(
                 binaryBundled = cores.xrayBinary,
                 alone = !mode.isChained,
                 enabled = enabled,
+                modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 10.dp),
             )
         }
     }
@@ -292,165 +282,6 @@ private fun PsiphonOptions(
     }
 }
 
-/** How long the Xray field waits after the last change before saving it. */
-private const val XRAY_SAVE_DEBOUNCE_MS = 400L
-
-/**
- * Outlives the Chain page, so a paste made right before leaving it is still
- * saved (see [XrayOptions]). SupervisorJob: one failed write must not cancel
- * the next one.
- */
-private val XrayFlushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-/**
- * The Xray hop's one input: the user's own server config, shown under the
- * selected Xray mode - stacked, or [alone] in [ChainMode.XRAY].
- *
- * ### Why this is not a profile field
- *
- * A share link IS a credential (see [XrayConfigStore]). The profile is
- * exported, travels in the service Intent and sits in DataStore, so the config
- * is read from and written to its own on-device store here, off the main
- * thread, and never goes through [ProfileEdit]. The session reads the same
- * store when the Xray hop starts (studio.cluvex.aether.vpn.session.ChainStack).
- *
- * ### Saving
- *
- * Debounced: a paste is one change, typing is many. Whatever is still pending
- * when the block leaves the screen is flushed on [XrayFlushScope], so backing
- * out right after a paste does not lose it. A write that failed is said so,
- * instead of looking saved and failing at the next connect.
- *
- * ### Plain text
- *
- * Not masked: a normal keyboard, the config readable on screen, several lines
- * so a JSON or subscription paste can be checked before connecting. Bounded in
- * height and scrolls inside itself. What the paste was read as is shown as one
- * compact line underneath ([XrayOutbound.summary]); only an unparseable or
- * unsaved config earns a NoticeBar.
- *
- * Locked like every other field while a session is up or on its way: the
- * running Xray already read its config, so an edit could only look applied.
- */
-@Composable
-private fun XrayOptions(
-    binaryBundled: Boolean,
-    alone: Boolean,
-    enabled: Boolean,
-) {
-    val accents = LocalAetherAccents.current
-    val context = LocalContext.current
-    val store = remember(context) { XrayConfigStore(context.applicationContext) }
-    // remember, NOT rememberSaveable: the saved-state bundle is no place for a
-    // credential, and the on-device store is the copy that survives anyway.
-    var text by remember(store) { mutableStateOf("") }
-    var loaded by remember(store) { mutableStateOf(false) }
-    var saved by remember(store) { mutableStateOf("") }
-    var saveFailed by remember(store) { mutableStateOf(false) }
-
-    LaunchedEffect(store) {
-        val stored = withContext(Dispatchers.IO) { runCatching { store.read() }.getOrDefault("") }
-        text = stored
-        saved = stored.trim()
-        loaded = true
-    }
-    LaunchedEffect(store, text, loaded) {
-        if (!loaded || text.trim() == saved) return@LaunchedEffect
-        delay(XRAY_SAVE_DEBOUNCE_MS)
-        val pending = text
-        val ok = withContext(Dispatchers.IO) { runCatching { store.write(pending) }.getOrDefault(false) }
-        if (ok) saved = pending.trim()
-        saveFailed = !ok
-    }
-    DisposableEffect(store) {
-        onDispose {
-            val pending = text
-            if (loaded && pending.trim() != saved) {
-                XrayFlushScope.launch { runCatching { store.write(pending) } }
-            }
-        }
-    }
-
-    val parsed = remember(text) { XrayLink.parse(text) }
-    val info = listOf(
-        stringResource(R.string.xray_config_help),
-        stringResource(if (alone) R.string.xray_alone_note else R.string.xray_chain_note),
-        stringResource(R.string.xray_config_stored),
-    ).joinToString("\n\n")
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 10.dp),
-    ) {
-        if (!binaryBundled) {
-            NoticeBar(
-                text = stringResource(R.string.xray_missing),
-                tone = accents.failed,
-                icon = Icons.Rounded.Warning,
-            )
-            Spacer(Modifier.height(EngineSpacing.Field))
-        }
-
-        ProfileTextField(
-            value = text,
-            onValueChange = { value -> if (loaded) text = value.take(XrayLink.MAX_LENGTH) },
-            label = stringResource(R.string.xray_config_label),
-            placeholder = stringResource(R.string.xray_config_hint),
-            info = info,
-            singleLine = false,
-            masked = false,
-            enabled = enabled && loaded,
-            modifier = Modifier.heightIn(max = XRAY_FIELD_MAX_HEIGHT),
-        )
-
-        if (loaded && text.isNotBlank()) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            if (parsed == null) {
-                NoticeBar(
-                    text = stringResource(R.string.xray_config_invalid),
-                    tone = accents.failed,
-                    icon = Icons.Rounded.Warning,
-                )
-            } else {
-                Text(
-                    text = stringResource(R.string.xray_config_ok, xrayReadout(parsed)),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = accents.protected,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                )
-            }
-        }
-        if (saveFailed) {
-            Spacer(Modifier.height(EngineSpacing.Inline))
-            NoticeBar(
-                text = stringResource(R.string.xray_config_not_saved),
-                tone = accents.failed,
-                icon = Icons.Rounded.Warning,
-            )
-        }
-    }
-}
-
-/** Tallest the Xray field grows before it scrolls inside itself. */
-private val XRAY_FIELD_MAX_HEIGHT = 240.dp
-
-/**
- * What the paste was read as: its own name (when it has one) and the
- * secret-free summary, isolated LTR so a Persian UI does not reorder the
- * address and the dots.
- */
-private fun xrayReadout(outbound: XrayOutbound): String {
-    val remark = outbound.remark.trim()
-    val text = if (remark.isEmpty() || remark == outbound.summary) {
-        outbound.summary
-    } else {
-        "$remark \u00B7 ${outbound.summary}"
-    }
-    return "\u2066$text\u2069"
-}
-
 /**
  * Which protocols Psiphon may use, and the CDN edges / SNI for fronted meek.
  * See [PsiphonProtocol] and docs/CDN_FRONTING.md.
@@ -469,17 +300,10 @@ private fun ColumnScope.PsiphonCdnFrontingFields(
     edit: ProfileEdit,
 ) {
     // Resolved OUTSIDE the label lambda, like the exit field: the dropdown
-    // renders that lambda once per row.
-    val labels = mapOf(
-        PsiphonProtocol.AUTO to stringResource(R.string.psiphon_protocol_auto),
-        PsiphonProtocol.DIRECT to stringResource(R.string.psiphon_protocol_direct),
-        PsiphonProtocol.CDN_FRONTING to stringResource(R.string.psiphon_protocol_cdn),
-    )
-    val description = when (protocol) {
-        PsiphonProtocol.AUTO -> stringResource(R.string.psiphon_protocol_auto_desc)
-        PsiphonProtocol.DIRECT -> stringResource(R.string.psiphon_protocol_direct_desc)
-        PsiphonProtocol.CDN_FRONTING -> stringResource(R.string.psiphon_protocol_cdn_desc)
-    }
+    // renders that lambda once per row. Same labels as the connection tab's
+    // Psiphon sheet (Labels.kt).
+    val labels = PsiphonProtocol.entries.associateWith { psiphonProtocolLabel(it) }
+    val description = psiphonProtocolDescription(protocol)
     val quicNote = if (viaUpstream && protocol != PsiphonProtocol.AUTO) {
         "\n\n" + stringResource(R.string.psiphon_cdn_quic_note)
     } else {
