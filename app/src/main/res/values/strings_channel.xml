@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Telegram channel popup, shown on Home after the welcome. -->
+<resources>
+    <string name="channel_promo_eyebrow">Official channel</string>
+    <string name="channel_promo_title">Never miss an update</string>
+    <string name="channel_promo_body">To get news and updates about the app, join this Telegram channel:</string>
+    <string name="channel_promo_copy">Copy link</string>
+    <string name="channel_promo_copied">Copied</string>
+    <string name="channel_promo_join">Open in Telegram</string>
+    <string name="channel_promo_dont_show">Don\'t show this message again</string>
+    <string name="channel_promo_ok">OK</string>
+    <string name="channel_promo_ok_wait">OK (%1$d)</string>
+    <string name="channel_promo_open_failed">Couldn\'t open the link, so it was copied. Paste it in Telegram.</string>
+</resources>

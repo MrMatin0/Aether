@@ -36,12 +36,14 @@ import studio.cluvex.aether.core.IpRefreshPhase
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.VpnConsent
 import studio.cluvex.aether.data.AppPrefs
+import studio.cluvex.aether.data.ChannelPromoState
 import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
+import studio.cluvex.aether.ui.ChannelPromoHost
 import studio.cluvex.aether.ui.HomeScreen
 import studio.cluvex.aether.ui.OnboardingScreen
 import studio.cluvex.aether.ui.theme.AetherTheme
@@ -151,13 +153,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // NOT unconditionally, and not here-and-now for a first-run user: see
-        // maybeRequestNotificationPermission. A returning user still gets asked
-        // as early as possible, because the session notification is the only
-        // place the live throughput readout exists.
-        lifecycleScope.launch {
-            if (onboardingStore.completed.first()) maybeRequestNotificationPermission()
-        }
+        // The notification prompt is NOT raised here any more. It waits for
+        // Home and the Telegram channel popup (see ChannelPromoHost's
+        // onSettled below): a returning user who opted out of the popup is
+        // still asked as early as Home is up, because the session notification
+        // is the only place the live throughput readout exists; anyone who
+        // gets the popup is asked once it is out of the way, instead of having
+        // a system dialog dropped on top of it.
 
         // Off the main thread: this is flash I/O on the cold-start critical
         // path, and a StrictMode disk-read violation on every launch.
@@ -182,6 +184,9 @@ class MainActivity : ComponentActivity() {
                 // welcome replaced it: the very first impression was a flash of
                 // the wrong screen.
                 val onboardingDone by onboardingStore.completed.collectAsState<Boolean, Boolean?>(initial = null)
+                // Same idea: null until read, so the popup never decides on a guess.
+                val channelPromo by onboardingStore.channelPromo
+                    .collectAsState<ChannelPromoState, ChannelPromoState?>(initial = null)
                 val state by AetherController.state.collectAsState()
                 val profile by uiProfile.collectAsState()
                 val connectedSince by AetherController.connectedSince.collectAsState()
@@ -239,32 +244,38 @@ class MainActivity : ComponentActivity() {
                         null -> Unit
                         false -> OnboardingScreen(
                             onFinished = {
-                                lifecycleScope.launch {
-                                    onboardingStore.markCompleted()
-                                    // Now, and not a moment earlier: the user has
-                                    // just been told what the app does, so the
-                                    // permission dialog is a question they can
-                                    // actually answer.
-                                    maybeRequestNotificationPermission()
-                                }
+                                // The notification prompt follows on Home, after
+                                // the channel popup (see onSettled below): the
+                                // user has just been told what the app does, so
+                                // by then it is a question they can answer.
+                                lifecycleScope.launch { onboardingStore.markCompleted() }
                             },
                         )
-                        true -> HomeScreen(
-                            state = state,
-                            profile = profile ?: ConnectionProfile(),
-                            connectedSince = connectedSince,
-                            ipInfo = ipInfo,
-                            ipLoading = ipLoading,
-                            onProfileChange = { updated ->
-                                uiProfile.value = updated
-                                profileSaves.tryEmit(updated)
-                            },
-                            // The LIVE state, read at tap time. The composed
-                            // `state` can be a frame behind the controller, and
-                            // acting on it turned a tap during a transition into
-                            // the opposite of what the orb was showing.
-                            onToggleConnection = { toggleConnection(AetherController.state.value) },
-                        )
+                        true -> {
+                            HomeScreen(
+                                state = state,
+                                profile = profile ?: ConnectionProfile(),
+                                connectedSince = connectedSince,
+                                ipInfo = ipInfo,
+                                ipLoading = ipLoading,
+                                onProfileChange = { updated ->
+                                    uiProfile.value = updated
+                                    profileSaves.tryEmit(updated)
+                                },
+                                // The LIVE state, read at tap time. The composed
+                                // `state` can be a frame behind the controller, and
+                                // acting on it turned a tap during a transition into
+                                // the opposite of what the orb was showing.
+                                onToggleConnection = { toggleConnection(AetherController.state.value) },
+                            )
+                            ChannelPromoHost(
+                                promo = channelPromo,
+                                onAcknowledged = { optOut ->
+                                    lifecycleScope.launch { onboardingStore.recordChannelPromoSeen(optOut) }
+                                },
+                                onSettled = { maybeRequestNotificationPermission() },
+                            )
+                        }
                     }
                 }
             }
@@ -356,6 +367,10 @@ class MainActivity : ComponentActivity() {
      * gets dismissed, and on Android 13+ two dismissals mean the permission is
      * permanently denied with no in-app way back. Asking after onboarding costs
      * nothing and turns a reflex into an answer.
+     *
+     * Today it is raised from ChannelPromoHost's onSettled, i.e. on Home once
+     * the Telegram channel popup is out of the way (or not shown at all), so
+     * the system dialog never covers that popup either.
      *
      * It is also guarded twice: not re-asked when already granted, and not more
      * than once per PROCESS. That second guard used to be an INSTANCE field,
