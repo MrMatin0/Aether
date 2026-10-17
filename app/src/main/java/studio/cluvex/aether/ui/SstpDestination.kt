@@ -49,21 +49,39 @@ internal fun SstpDestination(
     Hint(stringResource(R.string.sstp_packet_tunnel_note))
 
     if (browsing) {
-        Dialog(
-            onDismissRequest = { browsing = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            VpnGateScreen(
-                onServerSelected = { server ->
-                    if (enabled) {
-                        edit { copy(sstpConfig = server.toSstpConfig(sstpConfig)) }
-                        browsing = false
-                    }
-                },
-                onBack = { browsing = false },
-                selectedHostname = config.hostname.takeIf { it.isNotBlank() },
-                canSelect = enabled,
-            )
-        }
+        VpnGateBrowserDialog(config = config, enabled = enabled, edit = edit, onDismiss = { browsing = false })
+    }
+}
+
+/**
+ * The VPN Gate relay list (country, sort by country or ping, refresh, probe)
+ * as a full-screen dialog. Shared by the SSTP settings page and the SSTP sheet
+ * of the connection tab, so there is exactly one relay browser in the app.
+ *
+ * Using a relay writes the profile through [edit] and closes the dialog; it is
+ * refused while [enabled] is false, like on the settings page.
+ */
+@Composable
+internal fun VpnGateBrowserDialog(
+    config: SstpConfig,
+    enabled: Boolean,
+    edit: ProfileEdit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        VpnGateScreen(
+            onServerSelected = { server ->
+                if (enabled) {
+                    edit { copy(sstpConfig = server.toSstpConfig(sstpConfig)) }
+                    onDismiss()
+                }
+            },
+            onBack = onDismiss,
+            selectedHostname = config.hostname.takeIf { it.isNotBlank() },
+            canSelect = enabled,
+        )
     }
 }

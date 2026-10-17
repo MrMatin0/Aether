@@ -22,6 +22,7 @@ import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
+import studio.cluvex.aether.model.PsiphonProtocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.SpoofMode
@@ -151,6 +152,25 @@ internal fun chainDescription(mode: ChainMode): String = when (mode) {
     ChainMode.TOR_OVER_XRAY -> stringResource(R.string.chain_tor_over_xray_desc)
     ChainMode.TOR_OVER_AETHER_OVER_XRAY -> stringResource(R.string.chain_tor_over_aether_over_xray_desc)
     ChainMode.XRAY -> stringResource(R.string.chain_xray_desc)
+}
+
+/**
+ * Which protocols Psiphon may use. Shared by the Chain page's dropdown and the
+ * connection tab's Psiphon sheet, so the two never name a choice differently.
+ */
+@Composable
+internal fun psiphonProtocolLabel(protocol: PsiphonProtocol): String = when (protocol) {
+    PsiphonProtocol.AUTO -> stringResource(R.string.psiphon_protocol_auto)
+    PsiphonProtocol.DIRECT -> stringResource(R.string.psiphon_protocol_direct)
+    PsiphonProtocol.CDN_FRONTING -> stringResource(R.string.psiphon_protocol_cdn)
+}
+
+/** What that protocol choice does, in a sentence or two. */
+@Composable
+internal fun psiphonProtocolDescription(protocol: PsiphonProtocol): String = when (protocol) {
+    PsiphonProtocol.AUTO -> stringResource(R.string.psiphon_protocol_auto_desc)
+    PsiphonProtocol.DIRECT -> stringResource(R.string.psiphon_protocol_direct_desc)
+    PsiphonProtocol.CDN_FRONTING -> stringResource(R.string.psiphon_protocol_cdn_desc)
 }
 
 @Composable

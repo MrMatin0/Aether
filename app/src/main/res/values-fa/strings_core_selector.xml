@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- انتخاب هسته در زبانهٔ اتصال -->
+<resources>
+    <string name="cs_summary_open">باز کردن تنظیمات %1$s</string>
+    <string name="cs_pill_missing">در این نسخه نیست</string>
+
+    <string name="cs_note_aether">وارپ کلادفلر از راه موتور Aether؛ سریع‌ترین شروع و گزینهٔ پیش‌فرض.</string>
+    <string name="cs_note_psiphon">شبکهٔ سرورهای خود سایفون؛ کشور خروجی را خودتان انتخاب می‌کنید.</string>
+    <string name="cs_note_tor">شبکهٔ تور؛ دیرتر از همه بالا می‌آید، اما تنها هسته‌ای است که ناشناس‌تان می‌کند.</string>
+    <string name="cs_note_sstp">یک VPN سادهٔ SSTP؛ یکی از رله‌های VPN Gate یا سرور خودتان.</string>
+    <string name="cs_note_xray">سرور شخصی خودتان؛ لینک اشتراک، سابسکریپشن یا JSON ایکس‌ری را بچسبانید.</string>
+
+    <string name="cs_section_protocol">پروتکل</string>
+    <string name="cs_section_scan">اسکن نقطهٔ اتصال</string>
+    <string name="cs_section_underlay">اتصال از راه</string>
+    <string name="cs_section_exit">کشور خروجی</string>
+    <string name="cs_section_bridges">پل‌ها</string>
+    <string name="cs_section_transport">نوع پل</string>
+    <string name="cs_section_server">سرور</string>
+    <string name="cs_section_config">کانفیگ شما</string>
+
+    <string name="cs_underlay_note">مسیری که %1$s از آن به اینترنت می‌رسد. «مستقیم» از همه سریع‌تر است و هر هستهٔ اضافه یک لایهٔ دیگر به مسیر می‌افزاید.</string>
+    <string name="cs_underlay_direct">مستقیم</string>
+    <string name="cs_underlay_aether">از راه Aether</string>
+    <string name="cs_underlay_psiphon">از راه Psiphon</string>
+    <string name="cs_underlay_psiphon_aether">از راه Psiphon و Aether</string>
+    <string name="cs_underlay_xray">از راه Xray</string>
+    <string name="cs_underlay_aether_xray">از راه Aether و Xray</string>
+    <string name="cs_underlay_needs_xray">اول در بخش Xray یک کانفیگ ذخیره کنید.</string>
+
+    <string name="cs_tor_exit_note">تور رلهٔ خروجی را خودش انتخاب می‌کند. ثابت کردن کشور فقط دامنهٔ رله‌ها را تنگ‌تر می‌کند، آن هم در شبکه‌هایی که تور همین حالا هم کندترین گزینه است؛ برای همین این نسخه انتخاب خروجی را به خود تور می‌سپارد.</string>
+    <string name="cs_bridges_none_picked">هنوز پلی انتخاب نشده است. از صفحهٔ پل‌ها انتخابشان کنید.</string>
+
+    <string name="cs_sstp_standalone">SSTP بستهٔ IP جابه‌جا می‌کند، نه پراکسی SOCKS؛ برای همین همیشه به‌تنهایی کار می‌کند و در زنجیره جا نمی‌گیرد.</string>
+    <string name="cs_sstp_vpngate">رلهٔ VPN Gate</string>
+    <string name="cs_sstp_vpngate_desc">رله‌های رایگان داوطلبانه؛ بر اساس کشور مرور کنید، با کشور یا پینگ مرتب کنید و فهرست را تازه کنید.</string>
+    <string name="cs_sstp_manual">سرور دستی</string>
+    <string name="cs_sstp_manual_desc">سرور SSTP خودتان، با نام میزبان و پورت.</string>
+
+    <string name="cs_xray_paste">چسباندن</string>
+    <string name="cs_xray_import">وارد کردن فایل</string>
+    <string name="cs_xray_import_failed">این فایل خوانده نشد یا حجمش بیشتر از ۶۴ کیلوبایت است.</string>
+    <string name="cs_xray_summary_title">آنچه اجرا می‌شود</string>
+    <string name="cs_xray_protocol">پروتکل</string>
+    <string name="cs_xray_server">سرور</string>
+    <string name="cs_xray_security">امنیت</string>
+    <string name="cs_xray_security_none">ندارد</string>
+    <string name="cs_xray_underlay_hint">Aether، Psiphon و Tor هم می‌توانند از این سرور عبور کنند: در بخش هر کدام «از راه Xray» را انتخاب کنید.</string>
+
+    <string name="cs_core_missing">هستهٔ %1$s در این نسخه نیست؛ فایل %2$s داخل APK وجود ندارد.</string>
+    <string name="cs_core_missing_hint">نسخه‌ای نصب کنید که این هسته را دارد، یا هستهٔ دیگری انتخاب کنید.</string>
+
+    <string name="cs_link_psiphon">لبه‌های CDN، ‏SNI و فهرست کامل مسیرها</string>
+    <string name="cs_link_tor">درخواست، چسباندن و انتخاب پل‌ها</string>
+    <string name="cs_link_sstp">ورود، بررسی گواهی، SNI و MTU</string>
+    <string name="cs_link_xray">کانفیگ Xray در صفحهٔ زنجیره</string>
+
+    <string name="cs_summary_no_server">هنوز سروری انتخاب نشده</string>
+    <string name="cs_summary_no_config">هنوز کانفیگی نیست</string>
+    <string name="cs_summary_no_bridges">بدون پل</string>
+    <string name="cs_summary_bridges">پل %1$s</string>
+    <string name="cs_summary_custom_bridges">پل‌های خودتان</string>
+    <string name="cs_summary_pinned">نقطهٔ اتصال ثابت</string>
+</resources>

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The core selector on the connection tab (ui/CoreSelector.kt, ui/CoreSheets.kt). -->
+<resources>
+    <!-- Accessibility. %1$s is a core name, e.g. "Psiphon". -->
+    <string name="cs_summary_open">Open %1$s settings</string>
+    <string name="cs_pill_missing">Not in this build</string>
+
+    <!-- One line under each sheet's headline -->
+    <string name="cs_note_aether">Cloudflare WARP through the Aether engine. The quickest start, and the default.</string>
+    <string name="cs_note_psiphon">Psiphon\'s own server network. You choose where it comes out.</string>
+    <string name="cs_note_tor">The Tor network. Slowest to start, and the only core that anonymises.</string>
+    <string name="cs_note_sstp">A plain SSTP VPN: a VPN Gate relay or a server of your own.</string>
+    <string name="cs_note_xray">Your own server. Paste a share link, a subscription or Xray JSON.</string>
+
+    <!-- Section headers -->
+    <string name="cs_section_protocol">Protocol</string>
+    <string name="cs_section_scan">Endpoint scan</string>
+    <string name="cs_section_underlay">Connect through</string>
+    <string name="cs_section_exit">Exit country</string>
+    <string name="cs_section_bridges">Bridges</string>
+    <string name="cs_section_transport">Bridge type</string>
+    <string name="cs_section_server">Server</string>
+    <string name="cs_section_config">Your config</string>
+
+    <!-- Underlay. %1$s is the core, e.g. "Tor". -->
+    <string name="cs_underlay_note">What %1$s dials out through. Direct is the quickest; every extra core is one more hop.</string>
+    <string name="cs_underlay_direct">Direct</string>
+    <string name="cs_underlay_aether">via Aether</string>
+    <string name="cs_underlay_psiphon">via Psiphon</string>
+    <string name="cs_underlay_psiphon_aether">via Psiphon + Aether</string>
+    <string name="cs_underlay_xray">via Xray</string>
+    <string name="cs_underlay_aether_xray">via Aether + Xray</string>
+    <string name="cs_underlay_needs_xray">Save an Xray config in the Xray sheet first.</string>
+
+    <!-- Tor -->
+    <string name="cs_tor_exit_note">Tor picks its own exit relay. Pinning a country would only shrink the relay pool on networks where Tor is already the slowest option, so this build leaves the exit to Tor.</string>
+    <string name="cs_bridges_none_picked">No bridges picked yet. Choose them on the Bridges page.</string>
+
+    <!-- SSTP -->
+    <string name="cs_sstp_standalone">SSTP carries IP packets, not a SOCKS proxy, so it always runs on its own and cannot be chained.</string>
+    <string name="cs_sstp_vpngate">VPN Gate relay</string>
+    <string name="cs_sstp_vpngate_desc">A free volunteer relay. Browse by country, sort by country or ping, refresh the list.</string>
+    <string name="cs_sstp_manual">Manual server</string>
+    <string name="cs_sstp_manual_desc">Your own SSTP server, by hostname and port.</string>
+
+    <!-- Xray -->
+    <string name="cs_xray_paste">Paste</string>
+    <string name="cs_xray_import">Import file</string>
+    <string name="cs_xray_import_failed">That file could not be read, or it is larger than 64 KB.</string>
+    <string name="cs_xray_summary_title">What will run</string>
+    <string name="cs_xray_protocol">Protocol</string>
+    <string name="cs_xray_server">Server</string>
+    <string name="cs_xray_security">Security</string>
+    <string name="cs_xray_security_none">None</string>
+    <string name="cs_xray_underlay_hint">Aether, Psiphon and Tor can ride this server: choose “via Xray” in their sheets.</string>
+
+    <!-- A core this APK does not ship. %1$s is the core, %2$s its file, e.g. "libtor.so". -->
+    <string name="cs_core_missing">%1$s is not in this build: %2$s is missing from the APK.</string>
+    <string name="cs_core_missing_hint">Install a release that ships it, or pick another core.</string>
+
+    <!-- Links to the Settings page that owns the rest -->
+    <string name="cs_link_psiphon">CDN edges, SNI and the full route list</string>
+    <string name="cs_link_tor">Request, paste and pick bridges</string>
+    <string name="cs_link_sstp">Sign-in, certificate check, SNI and MTU</string>
+    <string name="cs_link_xray">The Xray config on the Chain page</string>
+
+    <!-- Summary card values -->
+    <string name="cs_summary_no_server">No server yet</string>
+    <string name="cs_summary_no_config">No config yet</string>
+    <string name="cs_summary_no_bridges">No bridges</string>
+    <!-- %1$s is a transport, e.g. "obfs4". -->
+    <string name="cs_summary_bridges">%1$s bridges</string>
+    <string name="cs_summary_custom_bridges">Your own bridges</string>
+    <string name="cs_summary_pinned">Pinned endpoint</string>
+</resources>
