@@ -1,30 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Quick connection controls on the connection tab (ui/QuickControls.kt). -->
+<!--
+    Connection-tab strings that outlived the quick-controls deck: the lock
+    word and Done (also used by SmartDnsHome.kt), and the Aether sheet's copy
+    (ui/CoreSheets.kt). Names kept so the translations stay attached.
+-->
 <resources>
-    <!-- Tile eyebrows / sheet sections. Kept short: three of them share a phone's width. -->
-    <string name="qc_route">Route</string>
-    <string name="qc_protocol">Protocol</string>
-    <string name="qc_scan">Scan</string>
-
-    <!-- Tile values that are honest about an idle setting -->
-    <string name="qc_not_used">Not used</string>
-    <string name="qc_pinned">Pinned endpoint</string>
-
-    <!-- Accessibility. %1$s is the control, e.g. "Protocol". -->
-    <string name="qc_change">Change %1$s</string>
+    <!-- Accessibility -->
     <string name="qc_locked">Locked while connected</string>
 
-    <!-- Sheet -->
-    <string name="qc_title">Connection setup</string>
-    <string name="qc_note">Changes apply to your next connection. Everything else lives in Settings.</string>
+    <!-- Sheets -->
     <string name="qc_done">Done</string>
     <string name="qc_advanced_label">More options</string>
     <string name="qc_advanced_connection">Endpoint, IP version and MASQUE options</string>
-    <string name="qc_advanced_chain">Psiphon and Tor options</string>
-    <string name="qc_advanced_bridges">Tor bridges</string>
 
-    <!-- %1$s is the route, e.g. "Tor". -->
-    <string name="qc_not_used_note">%1$s does not use the Aether engine. This choice is kept for later but has no effect on this route.</string>
     <string name="qc_pinned_note">You pinned an endpoint, so the scan is skipped. Set the endpoint back to automatic to use a scan mode.</string>
     <string name="qc_mim_note">Both MASQUE hops are found by scanning. To pin either hop, open the endpoint options below.</string>
 
