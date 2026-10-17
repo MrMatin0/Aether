@@ -70,22 +70,11 @@ class SstpChainTest {
     @Test
     fun aVpnGateRelayBecomesAnUnverifiedVpnGateConfig() {
         val relay = VpnGateServer(
-            hostname = "public-vpn-1",
-            ip = "192.0.2.10",
-            score = 1L,
-            apiPingMs = 10,
-            speedBps = 1L,
-            countryName = "Japan",
-            countryCode = "JP",
-            numSessions = 1,
-            uptimeMs = 1L,
-            totalUsers = 1L,
-            totalTrafficBytes = 1L,
-            logPolicy = "2weeks",
-            operatorName = "op",
-            operatorMessage = "",
             sstpHostname = "public-vpn-1.opengw.net",
             sstpPort = 1352,
+            countryCode = "JP",
+            countryName = "Japan",
+            ip = "192.0.2.10",
         )
         val tuned = SstpConfig(mtu = 1300, mru = 1350, verifyCert = true, customSni = "x.example")
         val config = relay.toSstpConfig(tuned)
@@ -94,10 +83,24 @@ class SstpChainTest {
         assertFalse(config.verifyCert)
         assertEquals("", config.customSni)
         assertEquals(SstpSource.VPNGATE, config.source)
+        assertEquals("JP", config.countryCode)
         assertEquals(1300, config.mtu, "the user's MTU must survive picking a relay")
         assertEquals(1350, config.mru)
         val private = SstpConfig(hostname = "vpn.example", password = "hunter2-secret")
         assertTrue(private.toString().contains("password=***"))
         assertFalse(private.toString().contains("hunter2-secret"))
+    }
+
+    @Test
+    fun sortingByCountryPutsUnknownCountriesLast() {
+        val relays = listOf(
+            VpnGateServer(sstpHostname = "c.opengw.net", sstpPort = 443),
+            VpnGateServer(sstpHostname = "b.opengw.net", sstpPort = 443, countryCode = "US"),
+            VpnGateServer(sstpHostname = "a.opengw.net", sstpPort = 443, countryCode = "JP"),
+        )
+        val sorted = relays.filteredAndSorted(VpnGateFilter(), VpnGateSort.COUNTRY)
+        assertEquals(listOf("JP", "US", ""), sorted.map { it.countryCode })
+        val japan = relays.filteredAndSorted(VpnGateFilter(countryCode = "jp"), VpnGateSort.PING)
+        assertEquals(listOf("a.opengw.net"), japan.map { it.sstpHostname })
     }
 }

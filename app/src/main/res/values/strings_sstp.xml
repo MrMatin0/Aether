@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- VPN Gate relay browser (ui/VpnGateScreen.kt) -->
+    <!-- SSTP relay browser (ui/VpnGateScreen.kt) -->
     <string name="vpngate_title">VPN Gate</string>
     <string name="vpngate_subtitle">Free volunteer relays over SSTP</string>
     <string name="vpngate_refresh">Refresh list</string>
@@ -9,12 +9,11 @@
     <string name="vpngate_stat_relays">Relays</string>
     <string name="vpngate_stat_countries">Countries</string>
     <string name="vpngate_stat_best_ping">Best SSTP</string>
-    <string name="vpngate_sort_score">Best</string>
-    <string name="vpngate_sort_speed">Fastest</string>
+    <string name="vpngate_sort_country">By country</string>
     <string name="vpngate_sort_ping">Lowest ping</string>
-    <string name="vpngate_sort_sessions">Least busy</string>
     <string name="vpngate_filter_all">All countries</string>
     <string name="vpngate_filter_verified">SSTP verified</string>
+    <string name="vpngate_country_unknown">Unknown country</string>
     <plurals name="vpngate_count">
         <item quantity="one">%d relay</item>
         <item quantity="other">%d relays</item>
@@ -28,19 +27,11 @@
     <string name="vpngate_test">Test</string>
     <string name="vpngate_use">Use relay</string>
     <string name="vpngate_selected">Selected</string>
-    <string name="vpngate_metric_speed">Speed</string>
-    <string name="vpngate_metric_sessions">Sessions</string>
-    <string name="vpngate_metric_uptime">Uptime</string>
-    <string name="vpngate_metric_score">Score</string>
     <string name="vpngate_detail_ip">IP address</string>
     <string name="vpngate_detail_port">SSTP port</string>
-    <string name="vpngate_detail_users">Total users</string>
-    <string name="vpngate_detail_traffic">Traffic served</string>
-    <string name="vpngate_detail_logs">Log policy</string>
-    <string name="vpngate_detail_operator">Operator</string>
-    <string name="vpngate_loading">Fetching relays from VPN Gate…</string>
-    <string name="vpngate_error_title">Could not load VPN Gate</string>
-    <string name="vpngate_error_hint">vpngate.net may be filtered on this network. Try another connection, or connect through another tunnel first.</string>
+    <string name="vpngate_loading">Fetching the SSTP relay list…</string>
+    <string name="vpngate_error_title">Could not load the relay list</string>
+    <string name="vpngate_error_hint">The list is hosted on GitHub, which may be filtered on this network. Try another connection, or connect through another tunnel first.</string>
     <string name="vpngate_refresh_failed">Refresh failed. Showing the last list.</string>
     <string name="vpngate_retry">Try again</string>
     <string name="vpngate_empty_title">No relays match</string>
