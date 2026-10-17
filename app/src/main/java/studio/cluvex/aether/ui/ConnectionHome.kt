@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -62,18 +63,27 @@ import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.sin
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.CoreAvailability
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
 import studio.cluvex.aether.core.PsiphonRegions
 import studio.cluvex.aether.core.TrafficMonitor
+import studio.cluvex.aether.core.XrayLink
+import studio.cluvex.aether.core.XrayOutbound
+import studio.cluvex.aether.data.CoreUnderlayStore
+import studio.cluvex.aether.data.XrayConfigStore
 import studio.cluvex.aether.model.ChainMode
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
+import studio.cluvex.aether.model.CoreRoutes
 import studio.cluvex.aether.model.Hop
+import studio.cluvex.aether.model.Underlay
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.ButtonMode
@@ -90,13 +100,15 @@ import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
 
 /**
- * THE CONNECTION TAB, v7: "Aurora, in reach", with the words cut back.
+ * THE CONNECTION TAB, v8: "Aurora, in reach", one core at a time.
  *
  *   status capsule     the state in one word, with a live dot that FADES
  *   hero               the glass power core inside its orbit; satellites (one
  *                      per hop) ride the orbit with a tail
- *   quick controls     route, protocol, scan: the current value of each, one
- *                      tap from the sheet that changes it (QuickControls.kt)
+ *   core selector      five pills (Aether, Psiphon, Tor, SSTP, Xray) and one
+ *                      summary card; each core has its own sheet with its
+ *                      settings and what it rides on (CoreSelector.kt,
+ *                      CoreSheets.kt)
  *   smart dns          the resolver for geo-blocked sites: what is in use, the
  *                      switch, and its own sheet with ready-made servers and a
  *                      latency test for each (SmartDnsHome.kt)
@@ -104,27 +116,30 @@ import studio.cluvex.aether.ui.theme.aetherDuration
  *   session stats      only while verified
  *   location card      exit, route path (roomy windows), IP footer
  *
- * v7 CHANGES
+ * v8 CHANGES
  *
- *   FEWER WORDS The title and hint sentence under the orb ("Ready to
- *               connect." / "Connect through Cloudflare WARP in one tap.")
- *               and the WARP privacy line are gone. The capsule and the orb's
- *               own words already said the same thing; the capsule now carries
- *               the live region the title used to.
- *   BIGGER ORB  The height that copy used goes to the button: [heroReserve]
- *               lost the headline's share, [HERO_ORBIT_MAX] and
- *               [ORB_HOME_MAX] grew, and the orb takes a larger share of its
- *               orbit. It still keeps one size through every state.
+ *   CORES, NOT  The Route / Protocol / Scan deck is gone. Users pick a core;
+ *   ROUTES      the route is that core plus its underlay (model/CoreRoute.kt),
+ *               chosen in the core's own sheet. Nothing new is persisted: the
+ *               profile still stores one ChainMode.
+ *   RESERVE     [heroReserve] budgets the selector's real height per density
+ *               ([coreSelectorHeight]) instead of the deck's one row, so the
+ *               orb still keeps one size through every state.
+ *
+ * v7 CHANGES (still true)
+ *
+ *   FEWER WORDS The title and hint sentence under the orb and the WARP
+ *               privacy line are gone; the capsule carries the live region.
+ *   BIGGER ORB  [HERO_ORBIT_MAX] and [ORB_HOME_MAX] grew, and the orb takes a
+ *               larger share of its orbit.
  *
  * v6 CHANGES (still true)
  *
- *   IN REACH    The three settings that decide whether and how fast you get
- *               online sit directly under the button. The quick-controls
- *               sheet covers route, protocol and scan in one place and links
- *               to the Settings page that owns the rest.
- *   ONE FACT,   The location card does not repeat chain, scan mode and
- *   ONCE        protocol, and is not a click target: the deck above it owns
- *               those facts and that action.
+ *   IN REACH    The decisions that shape a connection sit directly under the
+ *               button, and each links to the Settings page that owns the rest.
+ *   ONE FACT,   The location card does not repeat the core and its options,
+ *   ONCE        and is not a click target: the selector above it owns those
+ *               facts and that action.
  *
  * WHAT IS DELIBERATELY UNTOUCHED: [buttonMode], [connectionStep],
  * [phaseProgress], [litRouteNodes], [rateLevel], [shimmerBandStart], [orbDetail],
@@ -167,10 +182,11 @@ private val TWO_PANE_GUTTER = 72.dp
 /**
  * How much the tab can show at once, from the height it is given.
  *
- *   ROOMY    everything, at full padding, route path in the location card
- *   COMPACT  everything but the route path
- *   TIGHT    quick controls go to one line each, session stats lose their
- *            meters
+ *   ROOMY    everything, at full padding, route path in the location card,
+ *            64dp core pills
+ *   COMPACT  everything but the route path, 56dp core pills
+ *   TIGHT    core pills go icon-only (44dp) over a one-line summary,
+ *            session stats lose their meters
  *   MINIMAL  as TIGHT, and the session stats go (the orb still says verified)
  */
 internal enum class HomeDensity { ROOMY, COMPACT, TIGHT, MINIMAL }
@@ -207,22 +223,29 @@ internal fun heroGeometry(width: Dp, height: Dp): Pair<Dp, Dp> {
 }
 
 /**
+ * What everything that is NOT the hero and NOT the core selector can need at
+ * [density], in the WORST state for that density (verified: smart dns, stats
+ * card and the location card, plus the gaps). These are the v7 budgets minus
+ * the deck they used to include (one 60dp row; 44dp in TIGHT and MINIMAL).
+ */
+private fun reserveWithoutSelector(density: HomeDensity): Dp = when (density) {
+    HomeDensity.ROOMY -> 376.dp
+    HomeDensity.COMPACT -> 248.dp
+    HomeDensity.TIGHT -> 230.dp
+    HomeDensity.MINIMAL -> 176.dp
+}
+
+/**
  * The height everything that is NOT the hero can need at [density], in the
- * WORST state for that density (verified: quick controls, stats card and the
- * location card). Scaled with the font, like [homeDensity].
+ * WORST state for that density. Scaled with the font, like [homeDensity].
  *
- * v7 dropped the headline (title, plus the hint where it showed), so each
- * budget lost that share: about 52dp roomy, 50dp compact, 28dp tight and
- * minimal, and the headline-and-hint block in two-pane.
+ * v8: the core selector's own height ([coreSelectorHeight]: pills, gap,
+ * summary) on top of [reserveWithoutSelector], so the slot the orb gets is
+ * worked out from what is really below it. Two-pane is unchanged: the
+ * selector lives in the other pane, which scrolls.
  */
 internal fun heroReserve(density: HomeDensity, twoPane: Boolean, fontScale: Float = 1f): Dp {
-    val base = when {
-        twoPane -> 64.dp
-        density == HomeDensity.ROOMY -> 436.dp
-        density == HomeDensity.COMPACT -> 308.dp
-        density == HomeDensity.TIGHT -> 274.dp
-        else -> 220.dp
-    }
+    val base = if (twoPane) 64.dp else reserveWithoutSelector(density) + coreSelectorHeight(density)
     return base * fontScale.coerceAtLeast(1f)
 }
 
@@ -348,6 +371,7 @@ internal fun ConnectionHome(
     onOpenSettings: (SettingsPage) -> Unit = {},
 ) {
     val accents = LocalAetherAccents.current
+    val context = LocalContext.current
     val mode = buttonMode(state)
     val tone = accentFor(mode)
     val step = connectionStep(state)
@@ -359,12 +383,71 @@ internal fun ConnectionHome(
     // Only the STAMP lives here; the ticking happens inside the hero.
     val startedAt = rememberSaveable(working) { SystemClock.elapsedRealtime() }
 
-    // Which quick-controls section is open, or none. Saved, so a rotation
-    // keeps the sheet on the section the user was looking at.
-    var controls by rememberSaveable { mutableStateOf<QuickControl?>(null) }
-    // The session started (or a reconnect kicked in) while the sheet was open:
+    // Install-time facts: read once, never per recomposition.
+    val cores = remember(context) { CoreAvailability.of(context) }
+
+    // Which core's sheet is open, or none. Saved, so a rotation keeps it open.
+    var sheetCore by rememberSaveable { mutableStateOf<Hop?>(null) }
+    // The session started (or a reconnect kicked in) while a sheet was open:
     // the choice is no longer the user's to make, so the sheet goes away.
-    LaunchedEffect(editable) { if (!editable) controls = null }
+    LaunchedEffect(editable) { if (!editable) sheetCore = null }
+
+    // The saved Xray config as the parser reads it. "via Xray" needs one that
+    // runs, not just some text; the Xray sheet keeps this current.
+    var xray by remember { mutableStateOf<XrayOutbound?>(null) }
+    LaunchedEffect(context) {
+        xray = withContext(Dispatchers.IO) {
+            runCatching { XrayLink.parse(XrayConfigStore(context).read()) }.getOrNull()
+        }
+    }
+    val xrayReady = xray != null
+
+    // The underlay each core was last used with (data/CoreUnderlayStore.kt).
+    // The current core is always remembered from the profile itself, so a
+    // chain changed on the Chain page is what the pill returns to as well.
+    val underlayStore = remember(context) { CoreUnderlayStore(context) }
+    val lastUnderlay = remember { mutableStateMapOf<Hop, Underlay>() }
+    val currentChain by rememberUpdatedState(profile.chain)
+    LaunchedEffect(underlayStore) {
+        val saved = withContext(Dispatchers.IO) {
+            runCatching { underlayStore.read() }.getOrDefault(emptyMap())
+        }
+        saved.forEach { (core, underlay) ->
+            if (core != currentChain.entryHop) lastUnderlay[core] = underlay
+        }
+    }
+    LaunchedEffect(profile.chain) {
+        val core = profile.chain.entryHop
+        val underlay = CoreRoutes.underlayOf(profile.chain)
+        if (lastUnderlay[core] != underlay) {
+            lastUnderlay[core] = underlay
+            underlayStore.write(core, underlay)
+        }
+    }
+
+    // A pill tap: the current core (or one this APK does not ship) opens its
+    // sheet; any other core is switched to at once, keeping its last underlay
+    // while that is still allowed (CoreRoutes.switchTo).
+    val onPill: (Hop) -> Unit = { core ->
+        val current = profile.chain
+        when {
+            !editable -> Unit
+            core == current.entryHop || !cores.has(core) -> sheetCore = core
+            else -> {
+                val next = CoreRoutes.switchTo(current, core, lastUnderlay[core]) { candidate ->
+                    coreModeAllowed(candidate, cores, xrayReady)
+                }
+                if (next != current) onProfileChange(profile.copy(chain = next))
+                // Nothing to connect with yet: go straight to the sheet that sets it up.
+                val needsSetup = when (core) {
+                    Hop.XRAY -> !xrayReady
+                    Hop.SSTP -> !profile.sstpConfig.isUsable
+                    else -> false
+                }
+                if (needsSetup) sheetCore = core
+            }
+        }
+    }
 
     // Manual-only latency: a stale reading must not survive the session.
     val verified = state is ConnectionState.Connected
@@ -400,7 +483,10 @@ internal fun ConnectionHome(
                 tone = tone,
                 editable = editable,
                 density = density,
-                onOpenControl = { controls = it },
+                cores = cores,
+                xray = xray,
+                onPill = onPill,
+                onOpenSheet = { if (editable) sheetCore = profile.chain.entryHop },
                 onOpenDiagnostics = onOpenDiagnostics,
                 onProfileChange = onProfileChange,
                 modifier = slot,
@@ -476,14 +562,17 @@ internal fun ConnectionHome(
         }
     }
 
-    controls?.let { section ->
-        ConnectionControlsSheet(
-            initial = section,
+    sheetCore?.let { core ->
+        CoreSheet(
+            core = core,
             profile = profile,
             editable = editable,
+            cores = cores,
+            xrayReady = xrayReady,
+            onXraySaved = { saved -> xray = saved },
             onProfileChange = onProfileChange,
             onOpenSettings = onOpenSettings,
-            onDismiss = { controls = null },
+            onDismiss = { sheetCore = null },
         )
     }
 }
@@ -608,9 +697,9 @@ private fun HomeHero(
 }
 
 /**
- * Everything below the hero, in one column, each fact once. The quick
- * controls lead: they are the next thing a user reaches for after the button
- * (and, after a failure, before trying it again). Smart DNS follows them for
+ * Everything below the hero, in one column, each fact once. The core
+ * selector leads: it is the next thing a user reaches for after the button
+ * (and, after a failure, before trying it again). Smart DNS follows it for
  * the same reason: whether Gemini & co. open is decided there.
  */
 @Composable
@@ -624,7 +713,10 @@ private fun HomeDetails(
     tone: Color,
     editable: Boolean,
     density: HomeDensity,
-    onOpenControl: (QuickControl) -> Unit,
+    cores: CoreAvailability.Snapshot,
+    xray: XrayOutbound?,
+    onPill: (Hop) -> Unit,
+    onOpenSheet: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onProfileChange: (ConnectionProfile) -> Unit,
     modifier: Modifier = Modifier,
@@ -637,12 +729,14 @@ private fun HomeDetails(
     // is parked in that window and the row would flash "unavailable".
     val showIp = connected || (step == null && state !is ConnectionState.Disconnecting)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(gap)) {
-        QuickControls(
-            profile = profile,
-            state = state,
+        CoreSelector(
+            selected = profile.chain.entryHop,
+            summary = coreSummary(profile, cores, xray),
             editable = editable,
-            compact = density >= HomeDensity.TIGHT,
-            onOpen = onOpenControl,
+            density = density,
+            cores = cores,
+            onPill = onPill,
+            onOpenSheet = onOpenSheet,
         )
 
         SmartDnsHomeCard(
@@ -1019,7 +1113,7 @@ private fun RateCell(
 
 private data class RouteNode(val label: String, val icon: ImageVector)
 
-/** One glyph per core. Shared with the route choices in QuickControls.kt. */
+/** One glyph per core. Shared with the core selector and its sheets. */
 internal fun hopIcon(hop: Hop): ImageVector = when (hop) {
     Hop.AETHER -> Icons.Rounded.Bolt
     Hop.PSIPHON -> Icons.Rounded.Cloud
@@ -1089,9 +1183,9 @@ private fun countryName(code: String): String {
 
 /**
  * THE LOCATION CARD: where this session comes out, how it gets there, and
- * what the internet sees. Read-only since v6: the route, protocol and scan
- * mode are shown (and changed) by the quick controls above it, so this card
- * no longer repeats them in a subtitle or opens a picker of its own.
+ * what the internet sees. Read-only since v6: the core and its options are
+ * shown (and changed) by the core selector above it, so this card does not
+ * repeat them in a subtitle or open a picker of its own.
  *
  * [expanded] draws the route path; [dense] tightens padding. The border takes
  * the state colour while the profile is locked, the same cue as before.
