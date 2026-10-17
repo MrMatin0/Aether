@@ -1,0 +1,4 @@
+# SHA-256 of the RELEASE certificate that signs this repository's APKs.
+# If this value ever changes, users cannot install a new release over the
+# one they already have, so the build fails instead of publishing such an APK.
+9d4ee288bc43eb99a55d5b6fcb4bbe706b65def0b16396207a225a0eb48c7136
