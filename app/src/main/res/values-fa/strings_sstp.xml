@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- مرورگر رله‌های VPN Gate -->
+    <!-- مرورگر رله‌های SSTP -->
     <string name="vpngate_title">VPN Gate</string>
     <string name="vpngate_subtitle">رله‌های رایگان داوطلبانه روی SSTP</string>
     <string name="vpngate_refresh">تازه‌سازی فهرست</string>
@@ -9,12 +9,11 @@
     <string name="vpngate_stat_relays">رله‌ها</string>
     <string name="vpngate_stat_countries">کشورها</string>
     <string name="vpngate_stat_best_ping">بهترین SSTP</string>
-    <string name="vpngate_sort_score">بهترین</string>
-    <string name="vpngate_sort_speed">سریع‌ترین</string>
+    <string name="vpngate_sort_country">بر اساس کشور</string>
     <string name="vpngate_sort_ping">کمترین پینگ</string>
-    <string name="vpngate_sort_sessions">خلوت‌ترین</string>
     <string name="vpngate_filter_all">همهٔ کشورها</string>
     <string name="vpngate_filter_verified">SSTP تأییدشده</string>
+    <string name="vpngate_country_unknown">کشور نامشخص</string>
     <plurals name="vpngate_count">
         <item quantity="one">%d رله</item>
         <item quantity="other">%d رله</item>
@@ -28,19 +27,11 @@
     <string name="vpngate_test">آزمایش</string>
     <string name="vpngate_use">استفاده از رله</string>
     <string name="vpngate_selected">انتخاب‌شده</string>
-    <string name="vpngate_metric_speed">سرعت</string>
-    <string name="vpngate_metric_sessions">نشست‌ها</string>
-    <string name="vpngate_metric_uptime">مدت فعالیت</string>
-    <string name="vpngate_metric_score">امتیاز</string>
     <string name="vpngate_detail_ip">نشانی IP</string>
     <string name="vpngate_detail_port">درگاه SSTP</string>
-    <string name="vpngate_detail_users">کل کاربران</string>
-    <string name="vpngate_detail_traffic">ترافیک منتقل‌شده</string>
-    <string name="vpngate_detail_logs">سیاست لاگ</string>
-    <string name="vpngate_detail_operator">اپراتور</string>
-    <string name="vpngate_loading">در حال دریافت رله‌ها از VPN Gate…</string>
-    <string name="vpngate_error_title">بارگیری VPN Gate ممکن نشد</string>
-    <string name="vpngate_error_hint">ممکن است vpngate.net روی این شبکه فیلتر باشد. از اتصال دیگری استفاده کنید یا اول از طریق تونل دیگری وصل شوید.</string>
+    <string name="vpngate_loading">در حال دریافت فهرست رله‌های SSTP…</string>
+    <string name="vpngate_error_title">بارگیری فهرست رله‌ها ممکن نشد</string>
+    <string name="vpngate_error_hint">فهرست روی GitHub میزبانی می‌شود که ممکن است روی این شبکه فیلتر باشد. از اتصال دیگری استفاده کنید یا اول از طریق تونل دیگری وصل شوید.</string>
     <string name="vpngate_refresh_failed">تازه‌سازی ناموفق بود. آخرین فهرست نمایش داده می‌شود.</string>
     <string name="vpngate_retry">تلاش دوباره</string>
     <string name="vpngate_empty_title">رله‌ای پیدا نشد</string>

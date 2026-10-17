@@ -6,7 +6,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -79,7 +77,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -94,7 +91,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
@@ -123,7 +119,6 @@ import studio.cluvex.aether.ui.theme.AetherEaseInOut
 import studio.cluvex.aether.ui.theme.AetherEaseOut
 import studio.cluvex.aether.ui.theme.AetherMetaLabel
 import studio.cluvex.aether.ui.theme.AetherMono
-import studio.cluvex.aether.ui.theme.AetherNumeral
 import studio.cluvex.aether.ui.theme.LocalAetherAccents
 import studio.cluvex.aether.ui.theme.LocalReducedMotion
 import studio.cluvex.aether.ui.theme.aetherDuration
@@ -144,24 +139,23 @@ private sealed interface GateLoad {
 }
 
 /**
- * VPN Gate relay browser.
+ * SSTP relay browser.
  *
  * Layout, top to bottom: header (back, title, refresh) -> hero stats (relays,
  * countries, best measured SSTP latency) -> sticky controls (search, sort,
  * verified filter, country chips, "test top 20") -> relay cards -> a plain
  * note about who runs these relays.
  *
- * Every card shows flag, country, SSTP host, the user's OWN probe result (or
- * VPN Gate's ping, marked with ~), speed / sessions / uptime and a score bar
- * relative to the best relay in the list. Tapping a card expands its details;
+ * The relay list is a plain host list (see VpnGateRepository), so every card
+ * shows what is actually known about a relay: flag, country, SSTP host, and
+ * the user's OWN probe result. Tapping a card expands its address and port;
  * "Test" runs a real TLS + SSTP handshake; "Use relay" hands it to the caller
  * (`server.toSstpConfig()` builds the config).
  *
  * The relay list is CACHED (in memory, and on disk across restarts; see
  * VpnGateRepository): opening the screen shows the cached list straight away,
  * and the network is only asked again when the user taps refresh at the top -
- * or retries a first load that failed. It used to be downloaded again on every
- * single visit.
+ * or retries a first load that failed.
  *
  * The list keeps showing while a refresh runs, failed probes sink to the
  * bottom, items animate into their new order, and all motion respects the
@@ -170,7 +164,7 @@ private sealed interface GateLoad {
  * [canSelect] is false while a session is up. Refresh, search and the probes
  * stay fully usable then - they read, they do not touch the profile - and
  * only "Use relay" is disabled, with the usual lock badge at the top saying
- * why. The browser used to be closed outright for a connected user.
+ * why.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -197,7 +191,7 @@ fun VpnGateScreen(
     var load by remember { mutableStateOf<GateLoad>(if (cached.isEmpty()) GateLoad.Loading else GateLoad.Ready) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
-    var sort by rememberSaveable { mutableStateOf(VpnGateSort.SCORE) }
+    var sort by rememberSaveable { mutableStateOf(VpnGateSort.COUNTRY) }
     var country by rememberSaveable { mutableStateOf("") }
     var verifiedOnly by rememberSaveable { mutableStateOf(false) }
     var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -231,12 +225,14 @@ fun VpnGateScreen(
             servers.filteredAndSorted(criteria, sort, probes) { code -> CountryFlags.displayName(code, locale, "") }
         }
     }
+    // Relays whose country could not be looked up get no chip of their own:
+    // "All countries" already shows them.
     val countries = remember(servers) {
-        servers.groupingBy { it.countryCode }.eachCount().entries
+        servers.filter { it.countryCode.isNotEmpty() }
+            .groupingBy { it.countryCode }.eachCount().entries
             .sortedByDescending { it.value }
             .map { it.key to it.value }
     }
-    val maxScore = remember(servers) { (servers.maxOfOrNull { it.score } ?: 1L).coerceAtLeast(1L) }
     val bestPing by remember {
         derivedStateOf {
             probes.values
@@ -380,7 +376,6 @@ fun VpnGateScreen(
                         GateRelayCard(
                             server = server,
                             probe = probes[server.id],
-                            maxScore = maxScore,
                             selected = selectedHostname != null &&
                                 server.sstpHostname.equals(selectedHostname, ignoreCase = true),
                             expanded = expandedId == server.id,
@@ -627,10 +622,8 @@ private fun GateControls(
 
 @StringRes
 private fun VpnGateSort.labelRes(): Int = when (this) {
-    VpnGateSort.SCORE -> R.string.vpngate_sort_score
-    VpnGateSort.SPEED -> R.string.vpngate_sort_speed
+    VpnGateSort.COUNTRY -> R.string.vpngate_sort_country
     VpnGateSort.PING -> R.string.vpngate_sort_ping
-    VpnGateSort.SESSIONS -> R.string.vpngate_sort_sessions
 }
 
 @Composable
@@ -648,7 +641,6 @@ private fun gateLatencyTone(ms: Int): Color {
 private fun GateRelayCard(
     server: VpnGateServer,
     probe: SstpProbe?,
-    maxScore: Long,
     selected: Boolean,
     expanded: Boolean,
     canSelect: Boolean,
@@ -659,8 +651,13 @@ private fun GateRelayCard(
 ) {
     val accents = LocalAetherAccents.current
     val locale = LocalConfiguration.current.locales[0]
-    val countryLabel = remember(server.countryCode, server.countryName, locale) {
-        CountryFlags.displayName(server.countryCode, locale, server.countryName)
+    val unknownCountry = stringResource(R.string.vpngate_country_unknown)
+    val countryLabel = remember(server.countryCode, server.countryName, locale, unknownCountry) {
+        if (server.countryCode.isEmpty()) {
+            unknownCountry
+        } else {
+            CountryFlags.displayName(server.countryCode, locale, server.countryName)
+        }
     }
     val borderColor by animateColorAsState(
         targetValue = if (selected) accents.brand else accents.cardBorder,
@@ -694,18 +691,8 @@ private fun GateRelayCard(
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                GateProbeBadge(probe = probe, apiPingMs = server.apiPingMs)
+                GateProbeBadge(probe = probe)
             }
-
-            Spacer(Modifier.height(20.dp))
-            Row(Modifier.fillMaxWidth()) {
-                GateMetric(stringResource(R.string.vpngate_metric_speed), server.formattedSpeed, Modifier.weight(1f))
-                GateMetric(stringResource(R.string.vpngate_metric_sessions), server.numSessions.toString(), Modifier.weight(1f))
-                GateMetric(stringResource(R.string.vpngate_metric_uptime), server.formattedUptime, Modifier.weight(1f))
-            }
-
-            Spacer(Modifier.height(16.dp))
-            GateScoreBar(fraction = (server.score.toDouble() / maxScore.toDouble()).toFloat().coerceIn(0f, 1f))
 
             AnimatedVisibility(
                 visible = expanded,
@@ -754,9 +741,9 @@ private fun GateFlagBadge(code: String) {
     }
 }
 
-/** The user's own probe result; before a probe, VPN Gate's ping marked with "~". */
+/** The user's own probe result, or a dash before the relay was tested. */
 @Composable
-private fun GateProbeBadge(probe: SstpProbe?, apiPingMs: Int) {
+private fun GateProbeBadge(probe: SstpProbe?) {
     val accents = LocalAetherAccents.current
     val latency = probe?.latencyMs ?: -1
     val tone: Color
@@ -764,7 +751,7 @@ private fun GateProbeBadge(probe: SstpProbe?, apiPingMs: Int) {
     when (probe?.state) {
         null -> {
             tone = accents.neutral
-            label = if (apiPingMs > 0) "~$apiPingMs ms" else "\u2014"
+            label = "\u2014"
         }
         ProbeState.RUNNING -> {
             tone = accents.working
@@ -810,80 +797,12 @@ private fun GateProbeBadge(probe: SstpProbe?, apiPingMs: Int) {
 }
 
 @Composable
-private fun GateMetric(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        Text(label, style = AetherMetaLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            value,
-            style = AetherNumeral.copy(textDirection = TextDirection.Ltr),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-/** Relative to the best relay in the list: VPN Gate scores are unbounded. */
-@Composable
-private fun GateScoreBar(fraction: Float) {
-    val accents = LocalAetherAccents.current
-    val animated by animateFloatAsState(
-        targetValue = fraction,
-        animationSpec = tween(aetherDuration(AetherDur.Slow), easing = AetherEaseOut),
-        label = "score",
-    )
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            stringResource(R.string.vpngate_metric_score),
-            style = AetherMetaLabel,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(12.dp))
-        Box(
-            Modifier
-                .weight(1f)
-                .height(6.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.outlineVariant),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(animated)
-                    .clip(CircleShape)
-                    .background(Brush.horizontalGradient(listOf(accents.brand, accents.protected))),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Text(
-            "${(fraction * 100f).roundToInt()}%",
-            style = AetherMetaLabel.copy(fontFamily = AetherMono, textDirection = TextDirection.Ltr),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
 private fun GateRelayDetails(server: VpnGateServer) {
     Column(Modifier.padding(top = 16.dp)) {
         Hairline()
         Spacer(Modifier.height(8.dp))
-        GateDetailRow(R.string.vpngate_detail_ip, server.ip)
+        if (server.ip.isNotBlank()) GateDetailRow(R.string.vpngate_detail_ip, server.ip)
         GateDetailRow(R.string.vpngate_detail_port, server.sstpPort.toString())
-        GateDetailRow(R.string.vpngate_detail_users, server.formattedUsers)
-        GateDetailRow(R.string.vpngate_detail_traffic, server.formattedTraffic)
-        if (server.logPolicy.isNotBlank()) GateDetailRow(R.string.vpngate_detail_logs, server.logPolicy)
-        if (server.operatorName.isNotBlank()) GateDetailRow(R.string.vpngate_detail_operator, server.operatorName)
-        if (server.operatorMessage.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                server.operatorMessage,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
     }
 }
 
