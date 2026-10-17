@@ -40,7 +40,9 @@ class SstpLiveTest {
 
         var lastError = "no relay answered the SSTP probe"
         var attempted = 0
-        for (server in servers.sortedByDescending { it.score }) {
+        // The host list carries no ranking metadata (VpnGateServer has no score),
+        // so walk it in list order and let the SSTP probe weed out dead relays.
+        for (server in servers) {
             if (attempted >= tries) break
             if (VpnGateRepository.probe(server).state != ProbeState.SSTP_OK) continue
             attempted++
