@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- پاپ‌آپ کانال تلگرام، بعد از خوش‌آمدگویی روی صفحه‌ی اصلی. -->
+<resources>
+    <string name="channel_promo_eyebrow">کانال رسمی</string>
+    <string name="channel_promo_title">از آپدیت‌ها جا نمونی!</string>
+    <string name="channel_promo_body">برای دریافت اخبار و آپدیت‌های برنامه وارد این کانال شو:</string>
+    <string name="channel_promo_copy">کپی لینک</string>
+    <string name="channel_promo_copied">کپی شد</string>
+    <string name="channel_promo_join">ورود به کانال</string>
+    <string name="channel_promo_dont_show">دیگر این پیام را نشان نده</string>
+    <string name="channel_promo_ok">اوکی</string>
+    <string name="channel_promo_ok_wait">اوکی (%1$d)</string>
+    <string name="channel_promo_open_failed">لینک باز نشد، برات کپی‌اش کردیم؛ توی تلگرام بچسبونش.</string>
+</resources>
