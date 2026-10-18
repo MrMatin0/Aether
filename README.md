@@ -1,149 +1,330 @@
-# Aether+ for Android! :)
+<a id="readme-top"></a>
 
-**An Android client for censorship circumvention, powered by Aether, Psiphon, Xray, and Tor**
+<div align="center" dir="rtl">
 
-[English](README.md) · [فارسی](README.fa.md) · [Downloads](https://github.com/MrMatin0/Aether/releases)
+<a href="https://github.com/MrMatin0/Aether/releases/latest"><img src=".github/assets/readme/hero-fa.svg" width="100%" alt="Aether+ : عبور هوشمند از محدودیت‌های اینترنت"></a>
 
-Aether+ brings endpoint discovery, encrypted tunneling, and configurable routing to a native Kotlin and Jetpack Compose application. Use a device-wide VPN, connect individual proxy-aware applications, or combine supported cores when a single transport cannot reach the network.
+<br>
 
-> **About this repository:** this is the `MrMatin0/Aether` Android fork, not the upstream command-line engine. It installs as **Aether+** with application ID `io.github.mrmatin0.aether`, allowing it to coexist with builds using the upstream application ID. The Kotlin namespace remains `studio.cluvex.aether`.
->
-> The name **Aether** on its own is used throughout this README for the *engine* — the circumvention core at [`CluvexStudio/Aether`](https://github.com/CluvexStudio/Aether) — and for the chain modes built on it. The *app* is Aether+.
+<a href="https://github.com/MrMatin0/Aether/releases"><img src="https://img.shields.io/github/v/release/MrMatin0/Aether?include_prereleases&style=for-the-badge&logo=github&logoColor=white&label=release&color=7C3AED" alt="Release"></a>
+<a href="https://github.com/MrMatin0/Aether/releases"><img src="https://img.shields.io/github/downloads/MrMatin0/Aether/total?style=for-the-badge&logo=android&logoColor=white&label=downloads&color=0891B2" alt="Downloads"></a>
+<img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0+">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-EC4899?style=for-the-badge" alt="AGPL-3.0-or-later"></a>
+<a href="https://github.com/MrMatin0/Aether/stargazers"><img src="https://img.shields.io/github/stars/MrMatin0/Aether?style=for-the-badge&logo=githubsponsors&logoColor=white&color=F59E0B" alt="Stars"></a>
 
-## Contents
+**فارسی** · [English](README.en.md)
 
-- [Highlights](#highlights)
-- [Install and connect](#install-and-connect)
-- [Connection modes](#connection-modes)
-- [Privacy and security](#privacy-and-security)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [Credits and license](#credits-and-license)
+<a href="#features">قابلیت‌ها</a> •
+<a href="#quick-start">شروع سریع</a> •
+<a href="#modes">حالت‌های اتصال</a> •
+<a href="#chains">زنجیره‌ها</a> •
+<a href="#scanner">اسکنر</a> •
+<a href="#privacy">حریم خصوصی</a> •
+<a href="#troubleshooting">عیب‌یابی</a> •
+<a href="#credits">قدردانی</a>
 
-## Highlights
+</div>
 
-- **Multiple transports:** Smart Auto selection, MASQUE over HTTP/3 or HTTP/2, WireGuard, and nested WireGuard (`gool`) through the Aether engine.
-- **Adaptive endpoint discovery:** Turbo, Precise, and Ultra scanning, plus a manually selected endpoint or custom IP ranges.
-- **Four connection cores:** Aether, Psiphon, and Tor, available individually or in predefined chains, plus **your own Xray server** (VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard, SOCKS) connecting first underneath Aether, Psiphon, and/or Tor, when the required binaries and assets are included.
-- **Device-wide or selective access:** Android `VpnService`, proxy-only mode, per-app split tunneling, and routing controls.
-- **Connection controls:** DNS and MTU settings, Smart DNS (one server, with the flag of the country it answers from), reconnection options, optional kill switch, IPv6 leak-protection setting, and advanced transport tuning.
-- **Everyday usability:** English and Persian UI, RTL support, bundled Vazirmatn typography, live traffic information, session history, diagnostics, Quick Settings tile, and home-screen widget.
-- **Optional LAN sharing:** expose SOCKS5 and HTTP proxies to other devices on a trusted local network.
+<div dir="rtl">
 
-Feature availability is not a guarantee of connectivity. Reachability depends on your network, the selected core, and the contents of the installed APK.
+<br>
 
-## Install and connect
+> **Aether+** یک کلاینت بومی اندروید برای عبور از سانسور اینترنت است که با Kotlin و Jetpack Compose ساخته شده. خودش بهترین نقطهٔ اتصال را پیدا می‌کند، ترافیک را از یک تونل رمزگذاری‌شده عبور می‌دهد و وقتی یک مسیر به‌تنهایی جواب نمی‌دهد، هسته‌های **Aether**، **Psiphon**، **Tor** و سرور **Xray** شخصی شما را روی هم زنجیره می‌کند.
 
-### Requirements
+<p align="center"><img src=".github/assets/readme/divider.svg" width="100%" alt=""></p>
 
-- **Android 8.0 or newer** (API 26+).
-- An **ARM64** (`arm64-v8a`) or **32-bit ARM** (`armeabi-v7a`) device.
-- Permission to install an APK from your chosen download application.
-- Android VPN consent when using device-wide mode. Root is not required.
+<a id="features"></a>
 
-### Installation
+## ✨ قابلیت‌ها
 
-1. Open this repository's [Releases](https://github.com/MrMatin0/Aether/releases) page. Prefer a tagged release over a build marked **Pre-release** for everyday use.
-2. Download the APK matching your device: `arm64-v8a` for ARM64 or `armeabi-v7a` for 32-bit ARM. Choose `universal` if unsure; it includes both ARM variants, **not x86/x86_64**.
-3. Install the APK and open **Aether+**. Complete or skip onboarding and choose your language.
-4. Start with the Aether core and default connection settings. Tap the connection control and approve Android's VPN request.
-5. Wait for connection establishment, then check that an application can actually load content. If the connection fails, review diagnostics before adding extra chain layers.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-Updates require the same application ID and a compatible signing certificate. A build signed with a different key cannot simply replace your installed copy.
+**🧠 Smart Auto و چند پروتکل**<br>
+MASQUE روی HTTP/3 یا HTTP/2، WireGuard و Gool (WireGuard تودرتو). حالت Smart Auto مسیر مناسب را خودش انتخاب می‌کند.
 
-## Connection modes
+</td>
+<td width="50%" valign="top">
 
-### VPN, proxy, and LAN sharing
+**📡 اسکنر تطبیقی نقطهٔ اتصال**<br>
+سه حالت Turbo، Precise و Ultra، به‌همراه تعیین دستی نقطهٔ اتصال یا بازه‌های IP دلخواه.
 
-**VPN mode** routes device traffic through Android's VPN interface, subject to your split-tunneling and routing settings. **Proxy-only mode** does not capture the whole device: configure each proxy-aware application to use the active local proxy. Do not assume unrelated applications are protected in this mode.
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-**LAN sharing** is separate and disabled by default. Enable it only on a trusted Wi-Fi or hotspot network and use the address and live ports displayed in the sharing panel. It exposes proxy access to reachable devices; do not enable it on an untrusted network.
+**🔗 زنجیرهٔ هسته‌ها**<br>
+Aether، Psiphon و Tor به‌تنهایی یا به‌صورت زنجیره‌ای؛ ۱۲ ترکیب آماده که با یک انتخاب فعال می‌شوند.
 
-### Aether transport and scanner selection
+</td>
+<td valign="top">
 
-Start with **Auto** unless you are diagnosing a specific network restriction. Advanced settings expose MASQUE, WireGuard, `gool`, HTTP/2 selection, obfuscation, TLS fragmentation, and endpoint controls.
+**🛰️ سرور Xray شخصی**<br>
+VLESS، VMess، Trojan، Shadowsocks، Hysteria2، WireGuard و SOCKS به‌عنوان اولین هاپ، زیر Aether، Psiphon یا Tor.
 
-- **Turbo:** prioritize finding a responding endpoint quickly.
-- **Precise:** compare candidates and select a better-performing endpoint; the default scan mode.
-- **Ultra:** require a real traffic check before accepting an endpoint; useful on difficult networks and slower by design.
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-The app allows approximately 60, 190, and 340 seconds respectively for these scans. A manually pinned endpoint bypasses scanning. Overlay cores have their own startup budgets.
+**🧅 پل‌های Tor**<br>
+obfs4، Snowflake، WebTunnel و meek. پل‌های داخلی به‌صورت پیش‌فرض روشن‌اند و اگر یکی مسدود باشد، نوبت بعدی امتحان می‌شود.
 
-### Psiphon, Tor, and Xray chains
+</td>
+<td valign="top">
 
-The supported combinations are:
+**🌐 Smart DNS**<br>
+DNS معمولی، DoH و DoT با تشخیص خودکار نوع سرور و آزمون واقعی زمان پاسخ، مستقیم از صفحهٔ اتصال.
 
-- Aether
-- Psiphon
-- Tor
-- Psiphon over Aether
-- Tor over Aether
-- Tor over Psiphon
-- Tor over Psiphon over Aether
-- Aether over Xray
-- Psiphon over Xray
-- Psiphon over Aether over Xray
-- Tor over Xray
-- Tor over Aether over Xray
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-Here, **X over Y** means X establishes its upstream connections through Y's local SOCKS5 proxy. For example, Tor over Aether carries Tor's relay connections through Aether; it does not put a fixed Aether proxy after the Tor exit.
+**🎯 کنترل کامل مسیر**<br>
+VPN سراسری، حالت فقط پراکسی، Split Tunneling برای هر برنامه، Kill Switch، محافظت از نشت IPv6 و تنظیم DNS و MTU.
 
-Psiphon includes a built-in client configuration; ordinary users do **not** need to obtain or paste a configuration. The APK still needs the Psiphon executable and bootstrap server list. Tor requires its executable, and exit-country selection additionally requires its GeoIP assets.
+</td>
+<td valign="top">
 
-**Xray is your own server, connects first, and is never offered alone.** Paste a share link (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `wireguard://`, `socks://`), a subscription body, or Xray JSON (comments are fine) under the selected Xray mode on the Chain page; the first entry Aether+ can run is used. Xray connects to your server first, and Aether, Psiphon, or Tor dial out through it (`AETHER_UPSTREAM`, `UpstreamProxyUrl`, `Socks5Proxy`), so the network sees only your Xray server. The config is a credential: it is stored encrypted with the Android Keystore on the device, and it is never part of the profile, an export, or a backup.
+**🎨 طراحی Aurora**<br>
+رابط فارسی و انگلیسی با پشتیبانی کامل RTL، فونت وزیرمتن، آمار زنده، تاریخچهٔ نشست‌ها، کاشی تنظیمات سریع و ویجت.
 
-**Important limitations:**
+</td>
+</tr>
+</table>
 
-- Chains containing Psiphon or Tor do not support general UDP traffic in this implementation. DNS is handled separately through the tunnel. UDP-only calls and games may fail; prefer Aether alone for those workloads.
-- Tor can take several minutes to bootstrap. More layers add latency and are not automatically safer or more reliable.
-- Bundled Tor integration does not include pluggable transports such as obfs4 or Snowflake.
-- Country selection depends on reachable exits. Psiphon can retry with automatic selection if the requested country fails; Tor's strict country setting can prevent connection entirely.
-- The bundled Xray-core no longer accepts `allowInsecure` (use the link's `pcs` / `pinSHA256` certificate pin instead) or the HTTP/2 and QUIC transports. Plaintext VLESS / Trojan links to a public server are forwarded through an on-device `dokodemo-door` loopback relay (`127.0.0.1:1850`) so Xray accepts them unchanged. The Chain page says so when a pasted config cannot run.
-- Some APK builds can omit overlay cores or assets. The app reports unavailable modes; tagged releases require the chain binaries and Psiphon bootstrap list.
+> [!NOTE]
+> وجود یک قابلیت به معنی تضمین اتصال نیست. نتیجه به شبکهٔ شما، هستهٔ انتخاب‌شده و محتوای APK نصب‌شده بستگی دارد.
 
-## Privacy and security
+<a id="quick-start"></a>
 
-Aether+ is a circumvention client, **not a promise of anonymity or undetectable traffic**. The selected network providers, DNS resolvers, applications, and any configured Zero Trust organization remain part of your trust model. Enabling an organization's Gateway can apply its filtering and logging policies.
+## 🚀 شروع سریع
 
-- Android backup is disabled in the manifest. Diagnostics and crash reports can still contain sensitive information: review and redact them before sharing.
-- Kill-switch settings are opt-in. Proxy-only mode, direct routes, and excluded applications must not be mistaken for device-wide protection.
-- Obtain APKs from this repository's release page. Releases are signed with a private release key; a build signed with a different key cannot replace your installed copy.
-- The Android app does not contain an in-app APK installer. Install updates yourself from the repository's release page.
+| پیش‌نیاز | توضیح |
+|:--|:--|
+| 📱 **اندروید** | نسخهٔ ۸.۰ یا جدیدتر (API 26+) |
+| 🧩 **معماری** | ARM64 (`arm64-v8a`) یا ARM سی‌ودوبیتی (`armeabi-v7a`) |
+| 🔓 **دسترسی** | بدون نیاز به روت؛ فقط تأیید مجوز VPN اندروید |
 
-Never publish credentials, enrollment tokens, private keys, Xray share links, or unredacted logs in an issue. For a suspected vulnerability, use GitHub's private vulnerability reporting option if the repository exposes one; otherwise arrange a private channel with the maintainer before disclosing sensitive details.
+1. **دانلود:** از صفحهٔ [Releases](https://github.com/MrMatin0/Aether/releases) فایل مناسب دستگاهتان را بگیرید. برای استفادهٔ روزمره، نسخهٔ دارای تگ را به **Pre-release** ترجیح دهید.
+2. **نصب:** APK را نصب و **Aether+** را باز کنید، راهنمای آغازین را طی کنید و زبان دلخواه را انتخاب کنید.
+3. **اتصال:** با هستهٔ Aether و تنظیمات پیش‌فرض شروع کنید، دکمهٔ اتصال را بزنید و درخواست VPN اندروید را تأیید کنید.
+4. **بررسی:** پس از اتصال، باز شدن واقعی محتوا را در یک برنامه امتحان کنید. اگر وصل نشد، پیش از افزودن لایه‌های زنجیره سری به بخش تشخیص خطا بزنید.
 
-## Troubleshooting
+| فایل | مناسب برای |
+|:--|:--|
+| `arm64-v8a` | بیشتر گوشی‌های امروزی |
+| `armeabi-v7a` | گوشی‌های قدیمی‌تر ۳۲بیتی |
+| `universal` | اگر مطمئن نیستید؛ شامل هر دو معماری ARM است، **نه x86 یا x86_64** |
 
-- **Connected, but applications cannot load content:** check proxy-only mode, routing and split-tunneling rules, DNS settings, and whether the application needs UDP. Try Aether alone to isolate chain limitations.
-- **Scanning appears stuck:** Precise and Ultra have longer budgets. Let the attempt finish, examine diagnostics, and try a different protocol or network instead of repeatedly restarting the same scan.
-- **Psiphon, Tor, or Xray is unavailable:** install a build containing the required core. For Psiphon, also check the bootstrap server list; changing connection settings cannot repair a missing APK asset.
-- **Xray says the config cannot run, or the server does not answer:** check the link against the limitations above (self-signed servers need `pcs`), then the server address, UUID / password, and TLS / REALITY settings. A wrong credential ends in a timeout, never a false "connected".
-- **APK will not install as an update:** confirm the application ID, signing certificate, architecture, and version. Avoid uninstalling until you have considered the loss of application data.
+<p align="center">
+<a href="https://github.com/MrMatin0/Aether/releases/latest"><img src=".github/assets/readme/download-fa.svg" width="340" alt="دانلود آخرین نسخه"></a>
+</p>
 
-For a useful bug report, include the app version, Android version, device ABI, selected protocol and chain, reproduction steps, expected versus actual behavior, and redacted diagnostics. State which release APK you used.
+> [!TIP]
+> به‌روزرسانی فقط وقتی روی نسخهٔ فعلی نصب می‌شود که شناسهٔ برنامه یکسان و کلید امضا سازگار باشد. Aether+ با شناسهٔ `io.github.mrmatin0.aether` نصب می‌شود و می‌تواند در کنار نسخه‌های بالادستی روی یک دستگاه باشد.
 
-## Contributing
+<a id="modes"></a>
 
-Focused fixes, networking tests, accessibility improvements, and translation updates are welcome. The full guide — setup, branch and commit conventions, what CI checks, and the house rules — is in [CONTRIBUTING.md](CONTRIBUTING.md).
+## 🧭 حالت‌های اتصال
 
-Do not commit generated APKs, downloaded native binaries, build caches, private configuration, or signing secrets. Preserve upstream attribution and review dependency license obligations when changing bundled components.
+| حالت | چه چیزی را پوشش می‌دهد | کِی مناسب است |
+|:--|:--|:--|
+| 🛡️ **VPN** | ترافیک کل دستگاه، طبق قواعد مسیریابی و Split Tunneling | استفادهٔ روزمره |
+| 🔌 **فقط پراکسی** | فقط برنامه‌هایی که خودتان روی پراکسی محلی تنظیم کنید | وقتی فقط چند برنامهٔ مشخص لازم است |
+| 📶 **اشتراک در شبکهٔ محلی** | پراکسی SOCKS5 و HTTP برای دستگاه‌های دیگر | فقط در Wi-Fi یا هات‌اسپات مورد اعتماد |
 
-To report a security problem, do not open a public issue — see [SECURITY.md](SECURITY.md).
+در حالت فقط پراکسی، برنامه‌های دیگر لزوماً از تونل عبور نمی‌کنند. اشتراک در شبکهٔ محلی به‌صورت پیش‌فرض خاموش است؛ پس از روشن‌کردن، از نشانی و پورت‌هایی که در پنل اشتراک نمایش داده می‌شود استفاده کنید.
 
-## Credits and license
+<a id="chains"></a>
 
-This is a modified distribution of Aether Mobile, forked from
-[`QW-AI-Code/Aether`](https://github.com/QW-AI-Code/Aether) and modified
-extensively since. The component-by-component license inventory is in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## 🔗 زنجیره‌ها
 
-This project builds on the work of Aether Mobile contributors and these upstream projects:
+<p align="center"><img src=".github/assets/readme/chain.svg" width="100%" alt="زنجیرهٔ کامل: Android، Xray، Aether، Psiphon، Tor، اینترنت"></p>
 
-- [CluvexStudio/Aether](https://github.com/CluvexStudio/Aether): the Aether engine.
-- [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel): TUN-to-SOCKS forwarding.
-- [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core): Psiphon connectivity.
-- [Tor Android](https://github.com/guardianproject/tor-android) and the [Tor Project](https://www.torproject.org/): Tor integration.
-- [Xray-core](https://github.com/XTLS/Xray-core) (Project X, MPL-2.0): the Xray hop.
-- [Vazirmatn](https://github.com/rastikerdar/vazirmatn): Persian and Latin typography.
+عبارت **«X روی Y»** یعنی X اتصال‌های بالادستی خود را از پراکسی SOCKS5 محلی Y برقرار می‌کند. مثلاً در «Tor روی Aether» اتصال به رله‌های Tor از داخل Aether عبور می‌کند. در زنجیره‌های دارای Xray، شبکه فقط سرور Xray شما را می‌بیند.
 
-The repository's [LICENSE](LICENSE) declares **GNU AGPL version 3 or later**, with no warranty. Bundled and downloaded third-party components retain their own licenses and notices; review those obligations before redistribution. Project and product names belong to their respective owners; integration does not imply endorsement.
+<details>
+<summary><b>۱۲ ترکیب پشتیبانی‌شده</b></summary>
+<br>
+
+| بدون Xray | با Xray به‌عنوان هاپ اول |
+|:--|:--|
+| Aether | Aether روی Xray |
+| Psiphon | Psiphon روی Xray |
+| Tor | Psiphon روی Aether روی Xray |
+| Psiphon روی Aether | Tor روی Xray |
+| Tor روی Aether | Tor روی Aether روی Xray |
+| Tor روی Psiphon | |
+| Tor روی Psiphon روی Aether | |
+
+</details>
+
+### 🟦 Psiphon
+
+پیکربندی داخلی دارد و **نیازی به دریافت یا واردکردن کانفیگ نیست**. از CDN fronting روی Fastly و Akamai پشتیبانی می‌کند و می‌توانید IP، CIDR و SNI دلخواه هم وارد کنید. ترافیک UDP غیر DNS از مسیر `udpgw` عبور می‌کند، اما موفقیت آن به پشتیبانی سرور بستگی دارد. اگر کشور خروجی درخواستی در دسترس نباشد، برنامه می‌تواند با انتخاب خودکار دوباره تلاش کند.
+
+### 🧅 Tor
+
+برای شبکه‌هایی که رله‌های عمومی Tor را مسدود کرده‌اند، پل‌ها به‌صورت پیش‌فرض روشن‌اند. سه منبع پل در دسترس است: **فهرست داخلی**، **پل شخصی** که برای همین دستگاه دریافت می‌شود و **پل واردشده** از هر جای دیگر. اگر یک نوع انتقال جواب ندهد، برنامه نوع بعدی (obfs4، Snowflake، WebTunnel، meek) را امتحان می‌کند. راه‌اندازی اولیهٔ Tor ممکن است چند دقیقه طول بکشد و Tor ترافیک UDP را عبور نمی‌دهد.
+
+### 🛰️ Xray
+
+**Xray سرور شخصی شماست، همیشه اول وصل می‌شود و هرگز به‌تنهایی عرضه نمی‌شود.** لینک اشتراک‌گذاری (`vless://`، `vmess://`، `trojan://`، `ss://`، `hy2://`، `wireguard://`، `socks://`)، متن سابسکریپشن یا JSON ایکس‌ری (کامنت‌دار هم قبول است) را در صفحهٔ زنجیره بچسبانید؛ اولین مورد قابل اجرا استفاده می‌شود. کانفیگ با Android Keystore رمزنگاری‌شده روی دستگاه ذخیره می‌شود و هرگز وارد پروفایل، خروجی یا بکاپ نمی‌شود.
+
+<details>
+<summary><b>⚠️ محدودیت‌های مهم زنجیره‌ها</b></summary>
+<br>
+
+- **UDP:** زنجیره‌های دارای Tor از UDP عمومی پشتیبانی نمی‌کنند و UDP در Psiphon به سرور وابسته است. برای تماس و بازی، Aether به‌تنهایی انتخاب مطمئن‌تری است. DNS جداگانه از داخل تونل مدیریت می‌شود.
+- **تأخیر:** هر لایهٔ اضافه تأخیر را بیشتر می‌کند و لزوماً امن‌تر یا پایدارتر نیست.
+- **Xray-core همراه برنامه:** دیگر `allowInsecure` را نمی‌پذیرد (به‌جای آن از پین گواهی `pcs` یا `pinSHA256` در لینک استفاده کنید) و ترنسپورت‌های HTTP/2 و QUIC را هم قبول نمی‌کند. لینک‌های بدون رمزنگاری VLESS و Trojan به سرور عمومی از رلهٔ محلی `dokodemo-door` روی `127.0.0.1:1850` عبور می‌کنند تا بدون تغییر اجرا شوند. اگر کانفیگی قابل اجرا نباشد، صفحهٔ زنجیره اعلام می‌کند.
+- **محتوای APK:** بعضی بیلدها ممکن است هسته یا دادهٔ جانبی را نداشته باشند. برنامه حالت‌های غیرقابل استفاده را نشان می‌دهد؛ تغییر تنظیمات، فایل مفقود APK را برنمی‌گرداند.
+
+</details>
+
+<a id="scanner"></a>
+
+## 📡 اسکنر Aether
+
+<p align="center"><img src=".github/assets/readme/scan.svg" width="100%" alt="سه حالت اسکن: Turbo، Precise و Ultra"></p>
+
+| حالت | رویکرد | زمان تقریبی |
+|:--|:--|:--:|
+| ⚡ **Turbo** | اولین نقطهٔ پاسخ‌گو را سریع پیدا می‌کند | ۶۰ ثانیه |
+| 🎯 **Precise** | چند گزینه را مقایسه و بهترین را انتخاب می‌کند (پیش‌فرض) | ۱۹۰ ثانیه |
+| 🔬 **Ultra** | پیش از پذیرش، عبور واقعی ترافیک را بررسی می‌کند؛ برای شبکه‌های سخت | ۳۴۰ ثانیه |
+
+برای شروع **Auto** را نگه دارید؛ مگر اینکه در حال بررسی یک محدودیت مشخص باشید. تعیین دستی نقطهٔ اتصال، اسکن را کنار می‌گذارد.
+
+<details>
+<summary><b>🛠️ تنظیمات پیشرفته</b></summary>
+<br>
+
+- **MASQUE:** حالت‌های SNI split و stream split برای شکل‌دهی اولین ClientHello روی HTTP/2، و SNI دلخواه روی HTTP/2 و HTTP/3 با حفظ بررسی کلید پین‌شدهٔ گواهی.
+- **مبهم‌سازی:** مبهم‌سازی ترافیک، قطعه‌قطعه‌کردن TLS و انتخاب حالت HTTP/2.
+- **WireGuard (آزمایشی):** جابه‌جایی پورت و افزودن padding داخل دادهٔ رمزگذاری‌شده؛ هر دو به‌صورت پیش‌فرض خاموش‌اند.
+- **کلید WARP:** اگر ثبت WARP در شبکهٔ شما مسدود است، از بخش عیب‌یابی می‌توانید کلید MASQUE، WireGuard یا Gool را دستی دریافت کنید؛ تلاش ناموفق، هویت‌های قبلی را از بین نمی‌برد.
+
+</details>
+
+<a id="privacy"></a>
+
+## 🔐 حریم خصوصی و امنیت
+
+> [!IMPORTANT]
+> Aether+ ابزار عبور از محدودیت است، **نه تضمین ناشناس‌ماندن یا غیرقابل‌شناسایی‌بودن ترافیک**. ارائه‌دهندگان شبکه، DNS، برنامه‌ها و هر سازمان Zero Trust تنظیم‌شده همچنان بخشی از مدل اعتماد شما هستند.
+
+- 🔒 **پشتیبان‌گیری اندروید غیرفعال است.** با این حال گزارش‌های تشخیص خطا ممکن است اطلاعات حساس داشته باشند؛ پیش از ارسال، آن‌ها را پاک‌سازی کنید.
+- 🧱 **Kill Switch اختیاری است.** حالت فقط پراکسی، مسیرهای مستقیم و برنامه‌های مستثناشده را با حفاظت سراسری دستگاه اشتباه نگیرید.
+- 🌐 **Smart DNS** فقط برای Aether بدون Psiphon یا Tor فعال می‌شود و در مسیر مستقیم ممکن است IP واقعی شما را به ارائه‌دهندهٔ DNS نشان دهد.
+- 📦 **APK را فقط از [Releases](https://github.com/MrMatin0/Aether/releases) بگیرید.** نسخه‌ها امضاشده‌اند و برنامه نصب‌کنندهٔ داخلی ندارد؛ به‌روزرسانی را خودتان نصب کنید.
+- 🤫 **چیزی را عمومی نکنید:** اطلاعات ورود، کلید خصوصی، لینک Xray، خط پل Tor یا گزارش پاک‌سازی‌نشده را در Issue منتشر نکنید. پل شخصی که در یک اسکرین‌شات دیده شود، برای همه سوخته است.
+
+برای گزارش آسیب‌پذیری، Issue عمومی باز نکنید و [SECURITY.md](SECURITY.md) را ببینید.
+
+<a id="troubleshooting"></a>
+
+## 🧰 عیب‌یابی
+
+<details>
+<summary><b>وصل است، اما برنامه‌ها چیزی باز نمی‌کنند</b></summary>
+<br>
+
+حالت فقط پراکسی، قواعد مسیریابی و Split Tunneling، تنظیم DNS و نیاز برنامه به UDP را بررسی کنید. برای جداکردن مشکل زنجیره، Aether را به‌تنهایی امتحان کنید.
+
+</details>
+
+<details>
+<summary><b>اسکن ظاهراً گیر کرده است</b></summary>
+<br>
+
+Precise و Ultra عمداً زمان بیشتری دارند. بگذارید تلاش تمام شود، گزارش‌ها را ببینید و به‌جای شروع دوبارهٔ همان اسکن، پروتکل یا شبکهٔ دیگری را امتحان کنید.
+
+</details>
+
+<details>
+<summary><b>Tor روی درصدهای پایین می‌ماند</b></summary>
+<br>
+
+مطمئن شوید پل‌ها روشن‌اند و نوع دیگری از انتقال یا یک پل شخصی را امتحان کنید. اگر هیچ‌کدام جواب نداد، «Tor روی Aether» یا «Tor روی Psiphon» را انتخاب کنید.
+
+</details>
+
+<details>
+<summary><b>Psiphon، Tor یا Xray در دسترس نیست</b></summary>
+<br>
+
+نسخه‌ای نصب کنید که هستهٔ لازم را داشته باشد. Psiphon به فهرست سرورهای اولیه هم نیاز دارد؛ تغییر تنظیمات اتصال، فایل مفقود APK را برنمی‌گرداند.
+
+</details>
+
+<details>
+<summary><b>Xray می‌گوید کانفیگ قابل اجرا نیست یا سرور جواب نمی‌دهد</b></summary>
+<br>
+
+لینک را با محدودیت‌های بالا تطبیق دهید (سرورهای دارای گواهی خودامضا به `pcs` نیاز دارند)، سپس نشانی سرور، UUID یا پسورد و تنظیمات TLS یا REALITY را بررسی کنید. اطلاعات اشتباه به تایم‌اوت ختم می‌شود، نه اتصال کاذب.
+
+</details>
+
+<details>
+<summary><b>ثبت WARP انجام نمی‌شود</b></summary>
+<br>
+
+از بخش عیب‌یابی، کلید را دستی دریافت کنید. اگر مسیر ثبت مسدود است، در حالی که Aether+ قطع است، می‌توانید موقتاً از یک VPN دیگر کمک بگیرید.
+
+</details>
+
+<details>
+<summary><b>APK به‌عنوان به‌روزرسانی نصب نمی‌شود</b></summary>
+<br>
+
+شناسهٔ برنامه، گواهی امضا، معماری و نسخه را بررسی کنید. پیش از حذف برنامه، به ازدست‌رفتن داده‌های آن فکر کنید.
+
+</details>
+
+**گزارش خطای خوب** شامل این موارد است: نسخهٔ برنامه، نسخهٔ اندروید، معماری دستگاه، پروتکل و زنجیرهٔ انتخاب‌شده، مراحل بازتولید، رفتار مورد انتظار و واقعی، گزارش‌های پاک‌سازی‌شده و نام دقیق فایل APK نصب‌شده.
+
+## 🤝 مشارکت
+
+از اصلاحات متمرکز، تست‌های شبکه، بهبود دسترس‌پذیری و تکمیل ترجمه استقبال می‌شود. راهنمای کامل در [CONTRIBUTING.md](CONTRIBUTING.md) آمده است. APK، باینری بومی، کش ساخت، پیکربندی خصوصی یا اطلاعات امضا را کامیت نکنید و انتساب به پروژه‌های بالادستی را حفظ کنید.
+
+<a id="credits"></a>
+
+## 💜 قدردانی و مجوز
+
+این پروژه توزیعی تغییریافته از Aether Mobile است که از [`QW-AI-Code/Aether`](https://github.com/QW-AI-Code/Aether) فورک شده و از آن پس به‌طور گسترده تغییر کرده است. فهرست مجوز اجزای ثالث در [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) آمده است.
+
+| پروژه | نقش |
+|:--|:--|
+| [CluvexStudio/Aether](https://github.com/CluvexStudio/Aether) | موتور Aether |
+| [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) | انتقال ترافیک TUN به SOCKS |
+| [Psiphon Tunnel Core](https://github.com/Psiphon-Labs/psiphon-tunnel-core) | اتصال Psiphon |
+| [Tor Android](https://github.com/guardianproject/tor-android) و [Tor Project](https://www.torproject.org/) | یکپارچه‌سازی Tor و پل‌ها |
+| [Xray-core](https://github.com/XTLS/Xray-core) | هاپ Xray (Project X، مجوز MPL-2.0) |
+| [Vazirmatn](https://github.com/rastikerdar/vazirmatn) | تایپوگرافی فارسی و لاتین |
+
+<details>
+<summary><b>دربارهٔ نام‌ها و این مخزن</b></summary>
+<br>
+
+این مخزن فورک اندرویدی `MrMatin0/Aether` است، نه موتور خط فرمان بالادستی. در این سند، **Aether** به‌تنهایی به موتور عبور از محدودیت ([`CluvexStudio/Aether`](https://github.com/CluvexStudio/Aether)) و حالت‌های زنجیره‌ای مبتنی بر آن اشاره دارد و **Aether+** نام برنامه است. شناسهٔ برنامه `io.github.mrmatin0.aether` است و فضای نام کد Kotlin همچنان `studio.cluvex.aether` باقی مانده است.
+
+</details>
+
+فایل [LICENSE](LICENSE) مجوز **GNU AGPL نسخهٔ ۳ یا بالاتر** را بدون هیچ ضمانتی اعلام می‌کند. اجزای ثالث مجوزها و اعلان‌های خود را حفظ می‌کنند؛ پیش از بازتوزیع، تعهدات آن‌ها را بررسی کنید. نام پروژه‌ها و محصولات متعلق به صاحبانشان است و یکپارچه‌سازی به معنی تأیید رسمی نیست.
+
+</div>
+
+<p align="center"><img src=".github/assets/readme/divider.svg" width="100%" alt=""></p>
+
+<div align="center" dir="rtl">
+
+ساخته‌شده با 💜 برای اینترنتی آزادتر · اگر Aether+ به کارتان آمد، با یک ⭐ حمایت کنید
+
+<a href="#readme-top">⬆ بازگشت به بالا</a>
+
+</div>
