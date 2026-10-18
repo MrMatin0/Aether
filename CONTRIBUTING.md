@@ -82,7 +82,8 @@ against what was built, and against what is actually inside the assembled APKs.
   and anything with a password in it stay out of the repository. See
   [docs/SIGNING.md](docs/SIGNING.md).
 - **Keep the two READMEs in sync.** If you change user-facing behavior, update
-  both [README.md](README.md) and [README.fa.md](README.fa.md).
+  both [README.md](README.md) (Persian, the default) and
+  [README.en.md](README.en.md) (English).
 - **Licenses.** This project is AGPL-3.0-or-later. Before adding a dependency
   or a bundled binary, check its license is compatible and add it to
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
